@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.27.1613
+// @version      2026.08.27.1623
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -332,7 +332,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.27.1613';
+  const MAESTRO_VERSAO = '2026.08.27.1623';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ CHAVES SEPARADAS POR PERFIL =============================
@@ -21673,8 +21673,25 @@ function makeRelatoriosModule(opts) {
     const ok = await waitReady();
     if (!ok) { console.log('[MAESTRO] jogo não carregou a tempo.'); return; }
     /* Aplicar o perfil publicado pela conta principal ANTES de desenhar o
-     * painel: assim o que se vê já é a configuração actual. */
-    await aplicarPerfilAoArrancar();
+     * painel: assim o que se vê já é a configuração actual.
+     *
+     * Na conta PRINCIPAL faz-se o inverso: publica-se logo ao arrancar, para
+     * que recarregar a página baste para propagar uma mudança — sem esperar
+     * pela publicação de meia em meia hora. */
+    if (souPrincipal()) {
+      try {
+        const esc0 = lerEscolhas();
+        const perfil0 = (esc0 && esc0.perfil) || '';
+        if (perfil0 && GIST_ID_GLOBAL && GIST_TOKEN_GLOBAL) {
+          const r0 = await publicarPerfil(perfil0);
+          if (r0 && r0.ok) {
+            log('core', `Perfil "${perfil0}" publicado (${r0.n} definição(ões)).`);
+          }
+        }
+      } catch (e) {}
+    } else {
+      await aplicarPerfilAoArrancar();
+    }
 
     buildPanel();
     atualizarPainelEstado();
