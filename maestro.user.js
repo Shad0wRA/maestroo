@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.27.1725
+// @version      2026.08.27.1735
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -332,7 +332,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.27.1725';
+  const MAESTRO_VERSAO = '2026.08.27.1735';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -12184,16 +12184,29 @@ function makeDeusesModule(opts) {
         quantos = temEnviados;
       }
 
-      if (await ataqueEmCurso(t.id)) continue;        // já vai um a caminho
+      /* Cada travão diz porquê: sem isto, o registo mostrava "vão esses" e
+       * nada acontecia, sem explicação. */
+      if (await ataqueEmCurso(t.id)) {
+        log(`— ${t.name}: já vai um ataque a caminho — espero que chegue.`);
+        continue;
+      }
 
       const il = ilhaDa(t.id);
-      if (!il) continue;
+      if (!il) {
+        log(`— ${t.name}: não sei em que ilha está.`);
+        continue;
+      }
       const alvos = await alvosNaIlha(il.x, il.y, t.id, multis);
       if (!alvos.length) {
         log(`— ${t.name}: nenhuma cidade das tuas multis na ilha ${il.x}:${il.y}.`);
         continue;
       }
       const alvo = proximoAlvo(t.id, alvos, !c.simular);
+      if (!alvo) {
+        log(`— ${t.name}: não consegui escolher um alvo entre ${alvos.length} `
+          + 'cidade(s) das multis nesta ilha.');
+        continue;
+      }
 
       if (c.simular) {
         log(`🔎 [simulação] ${t.name}: atacaria ${alvo.nome} (${alvo.jogador}) com ${quantos} enviados`
