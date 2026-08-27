@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.27.2100
+// @version      2026.08.27.2113
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -332,7 +332,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.27.2100';
+  const MAESTRO_VERSAO = '2026.08.27.2113';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -8879,30 +8879,35 @@ function makeHeroisModule(opts) {
   }
 
   function ligar(container) {
-    container.querySelectorAll('[data-c]').forEach((el) => {
-      el.onchange = (e) => {
-        const id = el.getAttribute('data-c');
-        const i = cfgEdicao.comprar.indexOf(id);
-        if (e.target.checked && i < 0) cfgEdicao.comprar.push(id);
-        else if (!e.target.checked && i >= 0) cfgEdicao.comprar.splice(i, 1);
-      };
-    });
-    container.querySelectorAll('[data-n]').forEach((el) => {
-      el.onchange = (e) => {
-        const id = el.getAttribute('data-n');
-        const i = cfgEdicao.subir.indexOf(id);
-        if (e.target.checked && i < 0) cfgEdicao.subir.push(id);
-        else if (!e.target.checked && i >= 0) cfgEdicao.subir.splice(i, 1);
-      };
-    });
-    container.querySelectorAll('[data-r]').forEach((el) => {
-      el.onchange = (e) => {
-        const id = el.getAttribute('data-r');
-        const i = cfgEdicao.rodar.indexOf(id);
-        if (e.target.checked && i < 0) cfgEdicao.rodar.push(id);
-        else if (!e.target.checked && i >= 0) cfgEdicao.rodar.splice(i, 1);
-      };
-    });
+    /* GUARDAR A CADA CLIQUE.
+     *
+     * As escolhas mexiam no `cfgEdicao`, que vive em memória, e só eram
+     * gravadas ao carregar em Guardar. O painel redesenha-se por várias
+     * razões — outra passagem do maestro, um redimensionamento — e tudo o que
+     * não estivesse guardado perdia-se.
+     *
+     * Daí só funcionar "com algum intervalo": era preciso guardar antes do
+     * próximo redesenho. */
+    const guardarHeroisAgora = () => {
+      try { saveLocal(cfgEdicao); } catch (e) {}
+    };
+
+    const ligarCaixa = (atributo, lista) => {
+      container.querySelectorAll(`[${atributo}]`).forEach((el) => {
+        el.onchange = (e) => {
+          const id = el.getAttribute(atributo);
+          const arr = cfgEdicao[lista] = cfgEdicao[lista] || [];
+          const i = arr.indexOf(id);
+          if (e.target.checked && i < 0) arr.push(id);
+          else if (!e.target.checked && i >= 0) arr.splice(i, 1);
+          guardarHeroisAgora();
+        };
+      });
+    };
+
+    ligarCaixa('data-c', 'comprar');
+    ligarCaixa('data-n', 'subir');
+    ligarCaixa('data-r', 'rodar');
     // manter aberto/fechado entre redesenhos
     const det = container.querySelector('#her-avancado');
     if (det) {
