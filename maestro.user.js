@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.27.1827
+// @version      2026.08.27.1905
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -332,7 +332,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.27.1827';
+  const MAESTRO_VERSAO = '2026.08.27.1905';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -11040,6 +11040,9 @@ function makeDeusesModule(opts) {
     /* Quantos enviados divinos mandar. Se `calcularEnviados` estiver ligado,
      * o número é calculado pelo favor que falta encher; senão usa-se este. */
     enviadosPorAtaque: 5,
+    /* Espadachins que vão com os enviados, para absorverem as perdas da
+     * muralha. 0 = não levar nenhum. */
+    escudoEspadachins: 0,
     calcularEnviados: true,
     favorPorEnviado: 5,      // quanto cada um rouba
     favorMaximo: 500,        // tecto do favor por deus
@@ -12163,11 +12166,32 @@ function makeDeusesModule(opts) {
     return escolhido;
   }
 
-  async function enviarAtaque(origemId, alvoId, quantos) {
+  /* ESCUDO: tropa terrestre que vai com os enviados divinos.
+   *
+   * A muralha do alvo mata sempre alguns atacantes. Se forem só enviados,
+   * morrem enviados — que custam favor e são o que interessa preservar.
+   *
+   * Levando espadachins, as perdas caem sobre eles: são baratos, o módulo de
+   * recrutamento repõe-nos, e cada um que morre é um enviado que sobrevive.
+   * Com o herói certo na cidade, a diferença é ainda maior.
+   *
+   * Vão os que houver, até ao limite configurado — não se espera por eles. */
+  function escudoDisponivel(origemId, c) {
+    const quantos = Number(c.escudoEspadachins) || 0;
+    if (quantos <= 0) return 0;
+    try {
+      const t = mUw.ITowns.getTown(Number(origemId));
+      const tem = Number((t.units() || {}).sword) || 0;
+      return Math.min(quantos, tem);
+    } catch (e) { return 0; }
+  }
+
+  async function enviarAtaque(origemId, alvoId, quantos, escudo) {
     const url = mUw.location.origin + '/game/town_info?town_id=' + Number(origemId)
       + '&action=send_units&h=' + mUw.Game.csrfToken;
     const payload = {};
     payload[UNIDADE_ENVIADO] = Number(quantos);
+    if (Number(escudo) > 0) payload.sword = Number(escudo);
     payload.id = Number(alvoId);
     payload.type = 'attack';
     payload.town_id = Number(origemId);
@@ -12267,9 +12291,11 @@ function makeDeusesModule(opts) {
         enviados++;
         continue;
       }
-      const r = await enviarAtaque(t.id, alvo.townId, quantos);
+      const escudo = escudoDisponivel(t.id, c);
+      const r = await enviarAtaque(t.id, alvo.townId, quantos, escudo);
       if (r.ok) {
         log(`⚔️ ${t.name} → ${alvo.nome} (${alvo.jogador}): ${quantos} enviados divinos`
+          + (escudo ? ` + ${escudo} espadachins de escudo` : '')
           + ` — favor de ${NOMES[deus]} estava em ${favor}.`);
         enviados++;
         await ctx.sleep(ctx.rand(1200, 2400));
@@ -12450,7 +12476,10 @@ function makeDeusesModule(opts) {
             </div>`
           : `
             <div style="margin:2px 0 4px 18px">
-              Mandar sempre <input type="number" min="1" id="deu-env" value="${c.enviadosPorAtaque || 5}" style="width:48px"> enviados.
+              Mandar sempre <input type="number" min="1" id="deu-env" value="${c.enviadosPorAtaque || 5}" style="width:48px"> enviados.<br>
+              Com <input type="number" min="0" id="deu-escudo" value="${Number(c.escudoEspadachins) || 0}" style="width:48px"> espadachins de escudo
+              <span style="opacity:.6;font-size:10px">— a muralha mata-os a eles em vez dos
+              enviados. Vão os que houver; o recrutamento repõe-nos. 0 = nenhum.</span>
             </div>`}
         </div>
         <div style="margin-top:6px;border-top:1px solid #223;padding-top:4px">
@@ -12857,6 +12886,8 @@ function makeDeusesModule(opts) {
         })(),
         enviadosPorAtaque: container.querySelector('#deu-env')
           ? (Number(container.querySelector('#deu-env').value) || 5) : c.enviadosPorAtaque,
+        escudoEspadachins: container.querySelector('#deu-escudo')
+          ? (Number(container.querySelector('#deu-escudo').value) || 0) : (c.escudoEspadachins || 0),
         calcularEnviados: container.querySelector('#deu-calc') ? container.querySelector('#deu-calc').checked : true,
         favorMaximo: container.querySelector('#deu-tecto') ? (Number(container.querySelector('#deu-tecto').value) || 500) : (c.favorMaximo || 500),
         favorPorEnviado: container.querySelector('#deu-porenv') ? (Number(container.querySelector('#deu-porenv').value) || 5) : (c.favorPorEnviado || 5),
