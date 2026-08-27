@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.27.1905
+// @version      2026.08.27.1916
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -332,7 +332,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.27.1905';
+  const MAESTRO_VERSAO = '2026.08.27.1916';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -12466,6 +12466,16 @@ function makeDeusesModule(opts) {
         </div>
         <div style="margin-top:4px">
           Atacar abaixo de <input type="number" min="0" id="deu-favatk" value="${c.favorParaAtacar != null ? c.favorParaAtacar : 250}" style="width:48px"> de favor<br>
+
+          <!-- O ESCUDO vale nos dois modos: fica FORA do bloco que só aparece
+               quando "calcular enviados" está desligado. Estava lá dentro por
+               engano e nunca se via. -->
+          Com <input type="number" min="0" id="deu-escudo" value="${Number(c.escudoEspadachins) || 0}" style="width:48px">
+          espadachins de escudo<br>
+          <div style="opacity:.6;font-size:10px;margin:0 0 4px 4px">
+            A muralha mata-os a eles em vez dos enviados. Vão os que houver na cidade;
+            o recrutamento repõe-nos. 0 = nenhum.
+          </div>
           <label><input type="checkbox" id="deu-calc"${c.calcularEnviados !== false ? ' checked' : ''}>
             calcular quantos enviados mandar</label>
           ${c.calcularEnviados !== false ? `
@@ -12476,10 +12486,7 @@ function makeDeusesModule(opts) {
             </div>`
           : `
             <div style="margin:2px 0 4px 18px">
-              Mandar sempre <input type="number" min="1" id="deu-env" value="${c.enviadosPorAtaque || 5}" style="width:48px"> enviados.<br>
-              Com <input type="number" min="0" id="deu-escudo" value="${Number(c.escudoEspadachins) || 0}" style="width:48px"> espadachins de escudo
-              <span style="opacity:.6;font-size:10px">— a muralha mata-os a eles em vez dos
-              enviados. Vão os que houver; o recrutamento repõe-nos. 0 = nenhum.</span>
+              Mandar sempre <input type="number" min="1" id="deu-env" value="${c.enviadosPorAtaque || 5}" style="width:48px"> enviados.
             </div>`}
         </div>
         <div style="margin-top:6px;border-top:1px solid #223;padding-top:4px">
@@ -12752,15 +12759,41 @@ function makeDeusesModule(opts) {
         if (tipoSel) tipoSel.disabled = !el.checked;
         if (deusSel) deusSel.disabled = !el.checked || tipoSel.value !== 'fixo';
         el.closest('tr').style.background = el.checked ? '#141d28' : '';
+        try { guardarFarmAgora(); } catch (e) {}
       };
     });
+    /* GUARDAR ASSIM QUE SE ESCOLHE.
+     *
+     * Antes só se guardava ao carregar em "Guardar". Se o painel se
+     * redesenhasse entretanto — o que acontece por várias razões — a escolha
+     * perdia-se e voltava ao que estava. */
+    const guardarFarmAgora = () => {
+      try {
+        const cc = cfgLocal();
+        const out = {};
+        container.querySelectorAll('[data-farm]').forEach((el) => {
+          if (!el.checked) return;
+          const id = el.getAttribute('data-farm');
+          const tipo = (container.querySelector(`[data-farmtipo="${id}"]`) || {}).value || 'rotativo';
+          const deus = (container.querySelector(`[data-farmdeus="${id}"]`) || {}).value || null;
+          out[id] = tipo === 'fixo' ? { tipo, deus } : { tipo };
+        });
+        cc.cidadesFarm = out;
+        guardarLocal(cc);
+      } catch (e) {}
+    };
+
     container.querySelectorAll('[data-farmtipo]').forEach((el) => {
       el.onchange = () => {
         const id = el.getAttribute('data-farmtipo');
         const deusSel = container.querySelector(`[data-farmdeus="${id}"]`);
         // o deus só se escolhe quando é fixo
         if (deusSel) deusSel.disabled = el.value !== 'fixo';
+        guardarFarmAgora();
       };
+    });
+    container.querySelectorAll('[data-farmdeus]').forEach((el) => {
+      el.onchange = guardarFarmAgora;
     });
 
     const modoAtual = () =>
