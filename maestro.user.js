@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.27.2011
+// @version      2026.08.27.2043
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -332,7 +332,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.27.2011';
+  const MAESTRO_VERSAO = '2026.08.27.2043';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -5423,7 +5423,22 @@ function makeRecrutamentoModule(opts) {
         const a = m.attributes || {};
         const tid = Number(a.town_id);
         const acc = out[tid] = out[tid] || {};
-        acc[a.unit_type] = (acc[a.unit_type] || 0) + (a.units_left != null ? a.units_left : a.count || 0);
+
+        /* CONTAR A ORDEM INTEIRA, não só o que falta.
+         *
+         * O `units_left` desce à medida que as unidades ficam prontas, mas
+         * elas só aparecem no modelo `Units` quando a ORDEM ACABA. Entre uma
+         * coisa e outra ficam fora das duas contagens — e o módulo recruta
+         * para preencher um buraco que não existe.
+         *
+         * Visto em jogo: uma cidade com o template de 500 hoplitas cumprido
+         * recrutou mais 55.
+         *
+         * Contando o `count` (o total pedido), nada se perde: as já prontas
+         * continuam contadas até a ordem fechar. */
+        const total = (a.count != null) ? Number(a.count)
+          : (a.units_left != null ? Number(a.units_left) : 0);
+        acc[a.unit_type] = (acc[a.unit_type] || 0) + (total || 0);
       }
     } catch (e) {}
     return out;
