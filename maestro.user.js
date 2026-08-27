@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.27.1746
+// @version      2026.08.27.1827
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -332,7 +332,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.27.1746';
+  const MAESTRO_VERSAO = '2026.08.27.1827';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -3299,13 +3299,27 @@ function makeConstrucaoModule(opts) {
 
         const obraCurta = duracao > 0 && duracao <= GRATIS_ABAIXO_DE;
         const quaseAcabar = Number.isFinite(falta) && falta > 0 && falta <= GRATIS_ABAIXO_DE;
-        if (!obraCurta && !quaseAcabar) continue;
+
+        /* OBRA PRESA: já passou da hora e continua na fila.
+         *
+         * Visto em jogo: uma entrada com `building_time: 0` e
+         * `to_be_completed_at` 50 s no passado, a bloquear as cinco obras
+         * seguintes.
+         *
+         * A condição antiga exigia `falta > 0`, portanto estas escapavam a
+         * tudo e a fila ficava parada indefinidamente. Concluí-las desbloqueia
+         * a cidade — e sendo passado, não custa nada. */
+        const presa = Number.isFinite(falta) && falta <= 0;
+
+        if (!obraCurta && !quaseAcabar && !presa) continue;
 
         const r = await concluirJa(a.town_id, a.id);
         if (r.ok && r.custo === 0) {
-          const porque = obraCurta && !quaseAcabar
-            ? `obra de ${Math.round(duracao / 60)} min na fila — liberta um lugar`
-            : `${Math.round(falta / 60)} min mais cedo`;
+          const porque = presa
+            ? `estava PRESA na fila há ${Math.abs(Math.round(falta))}s — desbloqueia a cidade`
+            : (obraCurta && !quaseAcabar
+              ? `obra de ${Math.round(duracao / 60)} min na fila — liberta um lugar`
+              : `${Math.round(falta / 60)} min mais cedo`);
           log(`⏩ ${NOMES_PT[a.building_type] || a.building_type}: concluído de graça (${porque}).`);
           n++;
           await ctx.sleep(ctx.rand(500, 1100));
@@ -10149,7 +10163,7 @@ function makeAlertasModule(opts) {
       const r = await resp.json();
       const erro = r && r.json && r.json.error;
       if (erro && /administrador|administrator|premium/i.test(String(erro))) {
-        semAdministrador = true;
+        marcarSemAdministrador();
         try { mUw.console.log('[ALERTAS] sem Administrador: uso só os dados locais.'); } catch (e) {}
         return [];
       }
@@ -10182,10 +10196,20 @@ function makeAlertasModule(opts) {
   // Sem Administrador, o command_overview responde "Necessita do administrador
   // para aceder às visões gerais". Depois de o servidor recusar uma vez, não
   // vale a pena voltar a pedir — poupa pedidos e evita o limite de 429.
-  let semAdministrador = false;
+  /* Marca de "não tem Administrador", COM VALIDADE.
+   *
+   * Era permanente: uma resposta com essa palavra — mesmo por engano ou por
+   * uma falha passageira — deixava o módulo a devolver lista vazia para
+   * sempre. Visto em jogo: o pedido devolvia comandos e o módulo dizia
+   * "nenhum ataque a chegar", porque nem chegava a perguntar.
+   *
+   * Expira ao fim de 30 min e volta a tentar. */
+  let semAdmAte = 0;
+  const marcarSemAdministrador = () => { semAdmAte = Date.now() + 30 * 60 * 1000; };
+  const semAdministrador = () => Date.now() < semAdmAte;
 
   async function ataquesDoServidor(townId) {
-    if (semAdministrador) return [];
+    if (semAdministrador()) return [];
     const agoraMs = Date.now();
     const janelaCache = (cfg().segundosEntreConsultas || 55) * 1000;
     if (agoraMs - cacheServidor.t < janelaCache && cacheServidor.dados.length) return cacheServidor.dados;
@@ -10205,7 +10229,7 @@ function makeAlertasModule(opts) {
       const r = await resp.json();
       const erro = r && r.json && r.json.error;
       if (erro && /administrador|administrator|premium/i.test(String(erro))) {
-        semAdministrador = true;
+        marcarSemAdministrador();
         try { mUw.console.log('[ALERTAS] sem Administrador: uso só os dados locais.'); } catch (e) {}
         return [];
       }
@@ -12064,7 +12088,17 @@ function makeDeusesModule(opts) {
   }
 
   // Já há um ataque desta cidade a caminho? Evita mandar a dobrar.
-  let semAdministrador = false;
+  /* Marca de "não tem Administrador", COM VALIDADE.
+   *
+   * Era permanente: uma resposta com essa palavra — mesmo por engano ou por
+   * uma falha passageira — deixava o módulo a devolver lista vazia para
+   * sempre. Visto em jogo: o pedido devolvia comandos e o módulo dizia
+   * "nenhum ataque a chegar", porque nem chegava a perguntar.
+   *
+   * Expira ao fim de 30 min e volta a tentar. */
+  let semAdmAte = 0;
+  const marcarSemAdministrador = () => { semAdmAte = Date.now() + 30 * 60 * 1000; };
+  const semAdministrador = () => Date.now() < semAdmAte;
 
   // NOTA: o command_overview exige ADMINISTRADOR. Sem ele responde
   // "Necessita do administrador para aceder às visões gerais". Detecta-se uma
@@ -12088,7 +12122,7 @@ function makeDeusesModule(opts) {
     } catch (e) {}
 
     // Sem Administrador não dá para saber mais; assume-se que não há.
-    if (semAdministrador) return false;
+    if (semAdministrador()) return false;
     try {
       const url = mUw.location.origin + '/game/town_overviews?town_id=' + Number(townId)
         + '&action=command_overview&h=' + mUw.Game.csrfToken
@@ -13158,10 +13192,20 @@ function makeEsquivaModule(opts) {
 
 
   // Sem Administrador o command_overview é recusado — não insistir.
-  let semAdministrador = false;
+  /* Marca de "não tem Administrador", COM VALIDADE.
+   *
+   * Era permanente: uma resposta com essa palavra — mesmo por engano ou por
+   * uma falha passageira — deixava o módulo a devolver lista vazia para
+   * sempre. Visto em jogo: o pedido devolvia comandos e o módulo dizia
+   * "nenhum ataque a chegar", porque nem chegava a perguntar.
+   *
+   * Expira ao fim de 30 min e volta a tentar. */
+  let semAdmAte = 0;
+  const marcarSemAdministrador = () => { semAdmAte = Date.now() + 30 * 60 * 1000; };
+  const semAdministrador = () => Date.now() < semAdmAte;
 
   async function comandosDoServidor(townId) {
-    if (semAdministrador) return [];
+    if (semAdministrador()) return [];
     try {
       const url = mUw.location.origin + '/game/town_overviews?town_id=' + Number(townId)
         + '&action=command_overview&h=' + mUw.Game.csrfToken
@@ -13179,7 +13223,7 @@ function makeEsquivaModule(opts) {
       const r = await resp.json();
       const erroAdm = r && r.json && r.json.error;
       if (erroAdm && /administrador|administrator|premium/i.test(String(erroAdm))) {
-        semAdministrador = true;
+        marcarSemAdministrador();
         return [];
       }
       const cmds = ((r && r.json && r.json.data) || {}).commands || [];
@@ -13222,7 +13266,7 @@ function makeEsquivaModule(opts) {
       const r = await resp.json();
       const erroAdm = r && r.json && r.json.error;
       if (erroAdm && /administrador|administrator|premium/i.test(String(erroAdm))) {
-        semAdministrador = true;
+        marcarSemAdministrador();
         return [];
       }
       const cmds = ((r && r.json && r.json.data) || {}).commands || [];
@@ -16554,13 +16598,23 @@ function makeEncaixeModule(opts) {
   // MovementsUnits fica VAZIO até a página ser atualizada, mesmo com comandos
   // acabados de enviar — foi isso que impedia a verificação e o cancelamento.
   // Endpoint confirmado: /game/town_overviews?action=command_overview
-  let semAdministrador = false;
+  /* Marca de "não tem Administrador", COM VALIDADE.
+   *
+   * Era permanente: uma resposta com essa palavra — mesmo por engano ou por
+   * uma falha passageira — deixava o módulo a devolver lista vazia para
+   * sempre. Visto em jogo: o pedido devolvia comandos e o módulo dizia
+   * "nenhum ataque a chegar", porque nem chegava a perguntar.
+   *
+   * Expira ao fim de 30 min e volta a tentar. */
+  let semAdmAte = 0;
+  const marcarSemAdministrador = () => { semAdmAte = Date.now() + 30 * 60 * 1000; };
+  const semAdministrador = () => Date.now() < semAdmAte;
 
   // NOTA: o command_overview exige ADMINISTRADOR. Sem ele responde
   // "Necessita do administrador para aceder às visões gerais". Detecta-se uma
   // vez e não se insiste — as multis não o têm.
   async function comandosDoServidor(townId) {
-    if (semAdministrador) return [];
+    if (semAdministrador()) return [];
     try {
       const url = mUw.location.origin + '/game/town_overviews?town_id=' + Number(townId)
         + '&action=command_overview&h=' + mUw.Game.csrfToken
@@ -16573,7 +16627,7 @@ function makeEncaixeModule(opts) {
         // O encaixe é usado só na main, que tem sempre Administrador — isto é
         // apenas uma salvaguarda para não insistir se algum dia for usado
         // noutra conta (sem ele, o módulo não teria como verificar a chegada).
-        semAdministrador = true;
+        marcarSemAdministrador();
         return [];
       }
       const cmds = ((r && r.json && r.json.data) || {}).commands || [];
