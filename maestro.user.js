@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.27.1531
+// @version      2026.08.27.1613
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -332,7 +332,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.27.1531';
+  const MAESTRO_VERSAO = '2026.08.27.1613';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ CHAVES SEPARADAS POR PERFIL =============================
@@ -500,9 +500,79 @@
     'grepoDeuses_ultimoAlvo_v1',
     'grepoConstru_estado_v1',
     'grepoRecruta_adiamentos_v1',
+
+    /* O ENCAIXE aponta a uma cidade concreta — os identificadores são
+     * diferentes em cada conta. */
+    'grepoEncaixe_cfg_v1',
+    'grepoEncaixe_planos_v1',
+
+    /* Nomes de cidades e blocos do mapa já procurados: cada conta descobre os
+     * seus, e partilhá-los não traz nada. */
+    'grepoApoio_nomes_v1',
+    'grepoApoio_blocosVistos_v1',
+
+    /* Quando cada conta viu cada comando: é o que permite classificar os
+     * ataques. Partilhar isto estragaria a classificação. */
+    'grepoEsquiva_vistos_v1',
+    'grepoEsquiva_arranque_v1',
+    'grepoEsquiva_planos_v1',
+    'grepoEsquiva_cidadesMain_v1',
+    'grepoAlertas_vistosEm_v1',
+    'grepoAlertas_arranque_v1',
+
+    /* As CREDENCIAIS do Gist são de cada conta e nunca viajam no perfil. */
+    'grepoMaestro_gist_v1',
   ];
 
   const ficheiroPerfil = (nome) => `perfil-${nome}-${WORLD}.json`;
+
+  /* ============ PERFIL PARTILHADO, APLICADO AO ARRANCAR ==================
+   * Uma conta é a PRINCIPAL desse perfil e mundo: é a única que publica.
+   * As outras leem e aplicam quando arrancam.
+   *
+   * Assim muda-se numa e, no reinício seguinte, as 20 ficam iguais — sem ter
+   * de carregar em Buscar uma a uma.
+   *
+   * Só uma publica de propósito: com todas a publicar, uma configuração errada
+   * espalhava-se, e 20 contas a escrever no Gist esgotam o limite do GitHub.
+   * ==================================================================== */
+  const PRINCIPAL_KEY = 'grepoMaestro_principal_v1';
+
+  function souPrincipal() {
+    try { return localStorage.getItem(PRINCIPAL_KEY) === '1'; } catch (e) { return false; }
+  }
+  function marcarPrincipal(sim) {
+    try {
+      if (sim) localStorage.setItem(PRINCIPAL_KEY, '1');
+      else localStorage.removeItem(PRINCIPAL_KEY);
+    } catch (e) {}
+  }
+
+  /* Quando foi aplicado o perfil pela última vez, para não repetir a cada
+   * passagem. */
+  const APLICADO_KEY = 'grepoMaestro_perfilAplicado_v1';
+
+  async function aplicarPerfilAoArrancar() {
+    if (souPrincipal()) return;                 // a principal não busca
+    if (!GIST_ID_GLOBAL) return;
+
+    const esc = lerEscolhas();
+    const perfil = (esc && esc.perfil) || '';
+    if (!perfil) return;
+
+    try {
+      const r = await buscarPerfil(perfil);
+      if (!r.ok) return;
+
+      /* Só avisa se trouxe algo de novo. */
+      const antes = Number(localStorage.getItem(APLICADO_KEY)) || 0;
+      if (r.quando && r.quando > antes) {
+        localStorage.setItem(APLICADO_KEY, String(r.quando));
+        log('core', `Perfil "${perfil}" actualizado a partir da conta principal `
+          + `(${r.n} definição(ões)).`);
+      }
+    } catch (e) {}
+  }
 
   async function publicarPerfil(nome) {
     if (!GIST_ID_GLOBAL || !GIST_TOKEN_GLOBAL) return { ok: false, msg: 'sem Gist configurado' };
@@ -772,6 +842,22 @@
         const p2 = perfilAtual();
         if (p2) guardarCfgDoPerfil(p2);
       }, 60000);
+
+      /* A conta PRINCIPAL publica no Gist de meia em meia hora, para as outras
+       * apanharem as mudanças no arranque seguinte.
+       *
+       * Só ela publica: com 20 contas a escrever, o GitHub corta as escritas —
+       * já nos aconteceu. */
+      setInterval(async () => {
+        if (!souPrincipal() || !GIST_ID_GLOBAL || !GIST_TOKEN_GLOBAL) return;
+        const esc = lerEscolhas();
+        const perfil = (esc && esc.perfil) || '';
+        if (!perfil) return;
+        try {
+          const r = await publicarPerfil(perfil);
+          if (r && r.ok) log('core', `Perfil "${perfil}" publicado (${r.n} definição(ões)).`);
+        } catch (e) {}
+      }, 30 * 60 * 1000);
       // e também ao fechar a página
       uw.addEventListener('beforeunload', () => {
         const p2 = perfilAtual();
@@ -1427,6 +1513,19 @@
         </div>
 
         <div style="background:#0d141c;padding:6px 8px;border-radius:4px;margin-top:7px">
+          <label style="font-size:11px">
+            <input type="checkbox" id="maestro-principal"${souPrincipal() ? ' checked' : ''}>
+            <b>Esta é a conta PRINCIPAL deste perfil</b>
+          </label>
+          <div style="opacity:.6;font-size:10px;margin:2px 0 0 18px">
+            A principal <b>publica</b> a configuração; as outras <b>aplicam-na</b> ao
+            arrancar. Configura só aqui e reinicia as restantes.<br>
+            Marca isto em <b>UMA</b> conta por perfil e mundo — se marcares em várias,
+            a última a gravar manda.
+          </div>
+        </div>
+
+        <div style="background:#0d141c;padding:6px 8px;border-radius:4px;margin-top:7px">
           <b style="font-size:11px">Gist (partilha entre contas)</b>
           <div style="opacity:.6;font-size:10px;margin:2px 0 4px">
             Guardado NESTA conta — não se perde quando o script se actualiza.
@@ -1795,6 +1894,15 @@
        * em memória. */
       setTimeout(() => { try { location.reload(); } catch (e) {} }, 1200);
     };
+    /* ---- conta principal ---- */
+    const chkP = document.getElementById('maestro-principal');
+    if (chkP) chkP.onchange = () => {
+      marcarPrincipal(chkP.checked);
+      log('core', chkP.checked
+        ? 'Esta conta passa a PUBLICAR a configuração do perfil.'
+        : 'Esta conta passa a APLICAR a configuração publicada por outra.');
+    };
+
     /* ---- credenciais do Gist ---- */
     const btG = document.getElementById('maestro-gist-guardar');
     if (btG) btG.onclick = () => {
@@ -21564,6 +21672,10 @@ function makeRelatoriosModule(opts) {
   (async function init() {
     const ok = await waitReady();
     if (!ok) { console.log('[MAESTRO] jogo não carregou a tempo.'); return; }
+    /* Aplicar o perfil publicado pela conta principal ANTES de desenhar o
+     * painel: assim o que se vê já é a configuração actual. */
+    await aplicarPerfilAoArrancar();
+
     buildPanel();
     atualizarPainelEstado();
     guardarPerfilPeriodicamente();
