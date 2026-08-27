@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.27.1940
+// @version      2026.08.27.1955
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -332,7 +332,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.27.1940';
+  const MAESTRO_VERSAO = '2026.08.27.1955';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -1076,13 +1076,14 @@
   const NOTIFICACOES_A_MANTER = [
     'bot_check', 'botcheck', 'captcha',   // verificação de bot: paras se não a vires
 
-    /* AVISOS DE ATAQUE.
+    /* AVISOS DE ATAQUE E AFINS.
      *
-     * As espadas vermelhas na barra e o botão da milícia SÃO notificações. Ao
-     * apagá-las, o maestro fazia desaparecer o aviso de que estavas a ser
-     * atacado — o utilizador notou que isso só acontecia com o bot a correr.
+     * As espadas vermelhas na barra NÃO são notificações — confirmado: um
+     * `delete_all` apaga a lista toda e elas continuam lá.
      *
-     * Nunca se apagam: são a informação mais importante do jogo. */
+     * Ainda assim, se houver notificações destes tipos, não se apagam do
+     * ecrã: um aviso a mais nunca fez mal, um a menos pode custar uma cidade.
+     * A limpeza serve para o ruído (trocas, construções), não para isto. */
     'attack', 'ataque', 'incoming', 'support', 'militia', 'milicia',
     'siege', 'revolt', 'conquer', 'colon',
   ];
@@ -1246,17 +1247,14 @@
   const APAGAR_NOTIF_KEY = 'grepoMaestro_apagarNotif_v1';
   const ULTIMO_APAGAR_KEY = 'grepoMaestro_ultimoApagar_v1';
 
-  /* DESLIGADO por omissão — e com razão.
+  /* LIGADO por omissão — é seguro.
    *
-   * O `delete_all` apaga TUDO num pedido, sem distinguir: leva os avisos de
-   * ataque, as espadas vermelhas e o botão da milícia. Foi assim que os
-   * ataques deixaram de aparecer com o bot a correr.
+   * Já não é o `delete_all`, que apagava tudo incluindo os avisos de ataque.
+   * Agora apagam-se só os tipos em `TIPOS_A_LIMPAR`, poucos de cada vez.
    *
-   * A limpeza normal (só do ecrã) já poupa esses avisos — ver
-   * `NOTIFICACOES_A_MANTER`. Este apagar em massa só se liga se quiseres
-   * mesmo limpar tudo, sabendo o que perdes. */
+   * Desmarca-se no painel se preferires. */
   function apagarNotificacoesLigado() {
-    try { return localStorage.getItem(APAGAR_NOTIF_KEY) === '1'; } catch (e) { return false; }
+    try { return localStorage.getItem(APAGAR_NOTIF_KEY) !== '0'; } catch (e) { return true; }
   }
 
   /* Há uma verificação de bot por responder?
@@ -1278,10 +1276,69 @@
     } catch (e) { return false; }
   }
 
+  /* LIMPAR NOTIFICAÇÕES NO SERVIDOR, AOS POUCOS.
+   *
+   * O jogo só sabe apagar UMA de cada vez:
+   *   `notify?action=delete` com `{id}`
+   * (o `delete_by_type` não existe — testado, dá erro interno).
+   *
+   * Com 426 acumuladas, apagá-las todas de uma vez dá 429 e corrompe a pilha.
+   * Por isso vão POUCAS DE CADA VEZ, com pausas: em algumas passagens ficam
+   * limpas e nunca se chega perto do limite.
+   *
+   * Só se apagam estes tipos. Avisos de ataque, apoio e verificação de bot
+   * NUNCA são tocados — confirmado numa conta com 449 notificações, nenhuma
+   * das quais era aviso de ataque:
+   *   resourcetransport 426 · newreport 20 · newaward 3 */
+  const TIPOS_A_LIMPAR = ['resourcetransport', 'newreport', 'newaward'];
+  const APAGAR_POR_VEZ = 20;
+
+  async function apagarUma(id) {
+    try {
+      const t = uw.Game.townId;
+      const url = uw.location.origin + '/game/notify?town_id=' + Number(t)
+        + '&action=delete&h=' + uw.Game.csrfToken;
+      const r = await uw.fetch(url, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
+          'x-requested-with': 'XMLHttpRequest',
+        },
+        credentials: 'include',
+        body: 'json=' + encodeURIComponent(JSON.stringify({
+          id: Number(id), town_id: Number(t), nl_init: true,
+        })),
+      });
+      if (r.status === 429) return '429';
+      return r.ok;
+    } catch (e) { return false; }
+  }
+
+  /* Recolher os IDs das notificações que se podem apagar. */
+  function idsParaApagar() {
+    const out = [];
+    try {
+      const st = uw.GrepoNotificationStack;
+      if (!st || typeof st.loop !== 'function') return out;
+      st.loop((el, notif) => {
+        try {
+          const tipo = String((typeof notif.getType === 'function' ? notif.getType() : '') || '').toLowerCase();
+          if (TIPOS_A_LIMPAR.indexOf(tipo) < 0) return;
+          const opt = (typeof notif.getOpt === 'function') ? notif.getOpt() : null;
+          const id = opt && opt.id;
+          if (id) out.push(Number(id));
+        } catch (e) {}
+      });
+    } catch (e) {}
+    return out;
+  }
+
   async function apagarTodasNoServidorSeHoras() {
     try {
+      /* De 5 em 5 minutos: com 20 por vez, 449 notificações ficam limpas em
+       * cerca de 2 horas — sem nunca chegar perto do limite do servidor. */
       const ultimo = Number(localStorage.getItem(ULTIMO_APAGAR_KEY)) || 0;
-      if (Date.now() - ultimo < 60 * 60 * 1000) return;
+      if (Date.now() - ultimo < 5 * 60 * 1000) return;
 
       /* NUNCA apagar com uma verificação de bot pendente. */
       if (haVerificacaoDeBot()) {
@@ -1291,8 +1348,21 @@
 
       localStorage.setItem(ULTIMO_APAGAR_KEY, String(Date.now()));
 
+      /* Nada para apagar: não gastar o pedido. */
+      const ids = idsParaApagar();
+      if (!ids.length) return;
+
+      /* `delete_all` — UM pedido apaga tudo.
+       *
+       * Confirmado no jogo: as espadas vermelhas do aviso de ataque
+       * CONTINUAM depois deste pedido. Não são notificações — são outra coisa
+       * na interface. Por isso o `delete_all` é seguro.
+       *
+       * (A tentativa anterior de apagar uma a uma dava 429 com centenas
+       * acumuladas; esta faz tudo de uma vez.) */
       const r = await apagarTodasNoServidor();
-      if (r.ok) log('core', 'Notificações: apagadas todas no servidor.');
+      if (r.ok) log('core', `Notificações: apaguei ${ids.length} no servidor.`);
+      else log('core', `Notificações: não consegui apagar (${r.msg}).`);
     } catch (e) {}
   }
 
@@ -1650,13 +1720,13 @@
         </div>
         <label style="display:block;margin-top:3px;font-size:11px">
           <input type="checkbox" id="maestro-apagar-auto"${apagarNotificacoesLigado() ? ' checked' : ''}>
-          apagar automaticamente, de hora a hora
+          apagar automaticamente as notificações de ruído
         </label>
         <div style="opacity:.6;font-size:10px;margin-left:18px">
-          <b>Apaga TUDO</b>, incluindo os avisos de ataque e o botão da milícia —
-          deixas de ver que estás a ser atacado. Só liga isto se souberes o que
-          perdes.<br>
-          Não corre se houver uma verificação de bot por responder.
+          Limpa a lista de notificações num pedido, de 5 em 5 minutos.<br>
+          O aviso de <b>ataque</b> (as espadas vermelhas) <b>não</b> é uma
+          notificação — mantém-se. Não corre se houver uma verificação de bot
+          por responder.
         </div>
 
         <div style="background:#0d141c;padding:6px 8px;border-radius:4px;margin-top:7px">
@@ -2045,8 +2115,8 @@
     const chkA = document.getElementById('maestro-apagar-auto');
     if (chkA) chkA.onchange = () => {
       try {
-        if (chkA.checked) localStorage.setItem(APAGAR_NOTIF_KEY, '1');
-        else localStorage.removeItem(APAGAR_NOTIF_KEY);
+        if (chkA.checked) localStorage.removeItem(APAGAR_NOTIF_KEY);
+        else localStorage.setItem(APAGAR_NOTIF_KEY, '0');
       } catch (e) {}
       log('core', chkA.checked
         ? 'Notificações: passo a apagá-las no servidor de hora a hora.'
