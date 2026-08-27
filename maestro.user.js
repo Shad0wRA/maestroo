@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.27.1916
+// @version      2026.08.27.1940
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -332,7 +332,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.27.1916';
+  const MAESTRO_VERSAO = '2026.08.27.1940';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -13397,8 +13397,68 @@ function makeEsquivaModule(opts) {
       });
     } catch (e) { return []; }
   }
+  /* FORÇAR O JOGO A ACTUALIZAR o contador de tropas.
+   *
+   * O jogo só actualiza o número de unidades quando uma ordem ACABA, quando
+   * chega um ataque, ou quando se ABRE o quartel / o porto. Numa ordem a meio,
+   * as unidades já prontas não aparecem — e a esquiva deixava-as em casa a
+   * apanhar o ataque.
+   *
+   * Pedir o mesmo que o jogo pede ao abrir esses edifícios faz o contador
+   * ficar certo, e a seguir lê-se a verdade. */
+  async function actualizarContadores(townId) {
+    /* LIMITE DE TEMPO: a esquiva é ao segundo. Se a rede estiver lenta, mais
+     * vale enviar com o contador desactualizado do que atrasar a saída. */
+    const comLimite = (promessa, ms) => Promise.race([
+      promessa,
+      new Promise((res) => setTimeout(() => res(null), ms)),
+    ]);
+
+    const pedidos = ['building_barracks', 'building_docks'].map((edificio) => {
+      try {
+        const url = mUw.location.origin + '/game/' + edificio + '?town_id=' + Number(townId)
+          + '&action=index&h=' + mUw.Game.csrfToken
+          + '&json=' + encodeURIComponent(JSON.stringify({ town_id: Number(townId), nl_init: true }))
+          + '&_=' + Date.now();
+        return mUw.fetch(url, {
+          headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
+        }).then(lerResposta).then((r) => { aplicarNotificacoes(r); }).catch(() => {});
+      } catch (e) { return Promise.resolve(); }
+    });
+
+    // os dois em paralelo, no máximo 2,5 s ao todo
+    await comLimite(Promise.all(pedidos), 2500);
+  }
+
   function tropasDaCidade(townId) {
-    try { return mUw.ITowns.getTown(Number(townId)).units() || {}; } catch (e) { return {}; }
+    let out = {};
+    try { out = Object.assign({}, mUw.ITowns.getTown(Number(townId)).units() || {}); } catch (e) {}
+
+    /* JUNTAR AS QUE JÁ FORAM RECRUTADAS mas ainda não aparecem no contador.
+     *
+     * O jogo só actualiza o número de tropas quando a ordem ACABA (ou quando
+     * se abre o quartel, ou quando chega um ataque). Numa ordem de 110
+     * espadachins a meio, o contador mostra as antigas e as 39 já prontas
+     * ficam invisíveis.
+     *
+     * Resultado: a esquiva enviava só o que via, e as já recrutadas ficavam
+     * em casa a apanhar o ataque.
+     *
+     * O jogo di-lo em `parts_done` na colecção `UnitOrder`. */
+    try {
+      const col = mUw.MM.getCollections().UnitOrder;
+      for (const m of ((col && col[0] && col[0].models) || [])) {
+        const a = m.attributes || {};
+        if (Number(a.town_id) !== Number(townId)) continue;
+        const prontas = Number(a.parts_done) || 0;
+        if (prontas <= 0) continue;
+        const u = a.unit_type;
+        if (!u) continue;
+        out[u] = (Number(out[u]) || 0) + prontas;
+      }
+    } catch (e) {}
+
+    return out;
   }
   function temBeliche(townId) {
     /* As pesquisas estão em `researches().attributes`, não no objecto
@@ -13953,6 +14013,14 @@ function makeEsquivaModule(opts) {
     const alvo = cidades.find((x) => x.id === Number(plano.townId));
     const nome = alvo ? alvo.name : plano.townId;
 
+    /* ACTUALIZAR O CONTADOR DE TROPAS antes de decidir o que enviar.
+     *
+     * O jogo não mostra as unidades já recrutadas enquanto a ordem não acaba.
+     * Abrir o quartel e o porto força a actualização — é o que o utilizador
+     * faz à mão. Sem isto, a esquiva deixava em casa a tropa que o contador
+     * ainda não mostrava. */
+    await actualizarContadores(plano.townId);
+
     // garantir que conhecemos as cidades da ilha (pode não haver nenhuma minha)
     try {
       const org0 = cidades.find((x) => x.id === Number(plano.townId));
@@ -13983,7 +14051,33 @@ function makeEsquivaModule(opts) {
     const enviados = [];
     let todosMeus = [];
     for (const cmd of comandos) {
-      const r = await enviarApoio(plano.townId, esc.destino.id, cmd.carga);
+      let r = await enviarApoio(plano.townId, esc.destino.id, cmd.carga);
+
+      /* SEGUNDA TENTATIVA sem as unidades da fila.
+       *
+       * A carga inclui as tropas já recrutadas que o contador ainda não
+       * mostra (`parts_done`). Se o servidor as recusar por ainda não estarem
+       * formalmente na cidade, o envio falha POR COMPLETO — e é melhor
+       * esquivar com menos do que não esquivar.
+       *
+       * Repete-se com o que o contador mostra, que o servidor aceita de
+       * certeza. */
+      if (!r.ok) {
+        try {
+          const soVisiveis = {};
+          const visiveis = mUw.ITowns.getTown(Number(plano.townId)).units() || {};
+          for (const u of Object.keys(cmd.carga)) {
+            const cabe = Math.min(Number(cmd.carga[u]) || 0, Number(visiveis[u]) || 0);
+            if (cabe > 0) soVisiveis[u] = cabe;
+          }
+          if (Object.keys(soVisiveis).length) {
+            log(`↩️ Esquiva ${nome}: o servidor recusou (${r.msg}) — tento com `
+              + 'a tropa que já aparece no contador.');
+            r = await enviarApoio(plano.townId, esc.destino.id, soVisiveis);
+          }
+        } catch (e) {}
+      }
+
       if (r.ok) {
         enviados.push(cmd.via);
         /* Guardar o command_id que a resposta traz — é a via fiável.
