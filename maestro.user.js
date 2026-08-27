@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.27.2043
+// @version      2026.08.27.2100
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -332,7 +332,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.27.2043';
+  const MAESTRO_VERSAO = '2026.08.27.2100';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -553,6 +553,81 @@
    * do perfil partilhado. */
   const CAMPOS_LOCAIS_DOS_COLONOS = ['equipa'];
 
+  /* ============ EQUIPAS FIXAS DOS COLONIZADORES =========================
+   * Quem pertence a que equipa, por nome de conta.
+   *
+   * Antes a equipa vivia só no armazenamento de cada conta, e um erro no
+   * perfil partilhado espalhou a mesma equipa por todas — a rotação parou.
+   *
+   * Estando aqui, a equipa é sempre a certa: não depende de configuração
+   * que se possa perder, e muda-se num sítio só.
+   *
+   * Uma conta que não esteja na lista usa o que estiver configurado.
+   * ==================================================================== */
+  const EQUIPAS_FIXAS = {
+    // ---- equipa A ----
+    Shid: 'A',
+    LiliCanessas: 'A',
+    Supinada: 'A',
+    FuriaDeAres: 'A',
+    Lagostax: 'A',
+    MacaquinhoChines: 'A',
+    CorvoDeHades: 'A',
+    Panados: 'A',
+    BananaSplit: 'A',
+    ImperadorObscuro: 'A',
+
+    // ---- equipa B ----
+    Erebus21: 'B',
+    AresSombrio: 'B',
+    LoboDeEsparta: 'B',
+    CeifeiroDoEgeu: 'B',
+    Thanatos123: 'B',
+    TridenteNegro: 'B',
+    SenhorDeHades: 'B',
+    Noctivagus: 'B',
+    MarDeCinzas: 'B',
+    OraculoDaGuerra: 'B',
+  };
+
+  /* A equipa desta conta: a lista manda sobre o que estiver configurado.
+   *
+   * Se o nome não estiver na lista, devolve null e o módulo usa o que estiver
+   * no painel — uma conta nova continua a funcionar.
+   *
+   * Compara-se sem maiúsculas nem acentos, para um nome quase certo não
+   * escapar em silêncio. */
+  function equipaDestaConta() {
+    try {
+      const limpar = (x) => String(x || '').trim().toLowerCase()
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      const nome = limpar(uw.Game.player_name);
+      if (!nome) return null;
+
+      if (EQUIPAS_FIXAS[uw.Game.player_name]) return EQUIPAS_FIXAS[uw.Game.player_name];
+
+      for (const k of Object.keys(EQUIPAS_FIXAS)) {
+        if (limpar(k) === nome) return EQUIPAS_FIXAS[k];
+      }
+      return null;
+    } catch (e) { return null; }
+  }
+
+  /* Avisar UMA vez se a conta não estiver na lista: assim um nome mal escrito
+   * não passa despercebido. */
+  let avisouEquipa = false;
+  function avisarSeForaDaLista() {
+    if (avisouEquipa) return;
+    avisouEquipa = true;
+    try {
+      if (equipaDestaConta()) return;
+      const nome = String(uw.Game.player_name || '?');
+      log('core', `⚠️ A conta "${nome}" não está na lista de equipas — `
+        + 'a rotação de colonizadores usa o que estiver no painel.');
+    } catch (e) {}
+  }
+  try { uw.__maestroEquipa = equipaDestaConta; } catch (e) {}
+
   const CHAVES_LOCAIS_DO_PERFIL = [
     'grepoFundacao_estado_v1',      // o que ESTA conta enviou
     /* A configuração dos colonizadores JÁ NÃO fica toda local: as bases e o
@@ -646,7 +721,16 @@
       for (let i = 0; i < localStorage.length; i++) {
         const k = localStorage.key(i);
         if (!k || !/^grepo/i.test(k)) continue;
-        if (locais.has(k)) continue;
+
+        /* AS CHAVES TÊM O SUFIXO DO PERFIL (`..._v1__multi`), mas a lista de
+         * "locais" tem os nomes SEM sufixo. Comparar tal e qual falhava
+         * sempre: NENHUMA chave local era excluída, e publicavam-se coisas
+         * que são de cada conta.
+         *
+         * Foi assim que a equipa A/B se espalhou — todas as contas ficaram
+         * com a da conta principal. */
+        const semSufixo = k.replace(/__[a-z]+$/i, '');
+        if (locais.has(semSufixo) || locais.has(k)) continue;
 
         /* As chaves do núcleo (`grepoMaestro_*`) ficavam TODAS de fora, e com
          * elas a lista de módulos ligados — quem fizesse Buscar tinha de os
@@ -656,7 +740,8 @@
           if (!replicaveis.test(k)) continue;
         }
 
-        chaves[k] = localStorage.getItem(k);
+        /* Guardar SEM sufixo: quem receber acrescenta o do seu perfil. */
+        chaves[semSufixo] = localStorage.getItem(k);
       }
     } catch (e) {}
 
@@ -712,25 +797,38 @@
       const locais = new Set(CHAVES_LOCAIS_DO_PERFIL);
       let n = 0;
       for (const k of Object.keys(dados.chaves || {})) {
-        if (locais.has(k)) continue;       // nunca sobrepor o que é desta conta
+        /* A lista de locais está sem sufixo, tal como as chaves publicadas. */
+        const semSufixo = String(k).replace(/__[a-z]+$/i, '');
+        if (locais.has(semSufixo) || locais.has(k)) continue;
 
         /* A configuração dos colonizadores vem do perfil, MAS a equipa é de
          * cada conta — sem isto, buscar o perfil punha todas na mesma equipa
-         * e a rotação deixava de fazer sentido. */
-        if (k === 'grepoColonos_cfg_v1') {
+         * e a rotação deixava de fazer sentido.
+         *
+         * ATENÇÃO À CHAVE: no armazenamento ela tem o sufixo do perfil
+         * (`grepoColonos_cfg_v1__multi`). Ler sem o sufixo devolvia vazio, não
+         * se encontrava equipa nenhuma para preservar, e escrevia-se a do
+         * perfil por cima — todas as contas ficaram na mesma equipa. */
+        if (semSufixo === 'grepoColonos_cfg_v1') {
           try {
-            const meu = JSON.parse(localStorage.getItem(k) || '{}');
+            const chaveReal = chavePorPerfil(semSufixo);
+            const meu = JSON.parse(localStorage.getItem(chaveReal) || '{}');
             const veio = JSON.parse(dados.chaves[k] || '{}');
             for (const campo of CAMPOS_LOCAIS_DOS_COLONOS) {
               if (meu[campo] != null) veio[campo] = meu[campo];
             }
-            localStorage.setItem(k, JSON.stringify(veio));
+            localStorage.setItem(chaveReal, JSON.stringify(veio));
             n++;
             continue;
           } catch (e) {}
         }
 
-        try { localStorage.setItem(k, dados.chaves[k]); n++; } catch (e) {}
+        /* Escrever COM o sufixo deste perfil.
+         *
+         * Aceita os dois formatos no Gist: as chaves publicadas por versões
+         * antigas trazem o sufixo de quem publicou, e sem tirá-lo iam parar ao
+         * perfil errado. Por isso usa-se sempre o nome limpo. */
+        try { localStorage.setItem(chavePorPerfil(semSufixo), dados.chaves[k]); n++; } catch (e) {}
       }
 
       /* Aplicar os MÓDULOS LIGADOS que vieram no perfil.
@@ -19098,6 +19196,18 @@ function makeColonosModule(opts) {
   function cfg() {
     const c = Object.assign({}, DEFAULTS);
     try { Object.assign(c, JSON.parse(armazem.getItem(CFG_KEY) || '{}')); } catch (e) {}
+
+    /* A EQUIPA vem da lista fixa, não da configuração.
+     *
+     * A equipa vivia só no armazenamento de cada conta, e um erro no perfil
+     * partilhado espalhou a mesma por todas — a rotação parou. Com a lista no
+     * código, é sempre a certa, aconteça o que acontecer à configuração. */
+    try {
+      const fixa = (typeof mUw !== 'undefined' && mUw && mUw.__maestroEquipa)
+        ? mUw.__maestroEquipa() : null;
+      if (fixa) c.equipa = fixa;
+    } catch (e) {}
+
     return c;
   }
   function guardar(c) { try { armazem.setItem(CFG_KEY, JSON.stringify(c)); } catch (e) {} }
@@ -19746,15 +19856,26 @@ function makeColonosModule(opts) {
               + `<div style="opacity:.6;font-size:10px;margin:2px 0 0 20px">
                   A tua equipa junta os colonizadores na sua base e ataca a outra.<br>
                   <b>As bases e o modo são partilhados</b>: mudas aqui e as outras contas
-                  aplicam-nos na passagem seguinte. Só a <b>equipa</b> é de cada conta.
+                  aplicam-nos na passagem seguinte. A <b>equipa</b> vem da lista fixa,
+                  pelo nome da conta.
                 </div>`;
           })()}
         </div>
 
-        Equipa:
-        <label style="margin-left:4px"><input type="radio" name="col-eq" value="A"${c.equipa === 'A' ? ' checked' : ''}> A</label>
-        <label style="margin-left:8px"><input type="radio" name="col-eq" value="B"${c.equipa === 'B' ? ' checked' : ''}> B</label>
-        <span style="opacity:.6;font-size:10px">— cada equipa ataca o depósito da outra</span><br>
+        ${(() => {
+          /* Se esta conta está na lista fixa, a equipa não se escolhe. */
+          let fixa = null;
+          try { fixa = mUw.__maestroEquipa ? mUw.__maestroEquipa() : null; } catch (e) {}
+          if (fixa) {
+            return `Equipa: <b>${fixa}</b>
+              <span style="opacity:.6;font-size:10px">— definida pelo nome da conta,
+              igual em todos os mundos. Cada equipa ataca o depósito da outra.</span><br>`;
+          }
+          return `Equipa:
+            <label style="margin-left:4px"><input type="radio" name="col-eq" value="A"${c.equipa === 'A' ? ' checked' : ''}> A</label>
+            <label style="margin-left:8px"><input type="radio" name="col-eq" value="B"${c.equipa === 'B' ? ' checked' : ''}> B</label>
+            <span style="opacity:.6;font-size:10px">— cada equipa ataca o depósito da outra</span><br>`;
+        })()}
 
         <div style="margin:4px 0">
           <b>Cidades-base</b>
@@ -21952,6 +22073,18 @@ function makeRelatoriosModule(opts) {
   function cfg() {
     const c = Object.assign({}, DEFAULTS);
     try { Object.assign(c, JSON.parse(armazem.getItem(CFG_KEY) || '{}')); } catch (e) {}
+
+    /* A EQUIPA vem da lista fixa, não da configuração.
+     *
+     * A equipa vivia só no armazenamento de cada conta, e um erro no perfil
+     * partilhado espalhou a mesma por todas — a rotação parou. Com a lista no
+     * código, é sempre a certa, aconteça o que acontecer à configuração. */
+    try {
+      const fixa = (typeof mUw !== 'undefined' && mUw && mUw.__maestroEquipa)
+        ? mUw.__maestroEquipa() : null;
+      if (fixa) c.equipa = fixa;
+    } catch (e) {}
+
     return c;
   }
   function guardarCfg(c) { try { armazem.setItem(CFG_KEY, JSON.stringify(c)); } catch (e) {} }
@@ -22277,6 +22410,7 @@ function makeRelatoriosModule(opts) {
 
     buildPanel();
     atualizarPainelEstado();
+    avisarSeForaDaLista();
     guardarPerfilPeriodicamente();
     limparNotificacoes();          // ligar os vigias já, sem esperar
 
