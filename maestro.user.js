@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.27.1623
+// @version      2026.08.27.1635
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -332,7 +332,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.27.1623';
+  const MAESTRO_VERSAO = '2026.08.27.1635';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ CHAVES SEPARADAS POR PERFIL =============================
@@ -14082,9 +14082,11 @@ function makeEsquivaModule(opts) {
         </div>
         A minha main (um por linha):<br>
         <span style="opacity:.65;font-size:10px">
-          Põe o <b>ID do jogador</b> — é o único que funciona sempre, porque o nome
-          só vem quando os dados chegam do servidor. Encontra-lo no endereço do jogo
-          (<code>p=NÚMERO</code>) quando estás na conta da main.
+          Põe o <b>NOME DAS CIDADES</b> de onde a main ataca — é o que funciona.
+          Um <b>prefixo com ponto</b> apanha todas: <code>34.</code> reconhece a
+          34.1, a 34.2 e as seguintes.<br>
+          O ID do jogador <b>não serve</b>: nos ataques recebidos, o jogo devolve
+          o ID do DONO da cidade atacada (o teu), não o do atacante.
         </span><br>
         <textarea id="esq-farm-jog" rows="2" style="width:100%;box-sizing:border-box;font-size:11px">${(c.jogadoresFarm || []).join('\n')}</textarea>
         Sair <input type="number" id="esq-antes" value="${c.antesDoImpacto}" style="width:46px">s antes ·
