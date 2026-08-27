@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.27.1724
+// @version      2026.08.27.1725
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -332,7 +332,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.27.1724';
+  const MAESTRO_VERSAO = '2026.08.27.1725';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -6843,6 +6843,39 @@ function makeRecrutamentoModule(opts) {
         acoes.map((a) => ({ unitId: a.unitId, quantidade: a.amount })), units, cfgFeiticos());
 
       for (const a of acoes) {
+        /* TRAVÃO FINAL, imediatamente antes do pedido.
+         *
+         * Volta a contar o que a cidade TEM e o que está na fila, agora, e
+         * recusa a ordem se já tiver o alvo. As contagens usadas para decidir
+         * são feitas no início da passagem e podem estar desactualizadas — se
+         * outra coisa recrutou entretanto, ou se a leitura falhou, passava-se
+         * do alvo.
+         *
+         * Isto não substitui a decisão; é uma rede por baixo dela. */
+        try {
+          const alvoFinal = Number(alvos[a.unitId]) || 0;
+          if (alvoFinal > 0 && a.unitId !== NC_ID) {
+            const agoraTenho = contarUnidadesPorCidadeDeOrigem()[town.id] || {};
+            const agoraFila = contarFilasPorCidade()[town.id] || {};
+            const jaCom = (Number(agoraTenho[a.unitId]) || 0) + (Number(agoraFila[a.unitId]) || 0);
+
+            if (jaCom >= alvoFinal) {
+              log(`⛔ ${town.name}: NÃO recruto ${a.nome} — já tem ${jaCom} `
+                + `e o alvo é ${alvoFinal}.`);
+              continue;
+            }
+            /* Cortar a ordem ao que falta, se pedir de mais. */
+            const cabe = alvoFinal - jaCom;
+            if (a.amount > cabe) {
+              log(`✂️ ${town.name}: ${a.nome} cortado de ${a.amount} para ${cabe} `
+                + `(tem ${jaCom}, alvo ${alvoFinal}).`);
+              a.amount = cabe;
+            }
+          }
+        } catch (e) {}
+
+        if (!a.amount || a.amount <= 0) continue;
+
         const r = await recrutar(town.id, a.unitId, a.amount, a.isNaval);
         if (r.ok) {
           fezAlgo = true;
