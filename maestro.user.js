@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.27.1955
+// @version      2026.08.27.2011
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -332,7 +332,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.27.1955';
+  const MAESTRO_VERSAO = '2026.08.27.2011';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -19173,6 +19173,9 @@ function makeColonosModule(opts) {
     } catch (e) { return {}; }
   }
 
+  /* O que se publicou da última vez, para não repetir escritas iguais. */
+  const ULTIMA_PARTILHA_KEY = 'grepoColonos_ultimaPartilha_v1';
+
   async function escreverPartilha(dados) {
     // não segurar o processo (importante nos testes)
     try { if (typeof t2 !== 'undefined' && t2 && t2.unref) t2.unref(); } catch (e) {}
@@ -19260,7 +19263,33 @@ function makeColonosModule(opts) {
         quando: agoraServidor(),
       };
     }
-    await escreverPartilha(todos);
+    /* SÓ ESCREVER SE ALGO MUDOU.
+     *
+     * Com 20 contas a publicar de 10 em 10 minutos, são 120 escritas por hora
+     * só deste módulo — e o GitHub corta as escritas (limite secundário, que
+     * nem aparece no `rate_limit`).
+     *
+     * A maior parte das passagens não muda nada: as mesmas cidades, os mesmos
+     * colonizadores, a mesma cultura. Compara-se com o que se escreveu da
+     * última vez e só se grava quando há diferença.
+     *
+     * A hora (`atualizado`) fica de fora da comparação, senão mudava sempre. */
+    let precisaEscrever = true;
+    try {
+      const semHora = (o) => {
+        const cp = JSON.parse(JSON.stringify(o || {}));
+        for (const k of Object.keys(cp)) {
+          if (cp[k] && typeof cp[k] === 'object') { delete cp[k].atualizado; delete cp[k].quando; }
+        }
+        return JSON.stringify(cp);
+      };
+      const agoraAssim = semHora(todos);
+      const ultimo = armazem.getItem(ULTIMA_PARTILHA_KEY);
+      if (ultimo === agoraAssim) precisaEscrever = false;
+      else armazem.setItem(ULTIMA_PARTILHA_KEY, agoraAssim);
+    } catch (e) {}
+
+    if (precisaEscrever) await escreverPartilha(todos);
     partilhaCache = todos;      // o painel usa isto para listar as contas
     return todos;
   }
