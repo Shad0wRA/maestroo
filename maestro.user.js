@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.27.1635
+// @version      2026.08.27.1724
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -332,8 +332,72 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.27.1635';
+  const MAESTRO_VERSAO = '2026.08.27.1724';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
+
+  /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
+   * O Tampermonkey só verifica o `@updateURL` de 6 em 6 horas no mínimo, o
+   * que é muito para o ritmo a que se corrigem coisas. E mesmo depois de
+   * descarregar, só troca o código no carregamento seguinte da página.
+   *
+   * Aqui vai-se buscar o ficheiro do repositório de 10 em 10 minutos, compara-
+   * se a `@version`, e se for maior recarrega-se a página — o que faz o
+   * Tampermonkey ir buscar a versão nova.
+   *
+   * SALVAGUARDA: não recarrega se houver uma esquiva ou um encaixe agendados
+   * para os próximos minutos. Recarregar perde o temporizador, e ele só é
+   * rearmado na passagem seguinte.
+   * ==================================================================== */
+  const FONTE_ATUALIZACAO = 'https://raw.githubusercontent.com/Shad0wRA/maestroo/main/maestro.user.js';
+  const RECARREGADO_KEY = 'grepoMaestro_recarreguei_v1';
+
+  function haPlanoIminente() {
+    /* Um plano de esquiva ou de encaixe a sair dentro de 5 minutos. */
+    try {
+      const agora = Math.floor(Date.now() / 1000);
+      for (const chave of ['grepoEsquiva_planos_v1', 'grepoEncaixe_planos_v1']) {
+        for (const sufixo of ['', '__main', '__multi']) {
+          const raw = localStorage.getItem(chave + sufixo);
+          if (!raw) continue;
+          const p2 = JSON.parse(raw);
+          const lista = Array.isArray(p2) ? p2 : Object.values(p2 || {});
+          for (const x of lista) {
+            const sai = Number(x && (x.S || x.saida || x.quando)) || 0;
+            if (sai && sai > agora - 60 && sai < agora + 300) return true;
+          }
+        }
+      }
+    } catch (e) {}
+    return false;
+  }
+
+  async function verificarVersaoNova() {
+    try {
+      const r = await uw.fetch(FONTE_ATUALIZACAO + '?_=' + Date.now(), { cache: 'no-store' });
+      if (!r.ok) return;
+      const txt = await r.text();
+      const nova = (txt.match(/@version\s+(\S+)/) || [])[1];
+      if (!nova || nova === MAESTRO_VERSAO) return;
+
+      /* Só recarrega se a versão for MAIOR: assim uma reversão no repositório
+       * não põe as contas em ciclo. */
+      if (String(nova) <= String(MAESTRO_VERSAO)) return;
+
+      /* Não recarregar duas vezes pela mesma versão. */
+      let ja = null;
+      try { ja = localStorage.getItem(RECARREGADO_KEY); } catch (e) {}
+      if (ja === nova) return;
+
+      if (haPlanoIminente()) {
+        log('core', `Versão ${nova} disponível — espero, há um plano a sair já.`);
+        return;
+      }
+
+      try { localStorage.setItem(RECARREGADO_KEY, nova); } catch (e) {}
+      log('core', `Versão ${nova} disponível (tenho a ${MAESTRO_VERSAO}) — vou recarregar.`);
+      setTimeout(() => { try { uw.location.reload(); } catch (e) {} }, 3000);
+    } catch (e) {}
+  }
 
   /* ============ CHAVES SEPARADAS POR PERFIL =============================
    * Cada perfil tem as SUAS chaves no armazenamento: em vez de
@@ -1154,9 +1218,64 @@
       const st = uw.GrepoNotificationStack;
       // deleteBotCheckNotification NÃO é chamado de propósito
       if (st && typeof st.deleteOutdated === 'function') st.deleteOutdated();
-
     } catch (e) {}
     tirarDoEcra();
+
+    /* APAGAR NO SERVIDOR, de hora a hora.
+     *
+     * UM pedido apaga tudo — `notify?action=delete_all`. A tentativa anterior
+     * chamava um pedido POR NOTIFICAÇÃO e, com centenas acumuladas, deu 429 e
+     * corrompeu a pilha do jogo. Este é o pedido que o botão "X" do jogo faz.
+     *
+     * ATENÇÃO: apaga TUDO, incluindo a verificação de bot. Por isso só corre
+     * se estiver LIGADO no painel — vem desligado. */
+    if (apagarNotificacoesLigado()) apagarTodasNoServidorSeHoras();
+  }
+
+  /* Apagar todas no servidor, no máximo uma vez por hora. */
+  const APAGAR_NOTIF_KEY = 'grepoMaestro_apagarNotif_v1';
+  const ULTIMO_APAGAR_KEY = 'grepoMaestro_ultimoApagar_v1';
+
+  /* LIGADO por omissão. Só fica desligado se o utilizador o desmarcar. */
+  function apagarNotificacoesLigado() {
+    try { return localStorage.getItem(APAGAR_NOTIF_KEY) !== '0'; } catch (e) { return true; }
+  }
+
+  /* Há uma verificação de bot por responder?
+   *
+   * O `delete_all` apaga TUDO, incluindo essa. Se ela lá estiver, não se
+   * apaga nada — perder uma verificação de bot sem a ver custa a conta. */
+  function haVerificacaoDeBot() {
+    try {
+      const st = uw.GrepoNotificationStack;
+      if (!st || typeof st.loop !== 'function') return false;
+      let achei = false;
+      st.loop((el, notif) => {
+        try {
+          const t = String((typeof notif.getType === 'function' ? notif.getType() : '') || '').toLowerCase();
+          if (/bot_check|botcheck|captcha/.test(t)) achei = true;
+        } catch (e) {}
+      });
+      return achei;
+    } catch (e) { return false; }
+  }
+
+  async function apagarTodasNoServidorSeHoras() {
+    try {
+      const ultimo = Number(localStorage.getItem(ULTIMO_APAGAR_KEY)) || 0;
+      if (Date.now() - ultimo < 60 * 60 * 1000) return;
+
+      /* NUNCA apagar com uma verificação de bot pendente. */
+      if (haVerificacaoDeBot()) {
+        log('core', '⚠️ Há uma verificação de bot por responder — não apago as notificações.');
+        return;
+      }
+
+      localStorage.setItem(ULTIMO_APAGAR_KEY, String(Date.now()));
+
+      const r = await apagarTodasNoServidor();
+      if (r.ok) log('core', 'Notificações: apagadas todas no servidor.');
+    } catch (e) {}
   }
 
   function resumoPeriodico() {
@@ -1510,6 +1629,14 @@
             title="Apaga todas as notificações do jogo, num pedido só">
             Apagar todas as notificações
           </button>
+        </div>
+        <label style="display:block;margin-top:3px;font-size:11px">
+          <input type="checkbox" id="maestro-apagar-auto"${apagarNotificacoesLigado() ? ' checked' : ''}>
+          apagar automaticamente, de hora a hora
+        </label>
+        <div style="opacity:.6;font-size:10px;margin-left:18px">
+          Um pedido apaga tudo. <b>Nunca corre</b> se houver uma verificação de bot
+          por responder — essa fica sempre à tua espera.
         </div>
 
         <div style="background:#0d141c;padding:6px 8px;border-radius:4px;margin-top:7px">
@@ -1894,6 +2021,19 @@
        * em memória. */
       setTimeout(() => { try { location.reload(); } catch (e) {} }, 1200);
     };
+    /* ---- apagar notificações automaticamente ---- */
+    const chkA = document.getElementById('maestro-apagar-auto');
+    if (chkA) chkA.onchange = () => {
+      try {
+        // '0' = desligado; qualquer outra coisa (ou nada) = ligado
+        if (chkA.checked) localStorage.removeItem(APAGAR_NOTIF_KEY);
+        else localStorage.setItem(APAGAR_NOTIF_KEY, '0');
+      } catch (e) {}
+      log('core', chkA.checked
+        ? 'Notificações: passo a apagá-las no servidor de hora a hora.'
+        : 'Notificações: deixo de as apagar no servidor.');
+    };
+
     /* ---- conta principal ---- */
     const chkP = document.getElementById('maestro-principal');
     if (chkP) chkP.onchange = () => {
@@ -9539,17 +9679,29 @@ function makeAldeiasModule(opts) {
       }
     }
 
-    let n = 0, recursos = 0;
+    let n = 0, recursos = 0, noLimite = 0;
     for (const p of prontas) {
       const townId = cidadePorAldeia[p.farmTownId];
       if (!townId) continue; // aldeia sem cidade minha na ilha
       const r = await recolherAldeia(p.relationId, p.farmTownId, townId);
       if (r.captcha) { await tratarCaptcha(ctx, 'recolha'); return; }
       if (r.ok) { n++; recursos += p.rende || 0; }
-      else log(`⚠️ Aldeia ${p.farmTownId}: ${r.msg}`);
+      else {
+        /* O LIMITE DIÁRIO não é erro — é o normal ao fim do dia, e enchia o
+         * registo com dezenas de linhas iguais. Vai para a rotina. */
+        if (/m[áa]xima di[áa]ria|daily limit/i.test(String(r.msg || ''))) {
+          noLimite++;
+        } else {
+          log(`⚠️ Aldeia ${p.farmTownId}: ${r.msg}`);
+        }
+      }
       await ctx.sleep(ctx.rand(400, 900));
     }
     if (n) log(`🌾 Recolhidas ${n} aldeia(s) (~${recursos} recursos).`);
+    if (noLimite) {
+      const rot = ctx.logRotina || log;
+      rot(`Recolha: ${noLimite} aldeia(s) já no limite diário.`);
+    }
     else log('Recolha: nada recolhido.');
   }
 
@@ -21699,6 +21851,18 @@ function makeRelatoriosModule(opts) {
     atualizarPainelEstado();
     guardarPerfilPeriodicamente();
     limparNotificacoes();          // ligar os vigias já, sem esperar
+
+    /* Procurar versão nova de 10 em 10 minutos.
+     *
+     * Com um desvio por conta, para as 40 abas não recarregarem todas ao
+     * mesmo segundo — o que daria uma vaga de pedidos ao jogo. */
+    try {
+      const desvio = Math.floor(Math.random() * 5 * 60 * 1000);
+      setTimeout(() => {
+        verificarVersaoNova();
+        setInterval(verificarVersaoNova, 10 * 60 * 1000);
+      }, 30000 + desvio);
+    } catch (e) {}
     if (autoStartLigado()) {
       log('core', 'Pronto — arranque automático ligado.');
       startMaestro();
