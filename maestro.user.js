@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.27.1737
+// @version      2026.08.27.1746
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -332,7 +332,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.27.1737';
+  const MAESTRO_VERSAO = '2026.08.27.1746';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -14154,6 +14154,43 @@ function makeEsquivaModule(opts) {
 
     limparPlanosVelhos();
     const planos = lerPlanos();
+
+    /* REARMAR OS PLANOS GUARDADOS.
+     *
+     * Os temporizadores vivem em memória e perdem-se quando a página
+     * recarrega. Os planos ficam guardados, mas ninguém os voltava a armar:
+     * na passagem seguinte recalculavam-se os tempos e, se a saída já tivesse
+     * passado, desistia-se — sem nunca executar o plano que lá estava.
+     *
+     * Visto em jogo: plano para sair às 18:42:10, página recarregada antes
+     * disso, e às 18:45 a tropa continuava em casa.
+     *
+     * Aqui percorre-se o que está guardado: o que está NA HORA executa-se já,
+     * e o que ainda vem tem o temporizador rearmado. */
+    try {
+      const agoraR = agoraJogo();
+      for (const chaveP of Object.keys(planos)) {
+        if (agendados.has(chaveP)) continue;      // já tratado nesta sessão
+        const pl = planos[chaveP];
+        if (!pl || !pl.S) continue;
+
+        const faltaR = Number(pl.S) - agoraR;
+
+        if (faltaR <= 5 && faltaR > -180) {
+          /* Está na hora (ou passou há pouco): executar já. */
+          agendados.add(chaveP);
+          log(`⏱️ Retomo a esquiva da cidade ${pl.townId} — a saída era `
+            + `${horaJogo(pl.S)}${faltaR < 0 ? ` (há ${Math.abs(Math.round(faltaR))}s)` : ''}.`);
+          executarPlano(ctx, pl).catch(() => {});
+        } else if (faltaR > 5) {
+          /* Ainda vem: rearmar o temporizador. */
+          agendados.add(chaveP);
+          setTimeout(() => { executarPlano(ctx, pl).catch(() => {}); }, faltaR * 1000);
+          rotina(`Esquiva: temporizador rearmado para a cidade ${pl.townId} `
+            + `(sai daqui a ${Math.round(faltaR / 60)} min).`);
+        }
+      }
+    } catch (e) {}
 
     /* SEPARAR EM VAGAS.
      *
