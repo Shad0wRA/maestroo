@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.27.1735
+// @version      2026.08.27.1737
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -332,7 +332,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.27.1735';
+  const MAESTRO_VERSAO = '2026.08.27.1737';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -1075,6 +1075,16 @@
    * MENOS estas, que têm de ser vistas: */
   const NOTIFICACOES_A_MANTER = [
     'bot_check', 'botcheck', 'captcha',   // verificação de bot: paras se não a vires
+
+    /* AVISOS DE ATAQUE.
+     *
+     * As espadas vermelhas na barra e o botão da milícia SÃO notificações. Ao
+     * apagá-las, o maestro fazia desaparecer o aviso de que estavas a ser
+     * atacado — o utilizador notou que isso só acontecia com o bot a correr.
+     *
+     * Nunca se apagam: são a informação mais importante do jogo. */
+    'attack', 'ataque', 'incoming', 'support', 'militia', 'milicia',
+    'siege', 'revolt', 'conquer', 'colon',
   ];
 
   function deveApagar(tipo) {
@@ -1236,9 +1246,17 @@
   const APAGAR_NOTIF_KEY = 'grepoMaestro_apagarNotif_v1';
   const ULTIMO_APAGAR_KEY = 'grepoMaestro_ultimoApagar_v1';
 
-  /* LIGADO por omissão. Só fica desligado se o utilizador o desmarcar. */
+  /* DESLIGADO por omissão — e com razão.
+   *
+   * O `delete_all` apaga TUDO num pedido, sem distinguir: leva os avisos de
+   * ataque, as espadas vermelhas e o botão da milícia. Foi assim que os
+   * ataques deixaram de aparecer com o bot a correr.
+   *
+   * A limpeza normal (só do ecrã) já poupa esses avisos — ver
+   * `NOTIFICACOES_A_MANTER`. Este apagar em massa só se liga se quiseres
+   * mesmo limpar tudo, sabendo o que perdes. */
   function apagarNotificacoesLigado() {
-    try { return localStorage.getItem(APAGAR_NOTIF_KEY) !== '0'; } catch (e) { return true; }
+    try { return localStorage.getItem(APAGAR_NOTIF_KEY) === '1'; } catch (e) { return false; }
   }
 
   /* Há uma verificação de bot por responder?
@@ -1635,8 +1653,10 @@
           apagar automaticamente, de hora a hora
         </label>
         <div style="opacity:.6;font-size:10px;margin-left:18px">
-          Um pedido apaga tudo. <b>Nunca corre</b> se houver uma verificação de bot
-          por responder — essa fica sempre à tua espera.
+          <b>Apaga TUDO</b>, incluindo os avisos de ataque e o botão da milícia —
+          deixas de ver que estás a ser atacado. Só liga isto se souberes o que
+          perdes.<br>
+          Não corre se houver uma verificação de bot por responder.
         </div>
 
         <div style="background:#0d141c;padding:6px 8px;border-radius:4px;margin-top:7px">
@@ -2025,9 +2045,8 @@
     const chkA = document.getElementById('maestro-apagar-auto');
     if (chkA) chkA.onchange = () => {
       try {
-        // '0' = desligado; qualquer outra coisa (ou nada) = ligado
-        if (chkA.checked) localStorage.removeItem(APAGAR_NOTIF_KEY);
-        else localStorage.setItem(APAGAR_NOTIF_KEY, '0');
+        if (chkA.checked) localStorage.setItem(APAGAR_NOTIF_KEY, '1');
+        else localStorage.removeItem(APAGAR_NOTIF_KEY);
       } catch (e) {}
       log('core', chkA.checked
         ? 'Notificações: passo a apagá-las no servidor de hora a hora.'
