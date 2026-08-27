@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.27.1527
+// @version      2026.08.27.1531
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -332,7 +332,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.27.1527';
+  const MAESTRO_VERSAO = '2026.08.27.1531';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ CHAVES SEPARADAS POR PERFIL =============================
@@ -1433,12 +1433,12 @@
           </div>
           <div style="display:flex;gap:4px;align-items:center;margin-bottom:3px">
             <span style="opacity:.75;font-size:10px;width:42px">id</span>
-            <input type="text" id="maestro-gist-id" value="${esc(GIST_GUARDADO.id || '')}"
+            <input type="text" id="maestro-gist-id" value="${String(GIST_GUARDADO.id || '').replace(/[<>"&]/g, '')}"
               placeholder="identificador do Gist" style="flex:1;font-size:10px">
           </div>
           <div style="display:flex;gap:4px;align-items:center">
             <span style="opacity:.75;font-size:10px;width:42px">token</span>
-            <input type="password" id="maestro-gist-token" value="${esc(GIST_GUARDADO.token || '')}"
+            <input type="password" id="maestro-gist-token" value="${String(GIST_GUARDADO.token || '').replace(/[<>"&]/g, '')}"
               placeholder="token do GitHub (scope: gist)" style="flex:1;font-size:10px">
           </div>
           <button id="maestro-gist-guardar" style="width:100%;margin-top:4px;font-size:10px">
