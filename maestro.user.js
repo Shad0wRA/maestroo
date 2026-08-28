@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.27.2113
+// @version      2026.08.28.1216
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -332,7 +332,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.27.2113';
+  const MAESTRO_VERSAO = '2026.08.28.1216';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -383,18 +383,50 @@
        * não põe as contas em ciclo. */
       if (String(nova) <= String(MAESTRO_VERSAO)) return;
 
-      /* Não recarregar duas vezes pela mesma versão. */
-      let ja = null;
-      try { ja = localStorage.getItem(RECARREGADO_KEY); } catch (e) {}
-      if (ja === nova) return;
+      /* NÃO INSISTIR DEMASIADO, mas também não desistir.
+       *
+       * A marca era permanente: bastava um recarregamento em que o
+       * Tampermonkey ainda não tivesse descarregado o ficheiro para a conta
+       * ficar presa na versão antiga para sempre.
+       *
+       * Visto em jogo: a marca dizia 2113, a conta tinha a 1955, e nunca mais
+       * tentou.
+       *
+       * Agora guarda-se também QUANDO se recarregou, e tenta-se outra vez ao
+       * fim de 15 minutos — tempo de sobra para o Tampermonkey ir buscar. */
+      try {
+        const guardado = JSON.parse(localStorage.getItem(RECARREGADO_KEY) || 'null');
+        const ja = guardado && guardado.versao;
+        const quando = (guardado && guardado.quando) || 0;
+        if (ja === nova && (Date.now() - quando) < 15 * 60 * 1000) return;
+      } catch (e) {
+        /* formato antigo (só o número da versão): ignora-se e tenta-se. */
+      }
 
       if (haPlanoIminente()) {
         log('core', `Versão ${nova} disponível — espero, há um plano a sair já.`);
         return;
       }
 
-      try { localStorage.setItem(RECARREGADO_KEY, nova); } catch (e) {}
-      log('core', `Versão ${nova} disponível (tenho a ${MAESTRO_VERSAO}) — vou recarregar.`);
+      try {
+        localStorage.setItem(RECARREGADO_KEY, JSON.stringify({ versao: nova, quando: Date.now() }));
+      } catch (e) {}
+
+      /* PEDIR AO TAMPERMONKEY QUE VERIFIQUE.
+       *
+       * Recarregar a página sozinho não basta: o Tampermonkey só vai buscar o
+       * ficheiro no seu próprio ciclo (6 h no mínimo). Sem isto, a conta
+       * recarregava e continuava na versão antiga.
+       *
+       * Abrir o `@updateURL` numa janela faz o Tampermonkey reconhecer o
+       * userscript e propor a instalação — mas isso exige um clique.
+       *
+       * O que se pode fazer sozinho é AVISAR de forma visível, e recarregar
+       * uma vez para o caso de o ficheiro já estar descarregado. */
+      log('core', `⬆️ Versão ${nova} disponível (tenho a ${MAESTRO_VERSAO}) — vou recarregar. `
+        + 'Se ao fim de umas tentativas continuar na antiga, reinstala a partir do '
+        + 'endereço de actualização (está no cabeçalho do script).');
+
       setTimeout(() => { try { uw.location.reload(); } catch (e) {} }, 3000);
     } catch (e) {}
   }
