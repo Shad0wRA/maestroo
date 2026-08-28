@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.28.1350
+// @version      2026.08.28.1411
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -90,7 +90,70 @@
   }
   try { uw.__maestroHoraJogo = horaDoJogo; } catch (e) {}
 
+  /* ============ SININHO DE ERROS ========================================
+   * Guarda as mensagens que parecem erros e mostra-as num sininho no canto do
+   * painel. Serve para não ter de andar a procurar no registo, sobretudo
+   * quando se está a testar alguma coisa.
+   *
+   * O que conta como erro: as linhas com ⚠️, ⛔, 🛑, "falhou", "não consegui",
+   * "erro". As mensagens de rotina não contam.
+   * ==================================================================== */
+  let errosGuardados = [];
+
+  function pareceErro(msg) {
+    const t = String(msg || '');
+
+    /* NÃO são erros — é o funcionamento normal a explicar-se.
+     *
+     * Sem isto, o sininho enchia-se de decisões correctas (um travão que
+     * travou, uma esquiva que não se faz de propósito) e deixava de servir
+     * para nada. */
+    const normal = [
+      /NÃO recruto/i,               // travão do recrutamento a funcionar
+      /cortado de/i,                // ordem ajustada ao alvo
+      /fica em casa para o matar/i, // decisão deliberada perante colonizador
+      /NÃO esquivo/i,               // idem
+      /limite diário/i,             // aldeias no limite: normal ao fim do dia
+      /já no limite diário/i,
+      /não retiro nada de lá/i,     // protecção das bases
+      /nada a esquivar|nenhum ataque/i,
+      /já apoiados \(|nada a enviar agora/i,   // resumo do apoio, não erro
+      /está desligado|desligadas/i,
+      /não está publicado|ainda não foi publicado/i,
+      /já estava concluída/i,       // limpeza da fila a funcionar
+      /não está na lista de equipas/i,
+    ];
+    if (normal.some((re) => re.test(t))) return false;
+
+    /* ERROS a sério: falhas de pedido, recusas do servidor, coisas que não
+     * deviam acontecer. */
+    return /⚠️|✗|falh|não consegui|nao consegui|erro|recusou|limitou|rebent|inv[áa]lid/i.test(t);
+  }
+
+  function anotarErro(modId, msg) {
+    try {
+      const hora = (() => {
+        try { return horaDoJogo(Number(uw.Timestamp.now())); } catch (e) { return ''; }
+      })();
+      errosGuardados.push({ hora, mod: modId, msg: String(msg).slice(0, 200) });
+      if (errosGuardados.length > 40) errosGuardados = errosGuardados.slice(-40);
+      actualizarSininho();
+    } catch (e) {}
+  }
+
+  function actualizarSininho() {
+    try {
+      const el = document.getElementById('maestro-sino');
+      if (!el) return;
+      const n = errosGuardados.length;
+      el.textContent = n ? `🔔${n}` : '🔕';
+      el.style.color = n ? '#f66' : '#556';
+      el.title = n ? `${n} erro(s) — clica para ver` : 'sem erros';
+    } catch (e) {}
+  }
+
   function log(modId, msg) {
+    if (pareceErro(msg)) anotarErro(modId, msg);
     /* O carimbo é a hora do JOGO, não a do computador: o relógio do
      * utilizador estava 1 h à frente do servidor e as linhas do registo não
      * batiam com nada do que se vê no jogo. */
@@ -332,7 +395,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.28.1350';
+  const MAESTRO_VERSAO = '2026.08.28.1411';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -1847,6 +1910,8 @@
         <span class="mNome">Maestro</span>
         <span class="mMundo">${WORLD.toUpperCase()}</span>
         <span style="flex:1"></span>
+        <a href="#" id="maestro-sino" title="sem erros"
+           style="text-decoration:none;font-size:12px;color:#556;margin-right:6px">🔕</a>
         <a href="#" id="maestro-centrar" class="mEtiq" style="color:var(--mFaint)"
            title="Voltar a pôr o painel ao centro">centrar</a>
         <button id="maestro-fechar" title="Fechar (o botão M volta a abrir)"
@@ -2298,6 +2363,25 @@
         ? 'Notificações: passo a apagá-las no servidor de hora a hora.'
         : 'Notificações: deixo de as apagar no servidor.');
     };
+
+    /* ---- sininho de erros ---- */
+    const sino = document.getElementById('maestro-sino');
+    if (sino) sino.onclick = (e) => {
+      e.preventDefault();
+      if (!errosGuardados.length) { log('core', 'Sem erros guardados.'); return; }
+
+      const linhas = errosGuardados.map((x) => `[${x.hora}] [${x.mod}] ${x.msg}`);
+      console.log('=== ERROS DO MAESTRO ===');
+      linhas.forEach((l) => console.log('  ' + l));
+
+      /* Mostrar no registo também, para se ver sem abrir a consola. */
+      log('core', `🔔 ${errosGuardados.length} erro(s):`);
+      for (const l of linhas.slice(-10)) log('core', '   ' + l);
+
+      errosGuardados = [];
+      actualizarSininho();
+    };
+    actualizarSininho();
 
     /* ---- refresh de hora a hora ---- */
     const chkR = document.getElementById('maestro-refresh');
@@ -13867,6 +13951,56 @@ function makeEsquivaModule(opts) {
    * Guarda-se no armazenamento para sobreviver a recargas da página. */
   const VISTOS_KEY = 'grepoEsquiva_vistos_v1';
 
+  /* ============ HISTÓRICO DE DECISÕES ==================================
+   * Guarda o que o módulo decidiu para cada ataque, com hora.
+   *
+   * Serve para perceber, mais tarde, porque é que um ataque não foi
+   * esquivado — sem ser preciso estar ao computador no momento.
+   *
+   * Vê-se com:  __maestroHistorico()
+   * ==================================================================== */
+  const HISTORICO_KEY = 'grepoEsquiva_historico_v1';
+
+  function anotar(cmd, cidade, decisao, detalhe) {
+    try {
+      const h = JSON.parse(armazem.getItem(HISTORICO_KEY) || '[]');
+      h.push({
+        t: agoraJogo(),
+        cmd: Number(cmd) || 0,
+        cidade: Number(cidade) || 0,
+        decisao: String(decisao || ''),
+        detalhe: String(detalhe || '').slice(0, 160),
+      });
+      // guardar só os últimos 60
+      armazem.setItem(HISTORICO_KEY, JSON.stringify(h.slice(-60)));
+    } catch (e) {}
+  }
+
+  try {
+    mUwGlobalHistorico();
+  } catch (e) {}
+  function mUwGlobalHistorico() {
+    const alvo = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window);
+    alvo.__maestroHistorico = () => {
+      try {
+        const h = JSON.parse(armazem.getItem(HISTORICO_KEY) || '[]');
+        const off = (() => {
+          try {
+            const r = alvo.Timestamp.serverGMTOffset;
+            return (typeof r === 'function' ? Number(r.call(alvo.Timestamp)) : Number(r)) || 0;
+          } catch (e) { return 0; }
+        })();
+        const hora = (t) => (t ? new Date((t + off) * 1000).toISOString().slice(11, 19) : '-');
+        console.log(`Histórico da esquiva (${h.length} entradas):`);
+        for (const x of h) {
+          console.log(`  ${hora(x.t)} · cidade ${x.cidade} · cmd ${x.cmd} — ${x.decisao}`
+            + (x.detalhe ? ` (${x.detalhe})` : ''));
+        }
+        return h.length;
+      } catch (e) { console.log('erro:', e.message); return 0; }
+    };
+  }
+
   /* Marca da última vez que o módulo arrancou. Um comando visto pela
    * primeira vez logo a seguir ao arranque pode já vir a caminho há horas —
    * a hora em que o vimos não serve para calcular a viagem. */
@@ -14373,10 +14507,12 @@ function makeEsquivaModule(opts) {
       if (sep.mar) comandos.push({ carga: sep.mar, via: 'mar' });
     }
     if (!comandos.length) {
+      anotar(0, plano.townId, 'nada para enviar', 'a cidade não tinha tropa');
       const carga = montarCarga(plano.townId, esc.precisaBarcos);
       if (carga) comandos.push({ carga, via: 'tudo' });
     }
-    if (!comandos.length) { log(`Esquiva ${nome}: sem tropas para mandar.`); return; }
+    if (!comandos.length) {
+      anotar(0, plano.townId, 'nada para enviar', 'a cidade não tinha tropa'); log(`Esquiva ${nome}: sem tropas para mandar.`); return; }
 
     const enviados = [];
     let todosMeus = [];
@@ -14414,8 +14550,10 @@ function makeEsquivaModule(opts) {
          * Sem isto ficava-se dependente de procurar nos movimentos, e com dois
          * envios era fácil apanhar o errado. */
         if (r.comando && r.comando.commandId) todosMeus.push(Number(r.comando.commandId));
+        anotar(0, plano.townId, 'tropa enviada', `por ${cmd.via}`);
       } else {
         log(`⚠️ Esquiva ${nome}: envio por ${cmd.via} falhou (${r.msg}).`);
+        anotar(0, plano.townId, 'ENVIO FALHOU', `${cmd.via}: ${r.msg}`);
       }
       if (comandos.length > 1) await ctx.sleep(ctx.rand(300, 600));
     }
@@ -14796,6 +14934,8 @@ function makeEsquivaModule(opts) {
       const nome = (cidades.find((x) => x.id === Number(townId)) || {}).name || townId;
 
       if (!tempos) {
+        anotar(impactos[0] && impactos[0].cmd, townId, 'NÃO esquivo',
+          temNC ? 'vem colonizador' : 'não consegui calcular os tempos');
         if (temNC) {
           log(`🛑 ${nome}: vem colonizador e NÃO consigo trazer a tropa a tempo — `
             + 'fica em casa para o matar. '
@@ -14804,10 +14944,47 @@ function makeEsquivaModule(opts) {
         agendados.add(chave);
         continue;
       }
-      if (tempos.S <= t) { agendados.add(chave); continue; }   // já não dá tempo
+      /* A HORA DE SAÍDA JÁ PASSOU.
+       *
+       * Antes desistia-se em silêncio. Mas se o IMPACTO ainda não chegou, sair
+       * agora continua a valer — a tropa escapa na mesma, só volta mais tarde
+       * do que o ideal.
+       *
+       * Isto acontece quando o modelo do jogo só mostra o ataque à última
+       * hora, e era uma das razões de "alguns ataques não esquivam". */
+      if (tempos.S <= t) {
+        const impacto = ordenados[ordenados.length - 1].arrival;
+        const faltaImpacto = impacto - t;
+
+        /* BASTA UM SEGUNDO.
+         *
+         * Não se põe uma folga mínima: se o pedido chegar tarde, o servidor
+         * recusa e não se perde nada. Desistir sem tentar é que perde tropa
+         * de certeza. */
+        if (faltaImpacto > 0) {
+          agendados.add(chave);
+          const plano2 = {
+            townId: Number(townId), daMain,
+            S: t, C: t + Math.max(5, Math.floor(faltaImpacto / 2)),
+            casa: impacto + (Number(c.depoisDoImpacto) || 15),
+            tipo: tempos.tipo,
+          };
+          planos[chave] = plano2;
+          gravarPlanos(planos);
+          log(`⚡ ${nome}: ataque visto tarde (faltam ${faltaImpacto}s) — saio JÁ.`);
+          executarPlano(ctx, plano2).catch(() => {});
+          continue;
+        }
+
+        agendados.add(chave);
+        log(`⏱️ ${nome}: o ataque já bateu (há ${Math.abs(faltaImpacto)}s) — nada a fazer.`);
+        continue;
+      }
 
       agendados.add(chave);
       planos[chave] = { townId: Number(townId), daMain, S: tempos.S, C: tempos.C, casa: tempos.casa, tipo: tempos.tipo };
+      anotar(impactos[0] && impactos[0].cmd, townId, 'plano criado',
+        `tipo ${tempos.tipo}, sai em ${Math.round((tempos.S - t) / 60)} min`);
       const faltam = tempos.S - t;
       if (ultimaClassificacao) {
         const u = ultimaClassificacao;
