@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.28.1216
+// @version      2026.08.28.1225
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -332,7 +332,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.28.1216';
+  const MAESTRO_VERSAO = '2026.08.28.1225';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -12329,18 +12329,28 @@ function makeDeusesModule(opts) {
   async function ataqueEmCurso(townId) {
     /* O MODELO LOCAL PRIMEIRO — sem pedido nenhum ao servidor.
      *
-     * Procura-se um ataque MEU que saiu desta cidade e ainda não voltou. Os
-     * meus comandos têm o `started_at` preenchido (os recebidos vêm a null),
-     * e o `command_name` "Regresso" marca os que já vêm de volta. */
+     * Procura-se um ataque MEU desta cidade que ainda não esteja em casa.
+     * Os meus comandos têm o `started_at` preenchido; os recebidos vêm a null.
+     *
+     * CONTAM OS REGRESSOS. Antes saltavam-se, e por isso mandava-se um ataque
+     * novo enquanto a tropa do anterior ainda vinha a caminho — a cidade
+     * ficava com dois em curso e sem tropa em casa.
+     *
+     * O que interessa é: a tropa já voltou? Se não voltou, não se manda outro. */
     try {
       const mods = mUw.MM.getModels().MovementsUnits || {};
       for (const k of Object.keys(mods)) {
         const a = mods[k].attributes || {};
         if (Number(a.home_town_id) !== Number(townId)) continue;
-        if (String(a.type) !== 'attack') continue;
         if (a.started_at == null) continue;                 // é recebido, não meu
-        if (/regress|return/i.test(String(a.command_name || ''))) continue;
-        return true;                                        // já vai um a caminho
+
+        const tipo = String(a.type || '');
+        const nome = String(a.command_name || '');
+        const ehAtaque = /attack/i.test(tipo);
+        const ehRegresso = /regress|return/i.test(nome) || /return/i.test(tipo);
+
+        // um ataque a caminho OU tropa a voltar de um ataque
+        if (ehAtaque || ehRegresso) return true;
       }
     } catch (e) {}
 
@@ -12355,10 +12365,11 @@ function makeDeusesModule(opts) {
       if (r.status === 429) return true;   // servidor a limitar: não insistir
       const j = await r.json();
       const cmds = ((j && j.json && j.json.data) || {}).commands || [];
+      /* Também aqui contam os REGRESSOS: o `!cd.return` excluía a tropa que
+       * vinha de volta, e mandava-se outro ataque antes de ela chegar. */
       return cmds.some((cd) =>
         Number(cd.origin_town_id) === Number(townId)
-        && String(cd.type) === 'attack'
-        && !cd.return);
+        && (String(cd.type) === 'attack' || cd.return));
     } catch (e) { return false; }
   }
 
