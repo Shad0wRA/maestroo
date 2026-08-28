@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.28.1528
+// @version      2026.08.28.2313
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -405,7 +405,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.28.1528';
+  const MAESTRO_VERSAO = '2026.08.28.2313';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -490,6 +490,17 @@
   }
 
   async function verificarVersaoNova() {
+    /* Com o CARREGADOR instalado, isto é desnecessário: o código é lido do
+     * repositório de cada vez que a página abre, portanto uma versão nova
+     * chega no recarregamento seguinte sem mais nada.
+     *
+     * Se o Maestro tiver sido carregado pelo carregador, ele deixa uma marca.
+     * Nesse caso não se faz nada — dois mecanismos a recarregar a página ao
+     * mesmo tempo davam recarregamentos em cadeia. */
+    try {
+      if (uw.__maestroViaLoader) return;
+    } catch (e) {}
+
     try {
       const r = await uw.fetch(FONTE_ATUALIZACAO + '?_=' + Date.now(), { cache: 'no-store' });
       if (!r.ok) return;
@@ -1390,6 +1401,20 @@
    * remover o elemento: é ele que ocupa o ecrã.
    *
    * As classes vêm no formato "notification resourcetransport". */
+  /* ESCONDER as notificações, NUNCA removê-las.
+   *
+   * Fazia-se `el.remove()`, o que arrancava a notificação do documento mal
+   * ela aparecia. O jogo nunca chegava a processá-la — e é ao processar as
+   * notificações que ele ACTUALIZA OS CONTADORES de tropas.
+   *
+   * Consequência: uma cidade com 27 espadachins mostrava 16 até se recarregar
+   * a página. O recrutamento pedia unidades que já existiam, em ordens de 1 e
+   * 2 sem fim, e a esquiva enviava números que o servidor recusava — o que
+   * custou mais de 100 enviados divinos numa tarde.
+   *
+   * Sem o bot isto não acontecia, e foi essa observação que deu o fio à meada.
+   *
+   * Esconder com `display:none` tira-as da vista e deixa o jogo trabalhar. */
   function tirarDoEcra() {
     let n = 0;
     try {
@@ -1400,7 +1425,8 @@
         if (/bot_?check|captcha/i.test(cls)) return;
         // a data é filha da notificação; sai com ela
         if (/notification_date/.test(cls)) return;
-        el.remove();
+        if (el.style && el.style.display === 'none') return;   // já escondida
+        try { el.style.display = 'none'; } catch (e2) {}
         n++;
       });
     } catch (e) {}
@@ -1424,7 +1450,18 @@
             if (!/\bnotification\b/.test(cls)) continue;
             if (/bot_?check|captcha/i.test(cls)) continue;   // esse fica
             if (/notification_date/.test(cls)) continue;
-            try { no.remove(); } catch (e) {}
+
+            /* ESCONDER, não remover — e só depois de o jogo a processar.
+             *
+             * Remover à chegada era o pior de tudo: a notificação saía do
+             * documento antes de o jogo lhe tocar, e é ao processá-las que ele
+             * ACTUALIZA OS CONTADORES de tropas.
+             *
+             * O atraso dá ao jogo tempo de fazer o que tem a fazer; a seguir
+             * a notificação desaparece da vista. */
+            setTimeout(() => {
+              try { if (no.style) no.style.display = 'none'; } catch (e) {}
+            }, 1500);
           }
         }
       });
@@ -1495,14 +1532,20 @@
   const APAGAR_NOTIF_KEY = 'grepoMaestro_apagarNotif_v1';
   const ULTIMO_APAGAR_KEY = 'grepoMaestro_ultimoApagar_v1';
 
-  /* LIGADO por omissão — é seguro.
+  /* DESLIGADO por omissão.
    *
-   * Já não é o `delete_all`, que apagava tudo incluindo os avisos de ataque.
-   * Agora apagam-se só os tipos em `TIPOS_A_LIMPAR`, poucos de cada vez.
+   * O jogo actualiza os contadores de tropas quando PROCESSA a notificação de
+   * "unidades recrutadas". Apagar as notificações no servidor antes disso faz
+   * o contador ficar preso: uma cidade com 27 espadachins mostra 16 até se
+   * recarregar a página.
    *
-   * Desmarca-se no painel se preferires. */
+   * Era isso que fazia o recrutamento pedir 1 e 2 unidades sem fim, e a
+   * esquiva enviar números que o servidor recusava.
+   *
+   * Liga-se no painel se preferires a caixa limpa — mas sabendo que os
+   * contadores deixam de acompanhar. */
   function apagarNotificacoesLigado() {
-    try { return localStorage.getItem(APAGAR_NOTIF_KEY) !== '0'; } catch (e) { return true; }
+    try { return localStorage.getItem(APAGAR_NOTIF_KEY) === '1'; } catch (e) { return false; }
   }
 
   /* Há uma verificação de bot por responder?
@@ -1982,10 +2025,10 @@
           Nunca recarrega com uma esquiva ou encaixe a sair nos próximos minutos.
         </div>
         <div style="opacity:.6;font-size:10px;margin-left:18px">
-          Limpa a lista de notificações num pedido, de 5 em 5 minutos.<br>
-          O aviso de <b>ataque</b> (as espadas vermelhas) <b>não</b> é uma
-          notificação — mantém-se. Não corre se houver uma verificação de bot
-          por responder.
+          <b>Cuidado:</b> o jogo actualiza os contadores de tropas ao processar as
+          notificações. Apagá-las deixa os números presos até recarregares a página —
+          e isso estraga o recrutamento e a esquiva.<br>
+          Com o recarregamento de hora a hora ligado, a lista limpa-se sozinha.
         </div>
 
         <div style="background:#0d141c;padding:6px 8px;border-radius:4px;margin-top:7px">
@@ -2374,8 +2417,8 @@
     const chkA = document.getElementById('maestro-apagar-auto');
     if (chkA) chkA.onchange = () => {
       try {
-        if (chkA.checked) localStorage.removeItem(APAGAR_NOTIF_KEY);
-        else localStorage.setItem(APAGAR_NOTIF_KEY, '0');
+        if (chkA.checked) localStorage.setItem(APAGAR_NOTIF_KEY, '1');
+        else localStorage.removeItem(APAGAR_NOTIF_KEY);
       } catch (e) {}
       log('core', chkA.checked
         ? 'Notificações: passo a apagá-las no servidor de hora a hora.'
@@ -5734,6 +5777,57 @@ function makeRecrutamentoModule(opts) {
 
   // Conta as unidades de cada cidade: em casa E fora (apoio).
   // O modelo Units tem entradas com home_town_id (dona) e current_town_id (onde está).
+  /* QUANTAS UNIDADES A CIDADE TEM AO TODO, perguntando ao servidor.
+   *
+   * O `data-unit_count` do quartel e do porto é o TOTAL da cidade: as que
+   * estão em casa, as que estão noutra cidade e as que vão a caminho. É
+   * exactamente o que o recrutamento precisa de saber.
+   *
+   * (Não serve para a esquiva, que precisa de saber o que pode SAIR agora —
+   * lá usa-se o `units()`.)
+   *
+   * O modelo `Units` do jogo NÃO se actualiza quando as unidades ficam
+   * prontas: só ao recarregar a página. Confirmado em jogo — uma cidade com
+   * 27 espadachins e 148 navios-farol aparecia com 16 e 147, e o módulo
+   * pedia 1 e 2 unidades sem fim. */
+  /* Guarda o que se leu de cada cidade, para não repetir o pedido. */
+  const cacheTropasReais = {};
+
+  async function tropasReaisDoServidor(townId, validadeMs) {
+    /* Uma leitura por cidade e por passagem, não uma por unidade. Com 30
+     * cidades e 8 unidades, sem isto seriam 480 pedidos por passagem. */
+    const chave = Number(townId);
+    const guardado = cacheTropasReais[chave];
+    const validade = Number(validadeMs) || 45000;
+    if (guardado && (Date.now() - guardado.quando) < validade) return guardado.u;
+
+    const out = {};
+    let algum = false;
+    for (const edificio of ['building_barracks', 'building_docks']) {
+      try {
+        const url = mUw.location.origin + '/game/' + edificio + '?town_id=' + Number(townId)
+          + '&action=index&h=' + mUw.Game.csrfToken
+          + '&json=' + encodeURIComponent(JSON.stringify({ town_id: Number(townId), nl_init: true }))
+          + '&_=' + Date.now();
+        const txt = await mUw.fetch(url, {
+          headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
+        }).then((r) => r.text());
+        if (!txt) continue;
+        const re = /data-unit_id=\\?"(\w+)\\?"[\s\S]{0,120}?data-unit_count=\\?"(\d+)\\?"/g;
+        let m;
+        while ((m = re.exec(txt)) !== null) {
+          const u = m[1]; const n = Number(m[2]);
+          if (!u || !Number.isFinite(n)) continue;
+          out[u] = n; algum = true;
+        }
+      } catch (e) {}
+    }
+
+    if (!algum) return null;
+    cacheTropasReais[chave] = { quando: Date.now(), u: out };
+    return out;
+  }
+
   function contarUnidadesPorCidadeDeOrigem() {
     const out = {}; // home_town_id -> { sword: n, ... }
     try {
@@ -7107,7 +7201,23 @@ function makeRecrutamentoModule(opts) {
       /* Mínimo de POPULAÇÃO por ordem. Se estiver definido, substitui a regra
        * antiga da percentagem do armazém. */
       const minPop = Number(tpl.minPopOrdem);
-      const tenho = porOrigem[town.id] || {};
+      /* O que a cidade TEM, com o número verdadeiro do servidor.
+       *
+       * O modelo `Units` mostra números velhos até se recarregar a página, e
+       * era isso que fazia o módulo pedir 1 e 2 unidades sem fim. Lê-se o
+       * quartel e o porto uma vez por cidade e fica-se com o maior dos dois
+       * — a tropa que está FORA da cidade só vem no modelo, a que acabou de
+       * ser recrutada só vem do servidor. */
+      const tenho = Object.assign({}, porOrigem[town.id] || {});
+      try {
+        const reais = await tropasReaisDoServidor(town.id);
+        if (reais) {
+          for (const u of Object.keys(reais)) {
+            tenho[u] = Math.max(Number(tenho[u]) || 0, Number(reais[u]) || 0);
+          }
+        }
+      } catch (e) {}
+
       const emFila = filas[town.id] || {};
 
       /* COLONIZADORES CONTÍNUOS
@@ -7315,7 +7425,22 @@ function makeRecrutamentoModule(opts) {
           if (alvoFinal > 0 && a.unitId !== NC_ID) {
             const agoraTenho = contarUnidadesPorCidadeDeOrigem()[town.id] || {};
             const agoraFila = contarFilasPorCidade()[town.id] || {};
-            const jaCom = (Number(agoraTenho[a.unitId]) || 0) + (Number(agoraFila[a.unitId]) || 0);
+
+            /* O número do modelo pode estar atrasado — ele só actualiza quando
+             * se recarrega a página. Pergunta-se ao servidor o que a cidade
+             * tem MESMO, e fica-se com o maior dos dois.
+             *
+             * Sem isto faziam-se ordens de 1 e 2 unidades sem fim: o módulo
+             * via 16 hoplitas, o template pedia 18, e as 2 que recrutava nunca
+             * apareciam no modelo. */
+            let emCasaReal = 0;
+            try {
+              const reais = await tropasReaisDoServidor(town.id);
+              if (reais && reais[a.unitId] != null) emCasaReal = Number(reais[a.unitId]) || 0;
+            } catch (e2) {}
+
+            const doModelo = Number(agoraTenho[a.unitId]) || 0;
+            const jaCom = Math.max(doModelo, emCasaReal) + (Number(agoraFila[a.unitId]) || 0);
 
             if (jaCom >= alvoFinal) {
               log(`⛔ ${town.name}: NÃO recruto ${a.nome} — já tem ${jaCom} `
@@ -13847,6 +13972,52 @@ function makeEsquivaModule(opts) {
    *
    * Pedir o mesmo que o jogo pede ao abrir esses edifícios faz o contador
    * ficar certo, e a seguir lê-se a verdade. */
+  /* LER O NÚMERO VERDADEIRO DE TROPAS, do HTML do quartel e do porto.
+   *
+   * O modelo `Units` do jogo NÃO se actualiza quando as unidades ficam
+   * prontas — só quando se recarrega a página. Uma cidade com 19 hoplitas
+   * aparecia com 16 durante horas.
+   *
+   * Isso fazia duas coisas más: o recrutamento pedia unidades que já existiam
+   * (ordens de 1 e 2 de cada vez, sem fim), e a esquiva enviava números
+   * errados — o servidor recusava e a tropa ficava em casa a morrer.
+   *
+   * A resposta do quartel traz `data-unit_count="19"` para cada unidade. É o
+   * número que a interface mostra, e é o certo.
+   *
+   * Devolve `{ hoplite: 19, sword: 40, ... }` ou null se não conseguir. */
+  async function tropasReaisDoServidor(townId) {
+    const out = {};
+    let algum = false;
+
+    for (const edificio of ['building_barracks', 'building_docks']) {
+      try {
+        const url = mUw.location.origin + '/game/' + edificio + '?town_id=' + Number(townId)
+          + '&action=index&h=' + mUw.Game.csrfToken
+          + '&json=' + encodeURIComponent(JSON.stringify({ town_id: Number(townId), nl_init: true }))
+          + '&_=' + Date.now();
+        const txt = await mUw.fetch(url, {
+          headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
+        }).then((r) => r.text());
+        if (!txt) continue;
+
+        /* O HTML vem dentro do JSON, com as aspas escapadas — por isso o
+         * padrão aceita `\"` e `"`. */
+        const re = /data-unit_id=\\?"(\w+)\\?"[\s\S]{0,120}?data-unit_count=\\?"(\d+)\\?"/g;
+        let m;
+        while ((m = re.exec(txt)) !== null) {
+          const u = m[1];
+          const n = Number(m[2]);
+          if (!u || !Number.isFinite(n)) continue;
+          out[u] = n;
+          algum = true;
+        }
+      } catch (e) {}
+    }
+
+    return algum ? out : null;
+  }
+
   async function actualizarContadores(townId) {
     /* LIMITE DE TEMPO: a esquiva é ao segundo. Se a rede estiver lenta, mais
      * vale enviar com o contador desactualizado do que atrasar a saída. */
@@ -13872,33 +14043,33 @@ function makeEsquivaModule(opts) {
   }
 
   function tropasDaCidade(townId) {
+    /* AQUI USA-SE O `units()` DA CIDADE — o que está EM CASA.
+     *
+     * Não se usa o número do quartel: esse é o TOTAL da cidade, incluindo a
+     * tropa que está noutra cidade ou no mar. Mandar sair o total faz o
+     * servidor recusar com "não há unidades suficientes", e a tropa fica em
+     * casa a apanhar o ataque — foi assim que se perderam mais de 100
+     * enviados divinos.
+     *
+     * Para esquivar interessa só o que pode SAIR agora. */
     let out = {};
     try { out = Object.assign({}, mUw.ITowns.getTown(Number(townId)).units() || {}); } catch (e) {}
 
-    /* JUNTAR AS QUE JÁ FORAM RECRUTADAS mas ainda não aparecem no contador.
+    /* NÃO se soma o `parts_done`.
      *
-     * O jogo só actualiza o número de tropas quando a ordem ACABA (ou quando
-     * se abre o quartel, ou quando chega um ataque). Numa ordem de 110
-     * espadachins a meio, o contador mostra as antigas e as 39 já prontas
-     * ficam invisíveis.
+     * Tentou-se juntar as unidades já recrutadas que o contador ainda não
+     * mostra. O servidor RECUSA-AS — não estão formalmente na cidade — e o
+     * envio falha POR COMPLETO com "não há unidades suficientes".
      *
-     * Resultado: a esquiva enviava só o que via, e as já recrutadas ficavam
-     * em casa a apanhar o ataque.
+     * Custou uma esquiva falhada e mais de 100 enviados divinos: o envio por
+     * mar passou, o de terra falhou, e a tropa terrestre ficou em casa a
+     * apanhar o ataque.
      *
-     * O jogo di-lo em `parts_done` na colecção `UnitOrder`. */
-    try {
-      const col = mUw.MM.getCollections().UnitOrder;
-      for (const m of ((col && col[0] && col[0].models) || [])) {
-        const a = m.attributes || {};
-        if (Number(a.town_id) !== Number(townId)) continue;
-        const prontas = Number(a.parts_done) || 0;
-        if (prontas <= 0) continue;
-        const u = a.unit_type;
-        if (!u) continue;
-        out[u] = (Number(out[u]) || 0) + prontas;
-      }
-    } catch (e) {}
-
+     * O caminho certo é o outro que já se faz: abrir o quartel e o porto antes
+     * de decidir (`actualizarContadores`), o que obriga o jogo a mostrar o
+     * número verdadeiro. Aí o `units()` já traz tudo e não é preciso adivinhar.
+     *
+     * Envia-se apenas o que o jogo diz que está na cidade. */
     return out;
   }
   function temBeliche(townId) {
@@ -14546,15 +14717,17 @@ function makeEsquivaModule(opts) {
     for (const cmd of comandos) {
       let r = await enviarApoio(plano.townId, esc.destino.id, cmd.carga);
 
-      /* SEGUNDA TENTATIVA sem as unidades da fila.
+      /* SE O SERVIDOR RECUSAR, TENTAR OUTRA VEZ COM MENOS.
        *
-       * A carga inclui as tropas já recrutadas que o contador ainda não
-       * mostra (`parts_done`). Se o servidor as recusar por ainda não estarem
-       * formalmente na cidade, o envio falha POR COMPLETO — e é melhor
-       * esquivar com menos do que não esquivar.
+       * Um envio recusado deixa a tropa em casa a apanhar o ataque. Já
+       * aconteceu: o envio por mar passou, o de terra falhou com "não há
+       * unidades suficientes", e morreram mais de 100 enviados divinos.
        *
-       * Repete-se com o que o contador mostra, que o servidor aceita de
-       * certeza. */
+       * A carga é calculada no momento do plano; entre esse instante e o
+       * envio a cidade pode ter mudado — tropa que saiu, que morreu, ou que
+       * o contador ainda não mostrava.
+       *
+       * Volta a perguntar ao jogo o que lá está AGORA e manda isso. */
       if (!r.ok) {
         try {
           const soVisiveis = {};
@@ -14564,9 +14737,28 @@ function makeEsquivaModule(opts) {
             if (cabe > 0) soVisiveis[u] = cabe;
           }
           if (Object.keys(soVisiveis).length) {
-            log(`↩️ Esquiva ${nome}: o servidor recusou (${r.msg}) — tento com `
-              + 'a tropa que já aparece no contador.');
+            log(`↩️ Esquiva ${nome}: recusado (${r.msg}) — tento com o que está `
+              + 'mesmo na cidade.');
             r = await enviarApoio(plano.townId, esc.destino.id, soVisiveis);
+
+            /* TERCEIRA tentativa: metade da carga.
+             *
+             * Se ainda recusa, é porque o número continua acima do que a
+             * cidade tem — pode haver tropa a sair ao mesmo tempo, ou o
+             * contador estar atrasado. Metade costuma passar, e salvar
+             * metade é melhor do que perder tudo. */
+            if (!r.ok) {
+              const metade = {};
+              let temAlguma = false;
+              for (const u of Object.keys(soVisiveis)) {
+                const n2 = Math.floor(Number(soVisiveis[u]) / 2);
+                if (n2 > 0) { metade[u] = n2; temAlguma = true; }
+              }
+              if (temAlguma) {
+                log(`↩️ Esquiva ${nome}: ainda recusado — tento com metade.`);
+                r = await enviarApoio(plano.townId, esc.destino.id, metade);
+              }
+            }
           }
         } catch (e) {}
       }
