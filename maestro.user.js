@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.28.1342
+// @version      2026.08.28.1350
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -332,7 +332,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.28.1342';
+  const MAESTRO_VERSAO = '2026.08.28.1350';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -18327,7 +18327,26 @@ function makeMissoesModule(opts) {
   function recursosEmFalta(missao) {
     const pedido = (missao.configuration || {}).resources;
     if (!pedido) return null;
-    const feito = ((missao.progress || {}).resources) || {};
+
+    /* O `progress.resources` NÃO é o que já foi entregue.
+     *
+     * Confirmado no jogo: numa missão a que não se deu nada, o
+     * `progress.resources` é IGUAL ao `configuration.resources`. É o pedido
+     * repetido, não o progresso.
+     *
+     * Como se subtraía um do outro, dava sempre zero — e nenhuma missão de
+     * recursos era feita.
+     *
+     * O progresso a sério está em `progress.progress`, que vem como lista.
+     * Enquanto não se souber ler essa lista, assume-se que nada foi dado: no
+     * pior caso dá-se recursos a uma missão já cumprida, e o servidor recusa
+     * — o que é melhor do que nunca fazer nenhuma. */
+    let feito = {};
+    try {
+      const p2 = (missao.progress || {}).progress;
+      if (p2 && !Array.isArray(p2) && typeof p2 === 'object') feito = p2;
+    } catch (e) {}
+
     const falta = {};
     let total = 0;
     for (const k of ['wood', 'stone', 'iron']) {
