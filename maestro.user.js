@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.28.1225
+// @version      2026.08.28.1237
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -332,7 +332,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.28.1225';
+  const MAESTRO_VERSAO = '2026.08.28.1237';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -350,6 +350,43 @@
    * ==================================================================== */
   const FONTE_ATUALIZACAO = 'https://raw.githubusercontent.com/Shad0wRA/maestroo/main/maestro.user.js';
   const RECARREGADO_KEY = 'grepoMaestro_recarreguei_v1';
+
+  /* ============ REFRESH PERIÓDICO ======================================
+   * Recarregar a página de hora a hora.
+   *
+   * Serve duas coisas: mantém os modelos do jogo frescos (as tropas, as
+   * filas de construção — que o jogo não actualiza sozinho), e força o
+   * Tampermonkey a verificar se há versão nova com mais frequência do que o
+   * seu ciclo de 6 h.
+   *
+   * SALVAGUARDA: nunca recarrega se houver esquiva ou encaixe a sair nos
+   * próximos minutos — ver `haPlanoIminente`.
+   * ==================================================================== */
+  const REFRESH_KEY = 'grepoMaestro_refreshHora_v1';
+  const ULTIMO_REFRESH_KEY = 'grepoMaestro_ultimoRefresh_v1';
+
+  function refreshHorarioLigado() {
+    try { return localStorage.getItem(REFRESH_KEY) === '1'; } catch (e) { return false; }
+  }
+
+  function talvezRefrescar() {
+    if (!refreshHorarioLigado()) return;
+    try {
+      const ultimo = Number(localStorage.getItem(ULTIMO_REFRESH_KEY)) || 0;
+
+      /* Na primeira vez, marca-se a hora sem recarregar: senão recarregava
+       * logo a seguir a instalar. */
+      if (!ultimo) { localStorage.setItem(ULTIMO_REFRESH_KEY, String(Date.now())); return; }
+
+      if (Date.now() - ultimo < 60 * 60 * 1000) return;
+
+      if (haPlanoIminente()) return;   // tenta na passagem seguinte
+
+      localStorage.setItem(ULTIMO_REFRESH_KEY, String(Date.now()));
+      log('core', 'Refresh de hora a hora — a recarregar.');
+      setTimeout(() => { try { uw.location.reload(); } catch (e) {} }, 2000);
+    } catch (e) {}
+  }
 
   function haPlanoIminente() {
     /* Um plano de esquiva ou de encaixe a sair dentro de 5 minutos. */
@@ -1852,6 +1889,15 @@
           <input type="checkbox" id="maestro-apagar-auto"${apagarNotificacoesLigado() ? ' checked' : ''}>
           apagar automaticamente as notificações de ruído
         </label>
+        <label style="display:block;margin-top:3px;font-size:11px">
+          <input type="checkbox" id="maestro-refresh"${refreshHorarioLigado() ? ' checked' : ''}>
+          recarregar a página de hora a hora
+        </label>
+        <div style="opacity:.6;font-size:10px;margin-left:18px">
+          Mantém os dados do jogo frescos — as tropas e as filas de construção não
+          se actualizam sozinhas — e faz o Tampermonkey procurar versões novas.<br>
+          Nunca recarrega com uma esquiva ou encaixe a sair nos próximos minutos.
+        </div>
         <div style="opacity:.6;font-size:10px;margin-left:18px">
           Limpa a lista de notificações num pedido, de 5 em 5 minutos.<br>
           O aviso de <b>ataque</b> (as espadas vermelhas) <b>não</b> é uma
@@ -2251,6 +2297,22 @@
       log('core', chkA.checked
         ? 'Notificações: passo a apagá-las no servidor de hora a hora.'
         : 'Notificações: deixo de as apagar no servidor.');
+    };
+
+    /* ---- refresh de hora a hora ---- */
+    const chkR = document.getElementById('maestro-refresh');
+    if (chkR) chkR.onchange = () => {
+      try {
+        if (chkR.checked) {
+          localStorage.setItem(REFRESH_KEY, '1');
+          localStorage.setItem(ULTIMO_REFRESH_KEY, String(Date.now()));
+        } else {
+          localStorage.removeItem(REFRESH_KEY);
+        }
+      } catch (e) {}
+      log('core', chkR.checked
+        ? 'Vou recarregar a página de hora a hora.'
+        : 'Deixo de recarregar a página.');
     };
 
     /* ---- conta principal ---- */
@@ -22470,7 +22532,8 @@ function makeRelatoriosModule(opts) {
       const desvio = Math.floor(Math.random() * 5 * 60 * 1000);
       setTimeout(() => {
         verificarVersaoNova();
-        setInterval(verificarVersaoNova, 10 * 60 * 1000);
+        talvezRefrescar();
+        setInterval(() => { verificarVersaoNova(); talvezRefrescar(); }, 10 * 60 * 1000);
       }, 30000 + desvio);
     } catch (e) {}
     if (autoStartLigado()) {
