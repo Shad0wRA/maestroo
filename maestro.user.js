@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.28.1237
+// @version      2026.08.28.1342
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -332,7 +332,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.28.1237';
+  const MAESTRO_VERSAO = '2026.08.28.1342';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -3588,6 +3588,43 @@ function makeConstrucaoModule(opts) {
         } else if (r.ok && r.custo > 0) {
           // não devia acontecer, mas se acontecer é para saber
           log(`⚠️ ${NOMES_PT[a.building_type] || a.building_type}: a conclusão custou ${r.custo} de ouro.`);
+        } else if (presa) {
+          /* A ORDEM JÁ NÃO EXISTE NO SERVIDOR.
+           *
+           * Confirmado no jogo: pedir a conclusão de uma obra presa responde
+           * "A ordem de construção selecionada já não existe". Ou seja, ela
+           * ACABOU — o que está preso é a cópia em memória do navegador, que
+           * o jogo não actualiza sozinho.
+           *
+           * Não há nada a concluir: tira-se a entrada morta do modelo local,
+           * para o módulo deixar de a ver a ocupar um lugar na fila. */
+          if (/já não existe|no longer exists|nicht mehr/i.test(String(r.msg || ''))) {
+            /* Tirar do modelo local, e pedir ao servidor a fila verdadeira —
+             * senão o jogo pode repor a entrada morta na passagem seguinte. */
+            try {
+              const col2 = uw.MM.getCollections().BuildingOrder[0];
+              if (col2 && typeof col2.remove === 'function') col2.remove(m);
+            } catch (e2) {}
+
+            try {
+              const url2 = uw.location.origin + '/game/building_main?town_id=' + Number(a.town_id)
+                + '&action=index&h=' + uw.Game.csrfToken
+                + '&json=' + encodeURIComponent(JSON.stringify({ town_id: Number(a.town_id), nl_init: true }))
+                + '&_=' + Date.now();
+              const rr = await uw.fetch(url2, {
+                headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
+              }).then(lerResposta);
+              aplicarNotificacoes(rr);
+            } catch (e2) {}
+
+            log(`🧹 ${NOMES_PT[a.building_type] || a.building_type}: já estava concluída `
+              + 'no servidor — tirei-a da fila (o jogo não a tinha actualizado).');
+            n++;
+          } else {
+            log(`⚠️ ${NOMES_PT[a.building_type] || a.building_type}: está PRESA na fila `
+              + `há ${Math.abs(Math.round(falta))}s e NÃO consegui resolvê-la `
+              + `(${r.msg || 'sem resposta do servidor'}).`);
+          }
         }
       }
     } catch (e) {}
