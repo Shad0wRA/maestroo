@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.28.2313
+// @version      2026.08.28.2327
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -202,6 +202,69 @@
     try { return JSON.parse(localStorage.getItem(CREDENCIAIS_KEY) || '{}'); }
     catch (e) { return {}; }
   })();
+
+  /* ============ PEDIDOS A DOMÍNIOS DE FORA ==============================
+   * O Grepolis tem uma política de segurança que pode bloquear pedidos a
+   * domínios externos — o GitHub, o Discord. Hoje o `fetch` passa; se um dia
+   * deixar de passar, a partilha entre contas e os avisos param.
+   *
+   * O carregador oferece uma PONTE: dispara-se um evento, ele faz o pedido
+   * com os privilégios do Tampermonkey e devolve a resposta noutro evento.
+   *
+   * Usa-se a ponte quando existe; senão, o `fetch` de sempre. A assinatura é
+   * a mesma do `fetch`, para o resto do código não notar a diferença.
+   * ==================================================================== */
+  let contadorPonte = 0;
+
+  function pedirFora(url, opcoes) {
+    const op = opcoes || {};
+    let ponte = null;
+    try { ponte = uw.__maestroPonte; } catch (e) {}
+
+    /* Sem ponte: o fetch normal. */
+    if (!ponte || !ponte.pedir) return uw.fetch(url, op);
+
+    return new Promise((resolve) => {
+      const id = 'p' + (++contadorPonte) + '-' + Date.now();
+      let respondido = false;
+
+      const ouvir = (ev) => {
+        const d = (ev && ev.detail) || {};
+        if (d.id !== id) return;
+        respondido = true;
+        document.removeEventListener(ponte.resposta, ouvir);
+        const texto = String(d.text || '');
+        resolve({
+          ok: d.status >= 200 && d.status < 300,
+          status: Number(d.status) || 0,
+          text: async () => texto,
+          json: async () => JSON.parse(texto),
+        });
+      };
+      document.addEventListener(ponte.resposta, ouvir);
+
+      /* Se a ponte não responder, não deixar a promessa pendurada. */
+      setTimeout(() => {
+        if (respondido) return;
+        document.removeEventListener(ponte.resposta, ouvir);
+        resolve({ ok: false, status: 0, text: async () => '', json: async () => ({}) });
+      }, 30000);
+
+      try {
+        const pedido = {
+          id, url: String(url),
+          method: op.method || 'GET',
+          headers: op.headers || {},
+          body: op.body || null,
+        };
+        const limpo = (typeof cloneInto === 'function') ? cloneInto(pedido, document) : pedido;
+        document.dispatchEvent(new CustomEvent(ponte.pedir, { detail: limpo }));
+      } catch (e) {
+        resolve({ ok: false, status: 0, text: async () => '', json: async () => ({}) });
+      }
+    });
+  }
+  try { uw.__maestroPedirFora = pedirFora; } catch (e) {}
 
   const WEBHOOKS_KEY = 'grepoMaestro_webhooks_v1';
   const WEBHOOKS_OMISSAO = { captcha: '', ataque: '', ataqueNC: '' };
@@ -405,7 +468,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.28.2313';
+  const MAESTRO_VERSAO = '2026.08.28.2327';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -911,7 +974,7 @@
       body.files[ficheiroPerfil(nome)] = {
         content: JSON.stringify({ perfil: nome, mundo: WORLD, quando: Date.now(), chaves }, null, 1),
       };
-      const r = await uw.fetch(`https://api.github.com/gists/${GIST_ID_GLOBAL}`, {
+      const r = await pedirFora(`https://api.github.com/gists/${GIST_ID_GLOBAL}`, {
         method: 'PATCH',
         headers: {
           Accept: 'application/vnd.github+json',
@@ -927,7 +990,7 @@
   async function buscarPerfil(nome) {
     if (!GIST_ID_GLOBAL) return { ok: false, msg: 'sem Gist configurado' };
     try {
-      const r = await uw.fetch(`https://api.github.com/gists/${GIST_ID_GLOBAL}`, {
+      const r = await pedirFora(`https://api.github.com/gists/${GIST_ID_GLOBAL}`, {
         headers: { Accept: 'application/vnd.github+json' },
       });
       if (!r.ok) return { ok: false, msg: 'não consegui ler o Gist' };
@@ -3683,6 +3746,52 @@ function makeConstrucaoModule(opts) {
    * confirmado no jogo, onde apareceu vazia havendo obras noutras cidades.
    * Por isso isto é chamado dentro do ciclo, depois de trocar para cada
    * cidade, e não uma vez no início. */
+  /* LIMPAR AS OBRAS PRESAS NA FILA.
+   *
+   * O jogo deixa na fila obras que já ACABARAM no servidor — confirmado em
+   * jogo: pedir a conclusão de uma delas responde "A ordem de construção
+   * selecionada já não existe". O modelo local é que não foi actualizado.
+   *
+   * Com o Curador a fila tem 7 lugares; uma obra morta ocupa um deles e a
+   * cidade deixa de construir. Visto: uma obra presa há 6 minutos com a fila
+   * cheia a 7.
+   *
+   * Não adianta pedir ao servidor: nem o `buyInstant` nem o pedido do senado
+   * a tiram. O que resolve é remover a entrada do modelo — testado, e ela não
+   * volta.
+   *
+   * Isto não mexe no servidor: só põe a cópia local de acordo com a verdade.
+   * O que lá estava já foi construído. */
+  function limparObrasPresas(ctx) {
+    let n = 0;
+    try {
+      const col = uw.MM.getCollections().BuildingOrder[0];
+      if (!col || !col.models || typeof col.remove !== 'function') return 0;
+      const agora = Number(uw.Timestamp.now());
+      if (!agora) return 0;
+
+      /* Copiar a lista antes de remover: mexer nela enquanto se percorre
+       * salta entradas. */
+      const mortas = col.models.filter((m) => {
+        const a = (m && m.attributes) || {};
+        const fim = Number(a.to_be_completed_at) || 0;
+        /* Margem de 30 s: uma obra a acabar mesmo agora não está presa. */
+        return fim > 0 && (fim + 30) < agora;
+      });
+
+      for (const m of mortas) {
+        const a = (m && m.attributes) || {};
+        try {
+          col.remove(m);
+          n++;
+          ctx.log(`🧹 ${NOMES_PT[a.building_type] || a.building_type}: já estava `
+            + 'concluída no servidor — libertei o lugar na fila.');
+        } catch (e) {}
+      }
+    } catch (e) {}
+    return n;
+  }
+
   async function concluirGratuitas(ctx, soDaCidade) {
     const log = ctx.log;
     let n = 0;
@@ -3793,6 +3902,10 @@ function makeConstrucaoModule(opts) {
     const rotina = ctx.logRotina || ctx.log;
     const aEsperar = [];   // cidades sem recursos: linha de rotina, não aparece
     const semPop = [];     // cidades com a população esgotada
+
+    /* Antes de tudo: tirar da fila as obras que já acabaram no servidor.
+     * Uma delas ocupa um lugar e a cidade deixa de construir. */
+    limparObrasPresas(ctx);
 
     const templates = await readTemplatesGist();
     if (!Object.keys(templates).length) { log('Sem templates configurados; nada a construir.'); return; }
@@ -19668,6 +19781,16 @@ function makeMissoesModule(opts) {
  * ========================================================================== */
 
 function makeColonosModule(opts) {
+  /* Pedidos a domínios de fora, pela ponte do carregador quando existe.
+   * Ver `pedirFora` no núcleo. */
+  const pedirForaM = (url, op) => {
+    try {
+      const f = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroPedirFora;
+      if (f) return f(url, op);
+    } catch (e) {}
+    return mUw.fetch(url, op);
+  };
+
   /* Última partilha lida, para o painel listar as contas e as cidades delas
    * sem ir buscar outra vez ao Gist. */
   let partilhaCache = null;
@@ -19856,7 +19979,7 @@ function makeColonosModule(opts) {
   async function lerPartilha() {
     if (!GIST_ID || !GIST_TOKEN) return {};
     try {
-      const r = await mUw.fetch(`https://api.github.com/gists/${GIST_ID}`, {
+      const r = await pedirForaM(`https://api.github.com/gists/${GIST_ID}`, {
         headers: { Authorization: `token ${GIST_TOKEN}`, Accept: 'application/vnd.github+json' },
       });
       if (!r.ok) return {};
@@ -19877,7 +20000,7 @@ function makeColonosModule(opts) {
     try {
       const body = { files: {} };
       body.files[FICHEIRO()] = { content: JSON.stringify(dados, null, 1) };
-      const r = await mUw.fetch(`https://api.github.com/gists/${GIST_ID}`, {
+      const r = await pedirForaM(`https://api.github.com/gists/${GIST_ID}`, {
         method: 'PATCH',
         headers: {
           Authorization: `token ${GIST_TOKEN}`,
@@ -20581,6 +20704,16 @@ function makeColonosModule(opts) {
  * ========================================================================== */
 
 function makeApoioModule(opts) {
+  /* Pedidos a domínios de fora, pela ponte do carregador quando existe.
+   * Ver `pedirFora` no núcleo. */
+  const pedirForaM = (url, op) => {
+    try {
+      const f = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroPedirFora;
+      if (f) return f(url, op);
+    } catch (e) {}
+    return mUw.fetch(url, op);
+  };
+
   opts = opts || {};
 
   let mUw = null, mWorld = '';
@@ -20763,7 +20896,7 @@ function makeApoioModule(opts) {
   async function lerLista() {
     if (!GIST_ID) return null;
     try {
-      const r = await mUw.fetch(`https://api.github.com/gists/${GIST_ID}`, {
+      const r = await pedirForaM(`https://api.github.com/gists/${GIST_ID}`, {
         headers: { Accept: 'application/vnd.github+json' },
       });
       if (!r.ok) return null;
@@ -20789,7 +20922,7 @@ function makeApoioModule(opts) {
     try {
       const body = { files: {} };
       body.files[FICHEIRO()] = { content: JSON.stringify(dados, null, 1) };
-      const r = await mUw.fetch(`https://api.github.com/gists/${GIST_ID}`, {
+      const r = await pedirForaM(`https://api.github.com/gists/${GIST_ID}`, {
         method: 'PATCH',
         headers: {
           Accept: 'application/vnd.github+json',
