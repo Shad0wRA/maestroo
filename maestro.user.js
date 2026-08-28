@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.28.2327
+// @version      2026.08.28.2334
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -468,7 +468,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.28.2327';
+  const MAESTRO_VERSAO = '2026.08.28.2334';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -14811,6 +14811,11 @@ function makeEsquivaModule(opts) {
      *
      * Se o destino for na mesma ilha, separa-se; se for noutra ilha, tudo tem
      * de ir por mar e mantém-se o envio único com os transportes. */
+    /* MONTAR A CARGA AGORA, no instante do envio.
+     *
+     * Não se usa nada calculado no momento do plano: entre esse instante e
+     * este passaram minutos, e a cidade pode ter mudado. Pergunta-se ao jogo
+     * o que lá está e manda-se isso — tudo o que puder sair. */
     const comandos = [];
     if (!esc.precisaBarcos) {
       const sep = separarCarga(plano.townId);
@@ -14830,50 +14835,72 @@ function makeEsquivaModule(opts) {
     for (const cmd of comandos) {
       let r = await enviarApoio(plano.townId, esc.destino.id, cmd.carga);
 
-      /* SE O SERVIDOR RECUSAR, TENTAR OUTRA VEZ COM MENOS.
+      /* SE O SERVIDOR RECUSAR, INSISTIR COM MENOS ATÉ PASSAR.
        *
-       * Um envio recusado deixa a tropa em casa a apanhar o ataque. Já
-       * aconteceu: o envio por mar passou, o de terra falhou com "não há
-       * unidades suficientes", e morreram mais de 100 enviados divinos.
+       * Não há forma fiável de saber quantas unidades a cidade tem: o modelo
+       * do jogo só se actualiza ao recarregar a página, e nem abrir o quartel
+       * nem o `gpAjax` o corrigem. Está testado.
        *
-       * A carga é calculada no momento do plano; entre esse instante e o
-       * envio a cidade pode ter mudado — tropa que saiu, que morreu, ou que
-       * o contador ainda não mostrava.
+       * Então não se tenta adivinhar. Manda-se o que se julga ter; se o
+       * servidor disser que são demais, manda-se menos, e outra vez menos,
+       * até passar. Cinco tentativas chegam para descer de tudo a um oitavo.
        *
-       * Volta a perguntar ao jogo o que lá está AGORA e manda isso. */
-      if (!r.ok) {
-        try {
-          const soVisiveis = {};
-          const visiveis = mUw.ITowns.getTown(Number(plano.townId)).units() || {};
-          for (const u of Object.keys(cmd.carga)) {
-            const cabe = Math.min(Number(cmd.carga[u]) || 0, Number(visiveis[u]) || 0);
-            if (cabe > 0) soVisiveis[u] = cabe;
-          }
-          if (Object.keys(soVisiveis).length) {
-            log(`↩️ Esquiva ${nome}: recusado (${r.msg}) — tento com o que está `
-              + 'mesmo na cidade.');
-            r = await enviarApoio(plano.townId, esc.destino.id, soVisiveis);
+       * Isto não depende de nenhum número estar certo — é a única forma de
+       * garantir que a tropa sai. Uma esquiva com metade da tropa é infinitamente
+       * melhor do que uma esquiva que não acontece: já custou mais de 100
+       * enviados divinos numa tarde. */
+      if (!r.ok && /suficiente|enough|genug/i.test(String(r.msg || ''))) {
+        /* MANDAR SAIR TUDO, EM VÁRIAS VOLTAS.
+         *
+         * Não há forma fiável de saber quantas unidades a cidade tem — o
+         * modelo do jogo só se actualiza ao recarregar a página, e nem abrir
+         * o quartel nem o `gpAjax` o corrigem. Está testado.
+         *
+         * Então não se adivinha. Manda-se metade; se passar, tenta-se mandar
+         * metade do que resta, e assim por diante. Cada volta que passa é
+         * tropa salva, e o que fica é cada vez menos.
+         *
+         * O pior que acontece é ficarem vários comandos em vez de um, o que
+         * não faz mal — todos são cancelados na hora certa.
+         *
+         * Uma esquiva com 90% da tropa é infinitamente melhor do que uma que
+         * não acontece: já custou mais de 100 enviados divinos numa tarde. */
+        let resta = Object.assign({}, cmd.carga);
+        let saiuAlguma = false;
 
-            /* TERCEIRA tentativa: metade da carga.
-             *
-             * Se ainda recusa, é porque o número continua acima do que a
-             * cidade tem — pode haver tropa a sair ao mesmo tempo, ou o
-             * contador estar atrasado. Metade costuma passar, e salvar
-             * metade é melhor do que perder tudo. */
-            if (!r.ok) {
-              const metade = {};
-              let temAlguma = false;
-              for (const u of Object.keys(soVisiveis)) {
-                const n2 = Math.floor(Number(soVisiveis[u]) / 2);
-                if (n2 > 0) { metade[u] = n2; temAlguma = true; }
-              }
-              if (temAlguma) {
-                log(`↩️ Esquiva ${nome}: ainda recusado — tento com metade.`);
-                r = await enviarApoio(plano.townId, esc.destino.id, metade);
-              }
-            }
+        for (let volta = 1; volta <= 6; volta++) {
+          /* Quanto tentar desta vez: tudo o que resta, na primeira volta
+           * depois de uma recusa vai a metade. */
+          const fatia = {};
+          let temAlguma = false;
+          for (const u of Object.keys(resta)) {
+            const n2 = Math.floor(Number(resta[u]) / 2);
+            if (n2 > 0) { fatia[u] = n2; temAlguma = true; }
           }
-        } catch (e) {}
+          if (!temAlguma) break;
+
+          const r2 = await enviarApoio(plano.townId, esc.destino.id, fatia);
+
+          if (r2.ok) {
+            saiuAlguma = true;
+            r = r2;
+            if (r2.comando && r2.comando.commandId) todosMeus.push(Number(r2.comando.commandId));
+            log(`↗️ Esquiva ${nome}: saíram `
+              + `${Object.keys(fatia).map((u) => fatia[u] + ' ' + u).join(', ')}.`);
+            /* Tirar o que saiu e tentar levar o resto. */
+            for (const u of Object.keys(fatia)) {
+              resta[u] = Math.max(0, (Number(resta[u]) || 0) - fatia[u]);
+            }
+          } else {
+            /* Ainda são demais: da próxima vez tenta-se metade disto. */
+            resta = fatia;
+          }
+        }
+
+        if (saiuAlguma) {
+          anotar(0, plano.townId, 'saiu por partes',
+            'o número que o jogo mostrava estava errado');
+        }
       }
 
       if (r.ok) {
@@ -15194,53 +15221,43 @@ function makeEsquivaModule(opts) {
       }
     } catch (e) {}
 
-    /* SEPARAR EM VAGAS.
+    /* UM PLANO POR CIDADE — o ataque mais PRÓXIMO.
      *
-     * Ataques muito afastados no tempo não são a mesma vaga e não se esquivam
-     * juntos. Visto em jogo: um ataque às 23:17 e outro às 13:42 do dia
-     * seguinte — quase 14 h de intervalo — eram tratados como um só plano, o
-     * que obrigava a tropa a sair horas antes e tornava o regresso impossível.
+     * Havia aqui uma separação em "vagas" que tentava encadear vários planos
+     * para a mesma cidade. Era mais capaz no papel, mas nunca se viu funcionar
+     * e multiplicava as oportunidades de algo correr mal: planos duplicados,
+     * temporizadores órfãos, e decisões em cima de decisões.
      *
-     * Regra: se dois impactos consecutivos distam mais do que a janela de
-     * cancelamento (o tempo máximo que a tropa pode andar fora e ainda voltar
-     * a horas), são vagas diferentes e cada uma tem o seu plano. */
+     * Uma esquiva que acerta sempre vale mais do que uma que faz mais coisas.
+     *
+     * Se houver vários ataques à mesma cidade, esquiva-se o primeiro. Quando
+     * ele passar, a passagem seguinte trata do próximo. */
     const porVaga = {};
     for (const tid of Object.keys(porCidade)) {
       const lista = porCidade[tid].slice().sort((a, b) => a.arrival - b.arrival);
-      const intervalo = Math.max(600, Number(c.janelaCancelamento) || 600);
+      if (!lista.length) continue;
 
-      let vaga = [];
-      let n = 0;
-      for (const imp of lista) {
-        if (vaga.length && (imp.arrival - vaga[vaga.length - 1].arrival) > intervalo) {
-          porVaga[`${tid}#${n++}`] = vaga;
-          vaga = [];
-        }
-        vaga.push(imp);
+      /* Os que chegam quase ao mesmo tempo contam como um só: se dois
+       * impactos distam menos de 2 minutos, a tropa não tem tempo de voltar
+       * entre eles e tem de escapar aos dois. */
+      const juntos = [lista[0]];
+      for (let k = 1; k < lista.length; k++) {
+        if (lista[k].arrival - juntos[juntos.length - 1].arrival <= 120) juntos.push(lista[k]);
+        else break;
       }
-      if (vaga.length) porVaga[`${tid}#${n}`] = vaga;
+      porVaga[String(tid)] = juntos;
     }
 
-    for (const chaveVaga of Object.keys(porVaga)) {
-      const townId = chaveVaga.split('#')[0];
-      const impactos = porVaga[chaveVaga];
-      const chave = impactos.map((i) => i.cmd).sort().join('-');
+    for (const townId of Object.keys(porVaga)) {
+      const impactos = porVaga[townId];
 
-      /* Evitar planos DUPLICADOS para a mesma cidade e hora.
+      /* A CHAVE é a cidade e a hora do impacto, não os comandos.
        *
-       * A chave são os identificadores dos comandos: se chegar um ataque novo
-       * à mesma vaga, a chave muda e cria-se um segundo plano com a mesma hora
-       * de saída. Vi seis planos assim para a mesma cidade.
-       *
-       * Se já houver um plano desta cidade com saída a menos de 60 s, é a
-       * mesma vaga — substitui-se em vez de acrescentar. */
-      for (const k2 of Object.keys(planos)) {
-        const p2 = planos[k2];
-        if (!p2 || Number(p2.townId) !== Number(townId)) continue;
-        if (k2 === chave) continue;
-        const dif = Math.abs(Number(p2.S) - (impactos[0].arrival - c.antesDoImpacto));
-        if (dif < 60) { delete planos[k2]; }
-      }
+       * Antes era a lista de comandos: bastava chegar mais um ataque para a
+       * chave mudar e nascer um segundo plano com a mesma hora de saída. Vi
+       * seis planos assim para a mesma cidade. */
+      const chave = `${townId}@${Math.floor(impactos[0].arrival / 60)}`;
+
       if (agendados.has(chave)) continue;
 
       /* A regra desta cidade permite esquivar isto?
