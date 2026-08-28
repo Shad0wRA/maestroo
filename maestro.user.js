@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.28.1411
+// @version      2026.08.28.1528
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -122,6 +122,12 @@
       /não está publicado|ainda não foi publicado/i,
       /já estava concluída/i,       // limpeza da fila a funcionar
       /não está na lista de equipas/i,
+
+      /* As mensagens DO PRÓPRIO SININHO não contam como erro — senão ele
+       * registava-se a si mesmo e ficava em ciclo. */
+      /Sem erros guardados/i,
+      /^🔔 \d+ erro/,
+      /^\s+\[\d{2}:\d{2}:\d{2}\]/,
     ];
     if (normal.some((re) => re.test(t))) return false;
 
@@ -152,8 +158,12 @@
     } catch (e) {}
   }
 
+  /* Enquanto o sininho está a escrever os erros, não se regista nada — senão
+   * as próprias linhas dele contavam como erros novos. */
+  let aMostrarErros = false;
+
   function log(modId, msg) {
-    if (pareceErro(msg)) anotarErro(modId, msg);
+    if (!aMostrarErros && pareceErro(msg)) anotarErro(modId, msg);
     /* O carimbo é a hora do JOGO, não a do computador: o relógio do
      * utilizador estava 1 h à frente do servidor e as linhas do registo não
      * batiam com nada do que se vê no jogo. */
@@ -395,7 +405,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.28.1411';
+  const MAESTRO_VERSAO = '2026.08.28.1528';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -428,8 +438,16 @@
   const REFRESH_KEY = 'grepoMaestro_refreshHora_v1';
   const ULTIMO_REFRESH_KEY = 'grepoMaestro_ultimoRefresh_v1';
 
+  /* LIGADO por omissão.
+   *
+   * Os modelos do jogo não se actualizam sozinhos — tropas recrutadas, filas de
+   * construção, tropa que morreu. Recarregar de hora a hora mantém tudo fresco,
+   * e faz o Tampermonkey procurar versões novas com mais frequência do que o
+   * seu ciclo de 6 h.
+   *
+   * Desmarca-se no painel. */
   function refreshHorarioLigado() {
-    try { return localStorage.getItem(REFRESH_KEY) === '1'; } catch (e) { return false; }
+    try { return localStorage.getItem(REFRESH_KEY) !== '0'; } catch (e) { return true; }
   }
 
   function talvezRefrescar() {
@@ -2368,15 +2386,24 @@
     const sino = document.getElementById('maestro-sino');
     if (sino) sino.onclick = (e) => {
       e.preventDefault();
-      if (!errosGuardados.length) { log('core', 'Sem erros guardados.'); return; }
+      if (!errosGuardados.length) {
+        aMostrarErros = true;
+        try { log('core', 'Sem erros guardados.'); } finally { aMostrarErros = false; }
+        return;
+      }
 
       const linhas = errosGuardados.map((x) => `[${x.hora}] [${x.mod}] ${x.msg}`);
       console.log('=== ERROS DO MAESTRO ===');
       linhas.forEach((l) => console.log('  ' + l));
 
       /* Mostrar no registo também, para se ver sem abrir a consola. */
-      log('core', `🔔 ${errosGuardados.length} erro(s):`);
-      for (const l of linhas.slice(-10)) log('core', '   ' + l);
+      aMostrarErros = true;
+      try {
+        log('core', `🔔 ${errosGuardados.length} erro(s):`);
+        for (const l of linhas.slice(-10)) log('core', '   ' + l);
+      } finally {
+        aMostrarErros = false;
+      }
 
       errosGuardados = [];
       actualizarSininho();
@@ -2388,10 +2415,10 @@
     if (chkR) chkR.onchange = () => {
       try {
         if (chkR.checked) {
-          localStorage.setItem(REFRESH_KEY, '1');
+          localStorage.removeItem(REFRESH_KEY);
           localStorage.setItem(ULTIMO_REFRESH_KEY, String(Date.now()));
         } else {
-          localStorage.removeItem(REFRESH_KEY);
+          localStorage.setItem(REFRESH_KEY, '0');
         }
       } catch (e) {}
       log('core', chkR.checked
@@ -14953,7 +14980,10 @@ function makeEsquivaModule(opts) {
        * Isto acontece quando o modelo do jogo só mostra o ataque à última
        * hora, e era uma das razões de "alguns ataques não esquivam". */
       if (tempos.S <= t) {
-        const impacto = ordenados[ordenados.length - 1].arrival;
+        /* O último impacto desta vaga. (Antes usava-se uma variável que não
+         * existe neste âmbito, o que rebentava a função inteira e fazia com
+         * que NENHUM ataque fosse esquivado.) */
+        const impacto = Number(impactos[impactos.length - 1].arrival) || 0;
         const faltaImpacto = impacto - t;
 
         /* BASTA UM SEGUNDO.
@@ -14972,12 +15002,16 @@ function makeEsquivaModule(opts) {
           planos[chave] = plano2;
           gravarPlanos(planos);
           log(`⚡ ${nome}: ataque visto tarde (faltam ${faltaImpacto}s) — saio JÁ.`);
+          anotar(impactos[0] && impactos[0].cmd, townId, 'saída tardia',
+            `só faltavam ${faltaImpacto}s para o impacto`);
           executarPlano(ctx, plano2).catch(() => {});
           continue;
         }
 
         agendados.add(chave);
         log(`⏱️ ${nome}: o ataque já bateu (há ${Math.abs(faltaImpacto)}s) — nada a fazer.`);
+        anotar(impactos[0] && impactos[0].cmd, townId, 'tarde demais',
+          `o ataque bateu há ${Math.abs(faltaImpacto)}s`);
         continue;
       }
 
