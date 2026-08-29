@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.29.1316
+// @version      2026.08.29.1328
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -546,7 +546,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.29.1316';
+  const MAESTRO_VERSAO = '2026.08.29.1328';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -18805,8 +18805,14 @@ function makeEncaixeModule(opts) {
         };
 
         cx.innerHTML = ps.map((p) => {
+          const iconeUn = (u, n) => `<span title="${lim(n + ' ' + nomeUn(u))}"
+            style="display:inline-flex;align-items:center;gap:2px;margin-right:5px;vertical-align:middle">
+            <span class="unit_icon40x40 ${lim(u)}"
+              style="width:22px;height:22px;background-size:22px 22px;display:inline-block"></span>
+            <b>${n}</b></span>`;
+
           const tropas = Object.keys(p.unidades || {})
-            .map((u) => p.unidades[u] + ' ' + nomeUn(u)).join(', ');
+            .map((u) => iconeUn(u, p.unidades[u])).join('');
           const icone = p.tipo === 'attack' ? '⚔'
             : (p.tipo === 'colonize' ? '🚢' : '🛡');
           return `<div style="border-top:1px solid #223;padding:3px 0">
@@ -18815,7 +18821,7 @@ function makeEncaixeModule(opts) {
               <a href="#" data-canc="${p.id}" style="color:#f88;text-decoration:none">✕</a>
             </div>
             <div style="opacity:.85">chega <b>${hh(p.chegada)}</b></div>
-            <div style="opacity:.65;font-size:10px">${lim(tropas || 'sem unidades')}</div>
+            <div style="opacity:.9;font-size:10px">${tropas || '<span style="opacity:.5">sem unidades</span>'}</div>
           </div>`;
         }).join('');
         cx.querySelectorAll('[data-canc]').forEach((el) => {
@@ -18995,16 +19001,28 @@ function makeEncaixeModule(opts) {
       const dur = p.duracaoJogo || duracaoPrevista(p.origemId, alvo, p.unidades, c);
       const falta = p.chegada - agora();
       const envio = dur ? hh(p.chegada - dur) : '?';
-      const tropas = Object.keys(p.unidades || {})
-        .map((u) => p.unidades[u] + ' ' + nomeUn(u)).join(', ');
-      const quando = falta > 0
-        ? (falta > 3600 ? `daqui a ${Math.round(falta / 3600)}h` : `daqui a ${Math.round(falta / 60)} min`)
-        : 'já passou';
-      /* Escapar aqui: o `esc` do módulo não está ao alcance desta função e
-       * fazia o painel rebentar com "esc is not defined". */
+      /* Escapar: cada função tem o seu, porque o do módulo não chega aqui. */
       const lim = (x) => String(x == null ? '' : x)
         .replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
 
+      /* ÍCONES DAS UNIDADES.
+       *
+       * O jogo desenha-os com a classe `unit_icon40x40 <unidade>`. Reutiliza-se
+       * a mesma, encolhida para 25px — uma linha com ícones lê-se de relance,
+       * ao contrário de "171 Navio-farol".
+       *
+       * O `title` mantém o nome, para quem passar o rato. */
+      const iconeUn = (u, n) => `<span title="${lim(n + ' ' + nomeUn(u))}"
+        style="display:inline-flex;align-items:center;gap:2px;margin-right:6px;vertical-align:middle">
+        <span class="unit_icon40x40 ${lim(u)}"
+          style="width:25px;height:25px;background-size:25px 25px;display:inline-block"></span>
+        <b>${n}</b></span>`;
+
+      const tropas = Object.keys(p.unidades || {})
+        .map((u) => iconeUn(u, p.unidades[u])).join('');
+      const quando = falta > 0
+        ? (falta > 3600 ? `daqui a ${Math.round(falta / 3600)}h` : `daqui a ${Math.round(falta / 60)} min`)
+        : 'já passou';
 
       /* QUE CIDADE ENVIA — sem isto, com vários envios agendados não se sabia
        * qual era qual. */
@@ -19049,7 +19067,7 @@ function makeEncaixeModule(opts) {
           <a href="#" data-cancelar="${p.id}" style="color:#f88;text-decoration:none" title="cancelar este agendamento">✕ cancelar</a>
         </div>
         <div>chega <b>${hh(p.chegada)}</b>${dia(p.chegada)} · ${quando}</div>
-        <div style="opacity:.75">${tropas || 'sem unidades'}</div>
+        <div style="opacity:.9">${tropas || '<span style="opacity:.5">sem unidades</span>'}</div>
         <div style="opacity:.6;font-size:10px">sai ${envio} · margem ±${margUsada}s${
           dirUsada === 'antes' ? ' (só antes)' : dirUsada === 'depois' ? ' (só depois)' : ''}</div>
         ${p.duracaoJogo ? '' : '<div style="color:#fc8">⚠ duração estimada — o alvo não tinha coordenadas</div>'}
@@ -22094,8 +22112,23 @@ function makeApoioModule(opts) {
      * em "obter nomes". */
     nomesPelasTropas();
 
-    const lista = await lerLista();
-    if (!lista) { log('Apoio: não consegui ler a lista partilhada (Gist).'); return; }
+    let lista = await lerLista();
+
+    /* SE O GIST FALHAR, usar a última lista conhecida.
+     *
+     * Uma falha momentânea — um 429, a rede a hesitar — não é razão para o
+     * módulo não fazer nada. A lista muda raramente e a cópia local serve.
+     *
+     * Só se desiste se nunca tiver havido lista nenhuma. */
+    if (!lista) {
+      lista = listaEmCache();
+      if (lista) {
+        rotina('Apoio: o Gist não respondeu — uso a última lista guardada.');
+      } else {
+        log('Apoio: não consegui ler a lista partilhada e não tenho cópia local.');
+        return;
+      }
+    }
 
     const alvos = (lista.alvos || lista.targets || []).map(Number).filter(Boolean);
 
