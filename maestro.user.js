@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.29.1143
+// @version      2026.08.29.1203
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -538,7 +538,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.29.1143';
+  const MAESTRO_VERSAO = '2026.08.29.1203';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -19061,29 +19061,32 @@ function makeMissoesModule(opts) {
     const pedido = (missao.configuration || {}).resources;
     if (!pedido) return null;
 
-    /* O `progress.resources` NÃO é o que já foi entregue.
+    /* O `progress.resources` é O QUE AINDA FALTA — não o que já foi entregue.
      *
-     * Confirmado no jogo: numa missão a que não se deu nada, o
-     * `progress.resources` é IGUAL ao `configuration.resources`. É o pedido
-     * repetido, não o progresso.
+     * Confirmado com dois casos reais:
+     *   · missão sem nada entregue: pede 1200/1200/1600, progresso
+     *     1200/1200/1600 — igual, porque falta tudo
+     *   · missão a meio: pede 8100/8100/16200, progresso 903/890/9910 —
+     *     menor, porque já se entregou parte
      *
-     * Como se subtraía um do outro, dava sempre zero — e nenhuma missão de
-     * recursos era feita.
+     * Subtrair um do outro dava zero na primeira (e nenhuma missão era feita);
+     * ignorá-lo fazia enviar o total na segunda, e o servidor recusava com
+     * "não pode gastar mais recursos do que os solicitados".
      *
-     * O progresso a sério está em `progress.progress`, que vem como lista.
-     * Enquanto não se souber ler essa lista, assume-se que nada foi dado: no
-     * pior caso dá-se recursos a uma missão já cumprida, e o servidor recusa
-     * — o que é melhor do que nunca fazer nenhuma. */
-    let feito = {};
+     * Usa-se o `progress.resources` directamente. Sem ele, o pedido inteiro. */
+    let emFalta = null;
     try {
-      const p2 = (missao.progress || {}).progress;
-      if (p2 && !Array.isArray(p2) && typeof p2 === 'object') feito = p2;
+      const r = (missao.progress || {}).resources;
+      if (r && typeof r === 'object') emFalta = r;
     } catch (e) {}
+    if (!emFalta) emFalta = pedido;
 
     const falta = {};
     let total = 0;
     for (const k of ['wood', 'stone', 'iron']) {
-      const f = Math.max(0, (Number(pedido[k]) || 0) - (Number(feito[k]) || 0));
+      /* Nunca pedir mais do que a missão pede ao todo — uma salvaguarda, para
+       * o caso de o campo trazer outra coisa nalguma missão. */
+      const f = Math.min(Number(emFalta[k]) || 0, Number(pedido[k]) || 0);
       if (f > 0) { falta[k] = f; total += f; }
     }
     return total > 0 ? { falta, total } : null;
