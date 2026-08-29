@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.29.1328
+// @version      2026.08.29.1335
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -546,7 +546,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.29.1328';
+  const MAESTRO_VERSAO = '2026.08.29.1335';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -1894,17 +1894,47 @@
    * Aqui espaça-se: uma escrita por ficheiro de cada vez, com um mínimo de
    * tempo entre elas. As alterações vão-se acumulando e sobe a última.
    * ==================================================================== */
-  const ESPERA_ENTRE_ESCRITAS = 30000;   // 30 s por ficheiro
+  /* 90 s entre escritas.
+   *
+   * Eram 30 s por ficheiro e por aba. Com 20 contas a gravar no mesmo Gist,
+   * isso dá dezenas de escritas por minuto e o GitHub corta — é o limite
+   * secundário, que nem aparece no `rate_limit`.
+   *
+   * As listas mudam raramente; esperar um minuto e meio não custa nada. */
+  const ESPERA_ENTRE_ESCRITAS = 90000;
   const ultimaEscrita = {};
   const escritaPendente = {};
 
   /* Um módulo chama isto em vez de escrever directamente. */
+  /* A última escrita de QUALQUER conta, não só desta aba.
+   *
+   * O travão era por aba: cada conta esperava o seu intervalo, mas vinte
+   * contas a fazê-lo em paralelo continuavam a bater no limite secundário do
+   * GitHub — o que não aparece no `rate_limit` e trava escritas seguidas do
+   * mesmo recurso.
+   *
+   * Guardar a hora no armazenamento partilhado faz as contas do mesmo
+   * navegador respeitarem a vez umas das outras. Não resolve entre perfis
+   * diferentes, mas corta a maior parte das colisões. */
+  const ULTIMA_ESCRITA_KEY = 'grepoMaestro_ultimaEscritaGist_v1';
+
+  function ultimaEscritaGlobal() {
+    try { return Number(localStorage.getItem(ULTIMA_ESCRITA_KEY)) || 0; } catch (e) { return 0; }
+  }
+  function marcarEscritaGlobal() {
+    try { localStorage.setItem(ULTIMA_ESCRITA_KEY, String(Date.now())); } catch (e) {}
+  }
+
   function escreverNoGistComTravao(chave, fazer) {
     const agora = Date.now();
-    const desde = agora - (ultimaEscrita[chave] || 0);
+    const desde = Math.min(
+      agora - (ultimaEscrita[chave] || 0),
+      agora - ultimaEscritaGlobal(),
+    );
 
     if (desde >= ESPERA_ENTRE_ESCRITAS) {
       ultimaEscrita[chave] = agora;
+      marcarEscritaGlobal();
       return fazer();
     }
 
@@ -1915,8 +1945,9 @@
       escritaPendente[chave] = setTimeout(async () => {
         delete escritaPendente[chave];
         ultimaEscrita[chave] = Date.now();
+        marcarEscritaGlobal();
         try { resolve(await fazer()); } catch (e) { resolve({ ok: false, msg: e.message }); }
-      }, ESPERA_ENTRE_ESCRITAS - desde);
+      }, (ESPERA_ENTRE_ESCRITAS - desde) + Math.floor(Math.random() * 5000));
     });
   }
   try { uw.__maestroGistTravao = escreverNoGistComTravao; } catch (e) {}
@@ -21304,6 +21335,8 @@ function makeApoioModule(opts) {
   const CFG_KEY = 'grepoApoio_cfg_v1';
   const DONE_KEY = 'grepoApoio_done_v1';
   const CACHE_ALVOS = 'grepoApoio_cacheAlvos_v1';
+  /* Alvos que se tirou mas cuja gravação falhou — tenta-se outra vez sozinho. */
+  const POR_REMOVER_KEY = 'grepoApoio_porRemover_v1';
 
   const DEFAULTS = {
     ativo: false,
@@ -22130,6 +22163,32 @@ function makeApoioModule(opts) {
       }
     }
 
+    /* REMOÇÕES QUE FICARAM POR GRAVAR.
+     *
+     * Se o GitHub cortou a escrita quando tiraste um alvo, ele continua na
+     * lista partilhada e as outras contas continuam a apoiá-lo. Tenta-se
+     * outra vez aqui, sem intervenção. */
+    try {
+      const pend = JSON.parse(armazem.getItem(POR_REMOVER_KEY) || '[]');
+      if (pend.length) {
+        const arr0 = (lista.alvos || lista.targets || []).map(Number);
+        const restam = arr0.filter((x) => pend.indexOf(x) < 0);
+        if (restam.length !== arr0.length) {
+          const copia = Object.assign({}, lista, { alvos: restam });
+          delete copia.targets;
+          const r2 = await escreverLista(copia);
+          if (r2.ok) {
+            lista = copia;
+            armazem.removeItem(POR_REMOVER_KEY);
+            log(`Apoio: ${pend.length} remoção(ões) pendente(s) gravada(s).`);
+          }
+        } else {
+          armazem.removeItem(POR_REMOVER_KEY);   // já lá não estavam
+        }
+      }
+    } catch (e) {}
+
+
     const alvos = (lista.alvos || lista.targets || []).map(Number).filter(Boolean);
 
     /* RETIRAR O QUE JÁ NÃO ESTÁ NA LISTA.
@@ -22387,6 +22446,8 @@ function makeApoioModule(opts) {
     try { nomesPelasTropas(); } catch (e) {}
     const c = cfg();
     const lista = listaEmCache() || {};
+
+
     const alvos = (lista.alvos || lista.targets || []).map(Number).filter(Boolean);
     const reg = lerRegisto();
 
@@ -22498,23 +22559,66 @@ function makeApoioModule(opts) {
     if (elNovo) elNovo.onkeydown = (e) => { if (e.key === 'Enter') add(); };
 
     /* ---- retirar alvo: sai da lista e o apoio volta ---- */
+    /* RETIRAR ALVOS — várias remoções, UMA escrita.
+     *
+     * Cada remoção lia a lista, tirava um alvo e gravava. Retirar cinco alvos
+     * eram cinco escritas seguidas no mesmo Gist, e o GitHub cortava-as: a
+     * lista ficava por actualizar e as outras contas continuavam a ver os
+     * alvos antigos.
+     *
+     * Agora as remoções acumulam-se e há uma escrita só, 2 s depois do último
+     * clique. A retirada das tropas acontece de imediato, como antes — essa
+     * fala com o jogo, não com o GitHub. */
+    let paraRemover = new Set();
+    let gravarRemocoes = null;
+
     container.querySelectorAll('[data-remover]').forEach((b) => {
       b.onclick = async () => {
         const id = Number(b.getAttribute('data-remover'));
         const info = cacheCidades[id] || { nome: '#' + id };
         if (!confirm(`Retirar o apoio de ${info.nome}?\n\nA cidade sai da lista e as tropas que lá tens voltam.`)) return;
+
         b.disabled = true; b.textContent = '...';
-        const atual = (await lerLista()) || listaEmCache() || {};
-        const arr = (atual.alvos || atual.targets || []).map(Number).filter((x) => x && x !== id);
-        atual.alvos = arr; delete atual.targets;
-        const rr = await escreverLista(atual);
-        if (rr.ok) {
-          ctx.log(`Apoio: ${info.nome} saiu da lista — as tropas voltam na próxima passagem.`);
+        paraRemover.add(id);
+
+        /* As tropas voltam já — isto é com o jogo e não gasta escritas. */
+        try {
           const n = await retirarApoio(ctx, id);
-          if (n) ctx.log(`↩️ ${n} comando(s) já a voltar.`);
-        } else {
-          ctx.log(`Apoio: não consegui gravar a lista — ${rr.msg}.`);
-        }
+          ctx.log(`Apoio: ${info.nome} retirado${n ? ` — ${n} comando(s) a voltar` : ''}.`);
+        } catch (e) {}
+
+        /* A lista grava-se uma vez só, depois de parares de clicar. */
+        if (gravarRemocoes) clearTimeout(gravarRemocoes);
+        gravarRemocoes = setTimeout(async () => {
+          const quais = Array.from(paraRemover);
+          paraRemover = new Set();
+          if (!quais.length) return;
+
+          const atual = (await lerLista()) || listaEmCache() || {};
+          const arr = (atual.alvos || atual.targets || [])
+            .map(Number).filter((x) => x && quais.indexOf(x) < 0);
+          atual.alvos = arr; delete atual.targets;
+
+          const rr = await escreverLista(atual);
+          if (rr.ok) {
+            ctx.log(`Apoio: ${quais.length} alvo(s) saíram da lista partilhada.`);
+            try { armazem.removeItem(POR_REMOVER_KEY); } catch (e) {}
+          } else {
+            /* A escrita falhou — guardar o que falta remover para a passagem
+             * seguinte tentar outra vez. Sem isto, a lista ficava por
+             * actualizar e as outras contas continuavam a apoiar os alvos que
+             * tinhas tirado. */
+            try {
+              const pend = JSON.parse(armazem.getItem(POR_REMOVER_KEY) || '[]');
+              const novo = Array.from(new Set(pend.concat(quais)));
+              armazem.setItem(POR_REMOVER_KEY, JSON.stringify(novo));
+            } catch (e) {}
+            ctx.log(`Apoio: as tropas voltaram, mas não consegui gravar a lista — ${rr.msg}. `
+              + 'Tento outra vez sozinho.');
+          }
+          comRolamento(() => painel(container, ctx));
+        }, 2000);
+
         comRolamento(() => painel(container, ctx));
       };
     });
