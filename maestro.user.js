@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.28.2358
+// @version      2026.08.29.1143
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -357,19 +357,64 @@
     } catch (e) {}
   }
 
-  async function avisarDiscord(tipo, texto) {
+  /* ============ AVISOS NO DISCORD =======================================
+   * O Discord tem "embeds": caixas com barra colorida, título, campos lado a
+   * lado e rodapé. Uma parede de texto com dez linhas em negrito é difícil de
+   * ler no telemóvel; um embed lê-se de relance.
+   *
+   * `avisarDiscord(tipo, texto)` continua a funcionar como sempre — é usado
+   * em vários sítios. Se receber um OBJECTO em vez de texto, monta o embed.
+   * ==================================================================== */
+  const CORES_DISCORD = {
+    ataqueNC: 0xd9534f,     // vermelho — colonizador a caminho
+    ataque: 0xe8a33d,       // âmbar — ataque normal
+    captcha: 0x9b59b6,      // roxo — verificação de bot
+    ok: 0x4fc7a1,           // verde — tudo bem
+  };
+
+  async function avisarDiscord(tipo, conteudo) {
     const url = webhooks()[tipo];
     if (!url) return false;
+
     /* Com 20 contas no mesmo canal, uma mensagem sem dizer de quem é não serve
-     * de nada. Prefixa-se com o nome do jogador e o mundo. */
+     * de nada. */
     let quem = '';
     try { quem = String(uw.Game.player_name || ''); } catch (e) {}
-    if (quem) texto = `**${quem}** · ${WORLD.toUpperCase()} — ${texto}`;
+    const mundo = String(WORLD || '').toUpperCase();
+
+    let corpo;
+
+    if (conteudo && typeof conteudo === 'object') {
+      /* ---- EMBED ---- */
+      const e = conteudo;
+      const campos = (e.campos || []).filter((c) => c && c.nome && c.valor).map((c) => ({
+        name: String(c.nome).slice(0, 250),
+        value: String(c.valor).slice(0, 1000),
+        inline: c.inline !== false,
+      }));
+
+      corpo = {
+        embeds: [{
+          title: String(e.titulo || '').slice(0, 250),
+          description: e.descricao ? String(e.descricao).slice(0, 3000) : undefined,
+          color: e.cor != null ? e.cor : (CORES_DISCORD[tipo] || CORES_DISCORD.ataque),
+          fields: campos.length ? campos : undefined,
+          footer: { text: [quem, mundo].filter(Boolean).join(' · ') },
+          timestamp: new Date().toISOString(),
+        }],
+      };
+    } else {
+      /* ---- TEXTO SIMPLES, como sempre ---- */
+      let texto = String(conteudo || '');
+      if (quem) texto = `**${quem}** · ${mundo} — ${texto}`;
+      corpo = { content: texto };
+    }
+
     try {
       await uw.fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: texto }),
+        body: JSON.stringify(corpo),
       });
       return true;
     } catch (e) { return false; }
@@ -493,7 +538,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.28.2358';
+  const MAESTRO_VERSAO = '2026.08.29.1143';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -10354,7 +10399,14 @@ function makeAldeiasModule(opts) {
     try { armazem.setItem(CAPTCHA_KEY, String(agoraServidorMs())); } catch (e) {}
     ctx.log(`🛑 Verificação de bot detetada (${onde}). Módulo suspenso — resolve no jogo.`);
     if (ctx.avisarDiscord) {
-      await ctx.avisarDiscord('captcha', `🛑 **Grepolis** — verificação de bot em \`${mWorld}\` (${onde}).\nO módulo parou. Resolve no jogo para retomar.`);
+      await ctx.avisarDiscord('captcha', {
+        titulo: '🛑 Verificação de bot',
+        campos: [
+          { nome: '🌍 Mundo', valor: String(mWorld) },
+          { nome: '📍 Onde', valor: String(onde) },
+        ],
+        descricao: 'O módulo parou. Resolve no jogo para retomar.',
+      });
     }
   }
 
@@ -11450,19 +11502,27 @@ function makeAlertasModule(opts) {
         ? `🚨 **VAGA COM NAVIO COLONIZADOR** — ${vaga.length} comando(s)`
         : (vaga.length > 1 ? `⚔️ **Vaga de ${vaga.length} ataques**` : '⚔️ **Ataque a caminho**');
 
-      const texto =
-        `${titulo}\n` +
-        `**Mundo:** ${mWorld}\n` +
-        `**Alvo:** ${alvoNome}\n` +
-        `**Atacante:** ${quem}\n` +
-        `**Origem:** ${origemNome}\n` +
-        `**Primeiro impacto:** ${hhmm(primeiro.a.arrival_at)} (daqui a ${duracaoLegivel(primeiro.falta)})\n` +
-        (vaga.length > 1 ? `**Último:** ${hhmm(infos[infos.length - 1].a.arrival_at)}\n` : '') +
-        `\n${linhas}\n` +
-        (temNC ? `\n*A faixa de velocidade do colonizador não é ambígua: nenhuma outra unidade naval é tão lenta, mesmo com bónus máximos.*`
-               : `\n*Os bónus do atacante podem alterar a velocidade em até 30%; a categoria é fiável, a unidade exacta não.*`);
+      /* Um EMBED em vez de uma parede de texto: o que interessa — quem, onde
+       * e quando — fica em campos lado a lado, legível de relance. */
+      const aviso = {
+        titulo: temNC
+          ? `🚨 Colonizador a caminho${vaga.length > 1 ? ` · ${vaga.length} comandos` : ''}`
+          : (vaga.length > 1 ? `⚔️ Vaga de ${vaga.length} ataques` : '⚔️ Ataque a caminho'),
+        campos: [
+          { nome: '📍 Alvo', valor: alvoNome },
+          { nome: '👤 Atacante', valor: quem },
+          { nome: '🏠 Origem', valor: origemNome },
+          {
+            nome: '⏰ Impacto',
+            valor: `**${hhmm(primeiro.a.arrival_at)}** · daqui a ${duracaoLegivel(primeiro.falta)}`
+              + (vaga.length > 1 ? `\núltimo às ${hhmm(infos[infos.length - 1].a.arrival_at)}` : ''),
+            inline: false,
+          },
+        ],
+        descricao: linhas ? String(linhas).slice(0, 1500) : undefined,
+      };
 
-      await ctx.avisarDiscord(temNC ? 'ataqueNC' : 'ataque', texto);
+      await ctx.avisarDiscord(temNC ? 'ataqueNC' : 'ataque', aviso);
       ctx.log(`${temNC ? '🚨' : '⚔️'} ${vaga.length > 1 ? `Vaga de ${vaga.length} ataques` : 'Ataque'} a ${alvoNome} de ${quem} — primeiro impacto ${hhmm(primeiro.a.arrival_at)} (${duracaoLegivel(primeiro.falta)}).`);
 
       // agendar reforço para os que ainda demoram mais de 2 h
@@ -21208,8 +21268,112 @@ function makeApoioModule(opts) {
     return null;
   }
 
+  /* AS COORDENADAS DA CIDADE, tiradas dos meus movimentos.
+   *
+   * Quando há tropa minha a caminho de uma cidade, o movimento traz um
+   * `link_destination` com um endereço cujo fragmento é base64 e contém as
+   * coordenadas da ilha:
+   *   {"id":625,"ix":386,"iy":495,"tp":"town",...}
+   *
+   * Com as coordenadas sabe-se em que bloco do mapa procurar — em vez de
+   * varrer às cegas os blocos onde tenho cidades, que é o que se fazia e
+   * falhava sempre que o alvo estava noutro ponto do mapa. */
+  function coordenadasPorMovimentos(townId) {
+    try {
+      const mods = mUw.MM.getModels().MovementsUnits || {};
+      for (const k of Object.keys(mods)) {
+        const a = mods[k].attributes || {};
+        for (const campo of ['link_destination', 'link_origin', 'link']) {
+          const link = String(a[campo] || '');
+          if (!link) continue;
+          const m = link.match(/#([A-Za-z0-9+/=]{8,})/);
+          if (!m) continue;
+          try {
+            const o = JSON.parse(mUw.atob(m[1]));
+            if (Number(o.id) !== Number(townId)) continue;
+            if (Number.isFinite(Number(o.ix)) && Number.isFinite(Number(o.iy))) {
+              return { x: Number(o.ix), y: Number(o.iy) };
+            }
+          } catch (e) {}
+        }
+      }
+    } catch (e) {}
+    return null;
+  }
+
+  /* OS NOMES ESTÃO NO MODELO `Units`, sem custo nenhum.
+   *
+   * Cada registo de tropa minha estacionada noutra cidade traz:
+   *   current_town_name        — o nome da cidade
+   *   current_town_player_name — o dono
+   *   island_x / island_y      — onde é
+   *
+   * Andava-se a varrer o mapa à procura disto, e falhava sempre que o alvo
+   * estava fora dos blocos das minhas cidades. Estando aqui, é imediato e não
+   * gasta um pedido — basta ter tropa lá, que é o caso de todos os alvos do
+   * apoio. */
+  function nomesPelasTropas() {
+    let n = 0;
+    try {
+      const mods = mUw.MM.getModels().Units || {};
+      for (const k of Object.keys(mods)) {
+        const a = mods[k].attributes || {};
+        const em = Number(a.current_town_id);
+        if (!em || cacheCidades[em]) continue;
+        const nome = String(a.current_town_name || '').trim();
+        if (!nome) continue;
+
+        cacheCidades[em] = {
+          nome,
+          jogador: String(a.current_town_player_name || '').trim() || '(sem dono)',
+          minha: !!mUw.ITowns.towns[em],
+          ilha: (Number(a.island_x) && Number(a.island_y))
+            ? { x: Number(a.island_x), y: Number(a.island_y) } : undefined,
+        };
+        n++;
+      }
+      if (n) gravarNomes();
+    } catch (e) {}
+    return n;
+  }
+
   async function infoDaCidade(townId, townIdBase) {
     if (cacheCidades[townId]) return cacheCidades[townId];
+
+    /* PRIMEIRO: a tropa que já lá está diz o nome e o dono, sem pedido. */
+    nomesPelasTropas();
+    if (cacheCidades[townId]) return cacheCidades[townId];
+
+    /* DEPOIS: se houver tropa minha a caminho, os movimentos dizem onde é.
+     * Um pedido ao bloco certo, em vez de varrer o mapa. */
+    try {
+      const co = coordenadasPorMovimentos(townId);
+      if (co) {
+        const cx = Math.floor(co.x / CHUNK);
+        const cy = Math.floor(co.y / CHUNK);
+        const base = townIdBase || Number(Object.keys(mUw.ITowns.towns)[0]);
+        const url = mUw.location.origin + '/game/map_data?town_id=' + Number(base)
+          + '&action=get_chunks&h=' + mUw.Game.csrfToken
+          + '&json=' + encodeURIComponent(JSON.stringify({
+              chunks: [{ x: cx, y: cy, timestamp: 0 }], town_id: Number(base), nl_init: true }));
+        const r = await mUw.fetch(url, {
+          headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
+        }).then(lerResposta);
+        const d = (r && r.json && r.json.data) || {};
+        const bloco = d[0] || d['0'];
+        const towns = (bloco && bloco.towns) || {};
+        for (const k of Object.keys(towns)) {
+          const x = towns[k];
+          if (!cacheCidades[x.id]) {
+            cacheCidades[x.id] = {
+              nome: x.name, jogador: x.player_name || '(sem dono)', minha: false,
+              ilha: { x: Number(x.island_x) || co.x, y: Number(x.island_y) || co.y },
+            };
+          }
+        }
+        if (cacheCidades[townId]) { gravarNomes(); return cacheCidades[townId]; }
+      }
+    } catch (e) {}
 
     /* O nome pode estar nos meus movimentos — mas o JOGADOR não vem lá (o
      * `player_id` do movimento sou eu, não o dono da cidade).
@@ -21263,6 +21427,52 @@ function makeApoioModule(opts) {
         if (cacheCidades[townId]) { gravarNomes(); return cacheCidades[townId]; }
       }
       gravarNomes();   // guardar o que se aprendeu, mesmo que o alvo não apareça
+
+      /* PROCURAR À VOLTA DAS CIDADES QUE JÁ CONHEÇO.
+       *
+       * O varrimento acima só olha para os blocos onde EU tenho cidades. Um
+       * alvo noutro ponto do mapa nunca aparece — foi o que aconteceu com
+       * quatro de cinco alvos.
+       *
+       * Mas há mais de dois mil nomes já descobertos, e alguns com as
+       * coordenadas da ilha. Alargar a busca aos blocos à volta desses
+       * apanha alvos que estão perto de sítios por onde já passei. */
+      const porVer = [];
+      for (const k of Object.keys(cacheCidades)) {
+        const ilha = cacheCidades[k] && cacheCidades[k].ilha;
+        if (!ilha || !ilha.x) continue;
+        const cx = Math.floor(Number(ilha.x) / CHUNK);
+        const cy = Math.floor(Number(ilha.y) / CHUNK);
+        const chave = `${cx}:${cy}`;
+        if (vistos.has(chave)) continue;
+        vistos.add(chave);
+        porVer.push({ cx, cy });
+        if (porVer.length >= 12) break;   // não varrer o mapa todo de uma vez
+      }
+
+      const base = townIdBase || Number(Object.keys(mUw.ITowns.towns)[0]);
+      for (const b of porVer) {
+        try {
+          const url = mUw.location.origin + '/game/map_data?town_id=' + Number(base)
+            + '&action=get_chunks&h=' + mUw.Game.csrfToken
+            + '&json=' + encodeURIComponent(JSON.stringify({
+                chunks: [{ x: b.cx, y: b.cy, timestamp: 0 }], town_id: Number(base), nl_init: true }));
+          const r = await mUw.fetch(url, {
+            headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
+          }).then(lerResposta);
+          const d = (r && r.json && r.json.data) || {};
+          const bloco = d[0] || d['0'];
+          const towns = (bloco && bloco.towns) || {};
+          for (const k of Object.keys(towns)) {
+            const x = towns[k];
+            if (!cacheCidades[x.id]) {
+              cacheCidades[x.id] = { nome: x.name, jogador: x.player_name || '(sem dono)', minha: false };
+            }
+          }
+          if (cacheCidades[townId]) { gravarNomes(); return cacheCidades[townId]; }
+        } catch (e) {}
+      }
+      gravarNomes();
     } catch (e) {}
 
     /* SEI AS COORDENADAS? Vou direto ao bloco certo.
@@ -21544,6 +21754,11 @@ function makeApoioModule(opts) {
     const c = cfg();
     if (!c.ativo) { log('Apoio: está DESLIGADO (liga a caixa no painel e guarda).'); return; }
 
+    /* Aprender nomes e donos da tropa que já está estacionada — de graça, e
+     * a cada passagem. Assim o painel enche-se sozinho, sem ter de carregar
+     * em "obter nomes". */
+    nomesPelasTropas();
+
     const lista = await lerLista();
     if (!lista) { log('Apoio: não consegui ler a lista partilhada (Gist).'); return; }
 
@@ -21799,6 +22014,9 @@ function makeApoioModule(opts) {
 
   function painel(container, ctx) {
     mUw = ctx.uw; mWorld = ctx.WORLD;
+    /* Aprender os nomes que a tropa estacionada já sabe, para o painel os
+     * mostrar mal se abre. */
+    try { nomesPelasTropas(); } catch (e) {}
     const c = cfg();
     const lista = listaEmCache() || {};
     const alvos = (lista.alvos || lista.targets || []).map(Number).filter(Boolean);
