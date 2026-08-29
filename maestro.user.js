@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.29.1218
+// @version      2026.08.29.1232
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -544,7 +544,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.29.1218';
+  const MAESTRO_VERSAO = '2026.08.29.1232';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -17477,6 +17477,22 @@ function makeEncaixeModule(opts) {
     // bónus (farol, construtor naval, meteorologia), afina este valor.
     K: 5258,
     margemSeg: 2,             // tolerância de chegada (0-5 s)
+
+    /* DESVIOS POR TIPO DE ENVIO.
+     *
+     * A margem e a direcção que cada tipo usa por omissão, para não ser
+     * preciso escolhê-las a cada envio. Um encaixe típico quer os ataques a
+     * chegar um pouco ANTES, os apoios um pouco DEPOIS, e o colonizador com
+     * folga dos dois lados.
+     *
+     * Podem ser mudados no painel, e o envio individual pode continuar a
+     * usar outros valores. */
+    porTipo: {
+      attack:  { margemSeg: 2, direcao: 'antes' },
+      support: { margemSeg: 2, direcao: 'depois' },
+      colonize:{ margemSeg: 2, direcao: 'ambos' },
+    },
+
     direcao: 'ambos',         // 'antes' | 'depois' | 'ambos'
                               // 'antes'  → só aceita chegar À HORA ou ANTES
                               //            (essencial com colonizador atrás ou
@@ -18148,9 +18164,15 @@ function makeEncaixeModule(opts) {
 
         const desvio = Number(cmd.arrival_at) - plano.chegada;
 
-        // Limites aceitáveis conforme a direção escolhida.
-        const dir = plano.direcao || c.direcao || 'ambos';
-        const marg = (plano.margemSeg != null) ? Number(plano.margemSeg) : c.margemSeg;
+        /* Limites aceitáveis conforme a direcção escolhida.
+         *
+         * Ordem: o que o plano diz > o que o TIPO diz > o geral. Assim os
+         * ataques chegam antes e os apoios depois sem ser preciso escolher a
+         * cada envio. */
+        const doTipo = (c.porTipo || {})[plano.tipo] || {};
+        const dir = plano.direcao || doTipo.direcao || c.direcao || 'ambos';
+        const marg = (plano.margemSeg != null) ? Number(plano.margemSeg)
+          : (doTipo.margemSeg != null ? Number(doTipo.margemSeg) : c.margemSeg);
         const limInf = (dir === 'depois') ? 0 : -marg;
         const limSup = (dir === 'antes') ? 0 : marg;
         const aceite = desvio >= limInf && desvio <= limSup;
@@ -18782,14 +18804,35 @@ function makeEncaixeModule(opts) {
       const quando = falta > 0
         ? (falta > 3600 ? `daqui a ${Math.round(falta / 3600)}h` : `daqui a ${Math.round(falta / 60)} min`)
         : 'já passou';
-      return `<div style="border-top:1px solid #223;padding:4px 0;font-size:11px">
+      /* QUE CIDADE ENVIA — sem isto, com vários envios agendados não se sabia
+       * qual era qual. */
+      let origem = '#' + p.origemId;
+      try {
+        const t = mUw.ITowns.getTown(Number(p.origemId));
+        if (t && t.getName) origem = t.getName();
+      } catch (e) {}
+
+      /* Os desvios do TIPO, quando o plano não tem os seus. */
+      const doTipo = (c.porTipo || {})[p.tipo] || {};
+      const margUsada = (p.margemSeg != null) ? p.margemSeg
+        : (doTipo.margemSeg != null ? doTipo.margemSeg : c.margemSeg);
+      const dirUsada = p.direcao || doTipo.direcao || c.direcao || 'ambos';
+
+      const icone = p.tipo === 'attack' ? '⚔️' : (p.tipo === 'colonize' ? '🚢' : '🤝');
+      const nomeTipo = p.tipo === 'attack' ? 'ataque'
+        : (p.tipo === 'colonize' ? 'colonizador' : 'apoio');
+
+      return `<div style="border-top:1px solid #223;padding:5px 0;font-size:11px">
         <div style="display:flex;justify-content:space-between;align-items:center">
-          <b>${p.tipo === 'attack' ? '⚔️ ataque' : '🤝 apoio'} → ${p.alvoId}</b>
+          <b>${icone} ${nomeTipo} → ${p.alvoId}</b>
           <a href="#" data-cancelar="${p.id}" style="color:#f88;text-decoration:none" title="cancelar este agendamento">✕ cancelar</a>
         </div>
-        chega <b>${hh(p.chegada)}</b>${dia(p.chegada)} · ${quando}<br>
-        <span style="opacity:.7">sai ${envio} · ${tropas || 'sem unidades'} · margem ±${p.margemSeg != null ? p.margemSeg : c.margemSeg}s ${p.direcao === 'antes' ? '(só antes)' : p.direcao === 'depois' ? '(só depois)' : ''}</span>
-        ${p.duracaoJogo ? '' : '<br><span style="color:#fc8">⚠ duração estimada — o alvo não tinha coordenadas</span>'}
+        <div style="opacity:.9">de <b>${esc(origem)}</b></div>
+        <div>chega <b>${hh(p.chegada)}</b>${dia(p.chegada)} · ${quando}</div>
+        <div style="opacity:.75">${tropas || 'sem unidades'}</div>
+        <div style="opacity:.6;font-size:10px">sai ${envio} · margem ±${margUsada}s${
+          dirUsada === 'antes' ? ' (só antes)' : dirUsada === 'depois' ? ' (só depois)' : ''}</div>
+        ${p.duracaoJogo ? '' : '<div style="color:#fc8">⚠ duração estimada — o alvo não tinha coordenadas</div>'}
       </div>`;
     }).join('');
 
@@ -18812,9 +18855,37 @@ function makeEncaixeModule(opts) {
       ${(() => { const e = estatisticaDesvios(); return e ? `<div style="background:#0d141c;padding:5px;border-radius:4px;margin-top:5px;font-size:11px">
         <b>Variação observada</b> (${e.n} tentativas): de ${e.min >= 0 ? '+' : ''}${e.min}s a ${e.max >= 0 ? '+' : ''}${e.max}s · mediana ${e.mediana >= 0 ? '+' : ''}${e.mediana}s
       </div>` : ''; })()}
+      <div style="background:#0d141c;padding:6px 8px;border-radius:4px;margin-top:5px">
+        <b style="font-size:11px">Desvios por tipo</b>
+        <div style="opacity:.6;font-size:10px;margin-bottom:4px">
+          O que cada tipo usa quando não escolhes nada na janela do jogo. Assim
+          programas os envios sem te preocupares com isto de cada vez.
+        </div>
+        ${['attack', 'support', 'colonize'].map((tipo) => {
+          const d = (c.porTipo || {})[tipo] || {};
+          const nome = tipo === 'attack' ? '⚔️ Ataques'
+            : (tipo === 'support' ? '🤝 Apoios' : '🚢 Colonizadores');
+          return `<div style="display:flex;gap:5px;align-items:center;margin-bottom:3px">
+            <span style="flex:0 0 108px;font-size:11px">${nome}</span>
+            <span style="font-size:10px;opacity:.7">±</span>
+            <input type="number" min="0" max="10" data-tipomarg="${tipo}"
+              value="${d.margemSeg != null ? d.margemSeg : c.margemSeg}"
+              style="width:38px;font-size:11px">
+            <span style="font-size:10px;opacity:.7">s</span>
+            <select data-tipodir="${tipo}" style="flex:1;font-size:10px">
+              <option value="ambos"${(d.direcao || 'ambos') === 'ambos' ? ' selected' : ''}>antes e depois</option>
+              <option value="antes"${d.direcao === 'antes' ? ' selected' : ''}>só antes</option>
+              <option value="depois"${d.direcao === 'depois' ? ' selected' : ''}>só depois</option>
+            </select>
+          </div>`;
+        }).join('')}
+      </div>
+
       <div style="background:#0d141c;padding:5px;border-radius:4px;margin-top:5px">
         <b style="font-size:11px">Agendados: ${planos.length}</b>
-        ${lista || '<div style="font-size:11px;opacity:.6;padding-top:3px">Nenhum.</div>'}
+        <div style="max-height:260px;overflow-y:auto;margin-top:3px">
+          ${lista || '<div style="font-size:11px;opacity:.6;padding-top:3px">Nenhum.</div>'}
+        </div>
       </div>`;
 
     const chk = container.querySelector('#enc-on');
@@ -18822,6 +18893,24 @@ function makeEncaixeModule(opts) {
       guardarCfg(Object.assign({}, cfg(), { ativo: e.target.checked }));
       ctx.log('Encaixe ' + (e.target.checked ? 'ativado' : 'desativado') + '.');
     };
+
+    /* Desvios por tipo — gravam ao mudar, sem botão de guardar. */
+    const guardarTipos = () => {
+      const cc = cfg();
+      cc.porTipo = cc.porTipo || {};
+      for (const tipo of ['attack', 'support', 'colonize']) {
+        const m = container.querySelector(`[data-tipomarg="${tipo}"]`);
+        const d = container.querySelector(`[data-tipodir="${tipo}"]`);
+        cc.porTipo[tipo] = {
+          margemSeg: m ? (Number(m.value) || 0) : 2,
+          direcao: d ? d.value : 'ambos',
+        };
+      }
+      guardarCfg(cc);
+    };
+    container.querySelectorAll('[data-tipomarg],[data-tipodir]').forEach((el) => {
+      el.onchange = guardarTipos;
+    });
 
     container.querySelectorAll('[data-cancelar]').forEach((el) => {
       el.onclick = (e) => {
