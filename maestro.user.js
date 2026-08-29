@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.28.2334
+// @version      2026.08.28.2358
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -266,6 +266,31 @@
   }
   try { uw.__maestroPedirFora = pedirFora; } catch (e) {}
 
+  /* ============ TRAVÃO DO SERVIDOR (429) ================================
+   * Quando o Grepolis responde 429 — "pedidos a mais" — insistir só piora.
+   * Visto em jogo: uma passagem com 60 pedidos extra deixou tudo a 429; o
+   * recrutamento falhou, os alertas ficaram cegos e a esquiva também.
+   *
+   * Ao apanhar um 429, o maestro pára 2 minutos. É melhor perder uma passagem
+   * do que passar dez a bater numa porta fechada.
+   * ==================================================================== */
+  let travadoAte = 0;
+
+  function servidorTravado() {
+    return Date.now() < travadoAte;
+  }
+  function marcarTravado(quantosMin) {
+    const ate = Date.now() + (Number(quantosMin) || 2) * 60 * 1000;
+    if (ate > travadoAte) {
+      travadoAte = ate;
+      log('core', `⚠️ O servidor está a limitar os pedidos — paro ${quantosMin || 2} min.`);
+    }
+  }
+  try {
+    uw.__maestroTravado = servidorTravado;
+    uw.__maestroTravar = marcarTravado;
+  } catch (e) {}
+
   const WEBHOOKS_KEY = 'grepoMaestro_webhooks_v1';
   const WEBHOOKS_OMISSAO = { captcha: '', ataque: '', ataqueNC: '' };
 
@@ -468,7 +493,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.28.2334';
+  const MAESTRO_VERSAO = '2026.08.28.2358';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -1309,6 +1334,10 @@
 
   async function tick() {
     if (running) return; // nunca sobrepor
+
+    /* O servidor está a limitar? Não insistir — só piora e deixa tudo cego. */
+    if (servidorTravado()) return;
+
     running = true;
     try {
       const agora = Date.now();
@@ -3089,6 +3118,17 @@ function makeConstrucaoModule(opts) {
    * Devolve sempre um objecto: `{ json: {...} }` no caso normal, ou
    * `{ json: { error: '...' } }` quando a resposta não presta. */
   async function lerResposta(resposta) {
+    /* 429 = o servidor está a limitar os pedidos. Avisa o núcleo, que pára
+     * tudo por uns minutos: insistir só piora e deixa os módulos cegos.
+     *
+     * Visto em jogo: uma passagem com 60 pedidos a mais pôs tudo a 429 — o
+     * recrutamento falhou, os alertas ficaram sem dados, a esquiva também. */
+    try {
+      if (resposta && Number(resposta.status) === 429) {
+        const t = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroTravar;
+        if (t) t(2);
+      }
+    } catch (e) {}
     try {
       const txt = await resposta.text();
       if (!txt || !txt.trim()) {
@@ -4824,6 +4864,17 @@ function makePesquisaModule(opts) {
    * Devolve sempre um objecto: `{ json: {...} }` no caso normal, ou
    * `{ json: { error: '...' } }` quando a resposta não presta. */
   async function lerResposta(resposta) {
+    /* 429 = o servidor está a limitar os pedidos. Avisa o núcleo, que pára
+     * tudo por uns minutos: insistir só piora e deixa os módulos cegos.
+     *
+     * Visto em jogo: uma passagem com 60 pedidos a mais pôs tudo a 429 — o
+     * recrutamento falhou, os alertas ficaram sem dados, a esquiva também. */
+    try {
+      if (resposta && Number(resposta.status) === 429) {
+        const t = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroTravar;
+        if (t) t(2);
+      }
+    } catch (e) {}
     try {
       const txt = await resposta.text();
       if (!txt || !txt.trim()) {
@@ -5799,6 +5850,17 @@ function makeRecrutamentoModule(opts) {
    * Devolve sempre um objecto: `{ json: {...} }` no caso normal, ou
    * `{ json: { error: '...' } }` quando a resposta não presta. */
   async function lerResposta(resposta) {
+    /* 429 = o servidor está a limitar os pedidos. Avisa o núcleo, que pára
+     * tudo por uns minutos: insistir só piora e deixa os módulos cegos.
+     *
+     * Visto em jogo: uma passagem com 60 pedidos a mais pôs tudo a 429 — o
+     * recrutamento falhou, os alertas ficaram sem dados, a esquiva também. */
+    try {
+      if (resposta && Number(resposta.status) === 429) {
+        const t = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroTravar;
+        if (t) t(2);
+      }
+    } catch (e) {}
     try {
       const txt = await resposta.text();
       if (!txt || !txt.trim()) {
@@ -7314,23 +7376,16 @@ function makeRecrutamentoModule(opts) {
       /* Mínimo de POPULAÇÃO por ordem. Se estiver definido, substitui a regra
        * antiga da percentagem do armazém. */
       const minPop = Number(tpl.minPopOrdem);
-      /* O que a cidade TEM, com o número verdadeiro do servidor.
+      /* NÃO se pergunta ao servidor quantas unidades a cidade tem.
        *
-       * O modelo `Units` mostra números velhos até se recarregar a página, e
-       * era isso que fazia o módulo pedir 1 e 2 unidades sem fim. Lê-se o
-       * quartel e o porto uma vez por cidade e fica-se com o maior dos dois
-       * — a tropa que está FORA da cidade só vem no modelo, a que acabou de
-       * ser recrutada só vem do servidor. */
-      const tenho = Object.assign({}, porOrigem[town.id] || {});
-      try {
-        const reais = await tropasReaisDoServidor(town.id);
-        if (reais) {
-          for (const u of Object.keys(reais)) {
-            tenho[u] = Math.max(Number(tenho[u]) || 0, Number(reais[u]) || 0);
-          }
-        }
-      } catch (e) {}
-
+       * Tentou-se ler o quartel e o porto de cada cidade para contornar o
+       * modelo desactualizado. Com 30 cidades por passagem, isso são 60
+       * pedidos — e o servidor respondeu 429 a tudo: o recrutamento falhou,
+       * os alertas ficaram cegos, a esquiva também.
+       *
+       * O remédio era pior do que a doença. Usa-se o modelo, que às vezes
+       * está atrasado, e o travão antes de cada ordem apanha os excessos. */
+      const tenho = porOrigem[town.id] || {};
       const emFila = filas[town.id] || {};
 
       /* COLONIZADORES CONTÍNUOS
@@ -7539,21 +7594,7 @@ function makeRecrutamentoModule(opts) {
             const agoraTenho = contarUnidadesPorCidadeDeOrigem()[town.id] || {};
             const agoraFila = contarFilasPorCidade()[town.id] || {};
 
-            /* O número do modelo pode estar atrasado — ele só actualiza quando
-             * se recarrega a página. Pergunta-se ao servidor o que a cidade
-             * tem MESMO, e fica-se com o maior dos dois.
-             *
-             * Sem isto faziam-se ordens de 1 e 2 unidades sem fim: o módulo
-             * via 16 hoplitas, o template pedia 18, e as 2 que recrutava nunca
-             * apareciam no modelo. */
-            let emCasaReal = 0;
-            try {
-              const reais = await tropasReaisDoServidor(town.id);
-              if (reais && reais[a.unitId] != null) emCasaReal = Number(reais[a.unitId]) || 0;
-            } catch (e2) {}
-
-            const doModelo = Number(agoraTenho[a.unitId]) || 0;
-            const jaCom = Math.max(doModelo, emCasaReal) + (Number(agoraFila[a.unitId]) || 0);
+            const jaCom = (Number(agoraTenho[a.unitId]) || 0) + (Number(agoraFila[a.unitId]) || 0);
 
             if (jaCom >= alvoFinal) {
               log(`⛔ ${town.name}: NÃO recruto ${a.nome} — já tem ${jaCom} `
@@ -9527,6 +9568,17 @@ function makeAldeiasModule(opts) {
    * Devolve sempre um objecto: `{ json: {...} }` no caso normal, ou
    * `{ json: { error: '...' } }` quando a resposta não presta. */
   async function lerResposta(resposta) {
+    /* 429 = o servidor está a limitar os pedidos. Avisa o núcleo, que pára
+     * tudo por uns minutos: insistir só piora e deixa os módulos cegos.
+     *
+     * Visto em jogo: uma passagem com 60 pedidos a mais pôs tudo a 429 — o
+     * recrutamento falhou, os alertas ficaram sem dados, a esquiva também. */
+    try {
+      if (resposta && Number(resposta.status) === 429) {
+        const t = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroTravar;
+        if (t) t(2);
+      }
+    } catch (e) {}
     try {
       const txt = await resposta.text();
       if (!txt || !txt.trim()) {
@@ -10697,6 +10749,17 @@ function makeAlertasModule(opts) {
    * Devolve sempre um objecto: `{ json: {...} }` no caso normal, ou
    * `{ json: { error: '...' } }` quando a resposta não presta. */
   async function lerResposta(resposta) {
+    /* 429 = o servidor está a limitar os pedidos. Avisa o núcleo, que pára
+     * tudo por uns minutos: insistir só piora e deixa os módulos cegos.
+     *
+     * Visto em jogo: uma passagem com 60 pedidos a mais pôs tudo a 429 — o
+     * recrutamento falhou, os alertas ficaram sem dados, a esquiva também. */
+    try {
+      if (resposta && Number(resposta.status) === 429) {
+        const t = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroTravar;
+        if (t) t(2);
+      }
+    } catch (e) {}
     try {
       const txt = await resposta.text();
       if (!txt || !txt.trim()) {
@@ -11578,6 +11641,17 @@ function makeDeusesModule(opts) {
    * Devolve sempre um objecto: `{ json: {...} }` no caso normal, ou
    * `{ json: { error: '...' } }` quando a resposta não presta. */
   async function lerResposta(resposta) {
+    /* 429 = o servidor está a limitar os pedidos. Avisa o núcleo, que pára
+     * tudo por uns minutos: insistir só piora e deixa os módulos cegos.
+     *
+     * Visto em jogo: uma passagem com 60 pedidos a mais pôs tudo a 429 — o
+     * recrutamento falhou, os alertas ficaram sem dados, a esquiva também. */
+    try {
+      if (resposta && Number(resposta.status) === 429) {
+        const t = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroTravar;
+        if (t) t(2);
+      }
+    } catch (e) {}
     try {
       const txt = await resposta.text();
       if (!txt || !txt.trim()) {
@@ -13707,6 +13781,17 @@ function makeEsquivaModule(opts) {
    * Devolve sempre um objecto: `{ json: {...} }` no caso normal, ou
    * `{ json: { error: '...' } }` quando a resposta não presta. */
   async function lerResposta(resposta) {
+    /* 429 = o servidor está a limitar os pedidos. Avisa o núcleo, que pára
+     * tudo por uns minutos: insistir só piora e deixa os módulos cegos.
+     *
+     * Visto em jogo: uma passagem com 60 pedidos a mais pôs tudo a 429 — o
+     * recrutamento falhou, os alertas ficaram sem dados, a esquiva também. */
+    try {
+      if (resposta && Number(resposta.status) === 429) {
+        const t = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroTravar;
+        if (t) t(2);
+      }
+    } catch (e) {}
     try {
       const txt = await resposta.text();
       if (!txt || !txt.trim()) {
@@ -15605,6 +15690,17 @@ function makeCulturaModule(opts) {
    * Devolve sempre um objecto: `{ json: {...} }` no caso normal, ou
    * `{ json: { error: '...' } }` quando a resposta não presta. */
   async function lerResposta(resposta) {
+    /* 429 = o servidor está a limitar os pedidos. Avisa o núcleo, que pára
+     * tudo por uns minutos: insistir só piora e deixa os módulos cegos.
+     *
+     * Visto em jogo: uma passagem com 60 pedidos a mais pôs tudo a 429 — o
+     * recrutamento falhou, os alertas ficaram sem dados, a esquiva também. */
+    try {
+      if (resposta && Number(resposta.status) === 429) {
+        const t = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroTravar;
+        if (t) t(2);
+      }
+    } catch (e) {}
     try {
       const txt = await resposta.text();
       if (!txt || !txt.trim()) {
@@ -16138,6 +16234,17 @@ function makeGrutaModule(opts) {
    * Devolve sempre um objecto: `{ json: {...} }` no caso normal, ou
    * `{ json: { error: '...' } }` quando a resposta não presta. */
   async function lerResposta(resposta) {
+    /* 429 = o servidor está a limitar os pedidos. Avisa o núcleo, que pára
+     * tudo por uns minutos: insistir só piora e deixa os módulos cegos.
+     *
+     * Visto em jogo: uma passagem com 60 pedidos a mais pôs tudo a 429 — o
+     * recrutamento falhou, os alertas ficaram sem dados, a esquiva também. */
+    try {
+      if (resposta && Number(resposta.status) === 429) {
+        const t = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroTravar;
+        if (t) t(2);
+      }
+    } catch (e) {}
     try {
       const txt = await resposta.text();
       if (!txt || !txt.trim()) {
@@ -16628,6 +16735,17 @@ function makeTrocaCidadesModule(opts) {
    * Devolve sempre um objecto: `{ json: {...} }` no caso normal, ou
    * `{ json: { error: '...' } }` quando a resposta não presta. */
   async function lerResposta(resposta) {
+    /* 429 = o servidor está a limitar os pedidos. Avisa o núcleo, que pára
+     * tudo por uns minutos: insistir só piora e deixa os módulos cegos.
+     *
+     * Visto em jogo: uma passagem com 60 pedidos a mais pôs tudo a 429 — o
+     * recrutamento falhou, os alertas ficaram sem dados, a esquiva também. */
+    try {
+      if (resposta && Number(resposta.status) === 429) {
+        const t = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroTravar;
+        if (t) t(2);
+      }
+    } catch (e) {}
     try {
       const txt = await resposta.text();
       if (!txt || !txt.trim()) {
@@ -17329,6 +17447,17 @@ function makeEncaixeModule(opts) {
    * Devolve sempre um objecto: `{ json: {...} }` no caso normal, ou
    * `{ json: { error: '...' } }` quando a resposta não presta. */
   async function lerResposta(resposta) {
+    /* 429 = o servidor está a limitar os pedidos. Avisa o núcleo, que pára
+     * tudo por uns minutos: insistir só piora e deixa os módulos cegos.
+     *
+     * Visto em jogo: uma passagem com 60 pedidos a mais pôs tudo a 429 — o
+     * recrutamento falhou, os alertas ficaram sem dados, a esquiva também. */
+    try {
+      if (resposta && Number(resposta.status) === 429) {
+        const t = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroTravar;
+        if (t) t(2);
+      }
+    } catch (e) {}
     try {
       const txt = await resposta.text();
       if (!txt || !txt.trim()) {
@@ -18691,6 +18820,17 @@ function makeMissoesModule(opts) {
    * Devolve sempre um objecto: `{ json: {...} }` no caso normal, ou
    * `{ json: { error: '...' } }` quando a resposta não presta. */
   async function lerResposta(resposta) {
+    /* 429 = o servidor está a limitar os pedidos. Avisa o núcleo, que pára
+     * tudo por uns minutos: insistir só piora e deixa os módulos cegos.
+     *
+     * Visto em jogo: uma passagem com 60 pedidos a mais pôs tudo a 429 — o
+     * recrutamento falhou, os alertas ficaram sem dados, a esquiva também. */
+    try {
+      if (resposta && Number(resposta.status) === 429) {
+        const t = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroTravar;
+        if (t) t(2);
+      }
+    } catch (e) {}
     try {
       const txt = await resposta.text();
       if (!txt || !txt.trim()) {
@@ -19864,6 +20004,17 @@ function makeColonosModule(opts) {
    * Devolve sempre um objecto: `{ json: {...} }` no caso normal, ou
    * `{ json: { error: '...' } }` quando a resposta não presta. */
   async function lerResposta(resposta) {
+    /* 429 = o servidor está a limitar os pedidos. Avisa o núcleo, que pára
+     * tudo por uns minutos: insistir só piora e deixa os módulos cegos.
+     *
+     * Visto em jogo: uma passagem com 60 pedidos a mais pôs tudo a 429 — o
+     * recrutamento falhou, os alertas ficaram sem dados, a esquiva também. */
+    try {
+      if (resposta && Number(resposta.status) === 429) {
+        const t = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroTravar;
+        if (t) t(2);
+      }
+    } catch (e) {}
     try {
       const txt = await resposta.text();
       if (!txt || !txt.trim()) {
@@ -20851,6 +21002,17 @@ function makeApoioModule(opts) {
    * Devolve sempre um objecto: `{ json: {...} }` no caso normal, ou
    * `{ json: { error: '...' } }` quando a resposta não presta. */
   async function lerResposta(resposta) {
+    /* 429 = o servidor está a limitar os pedidos. Avisa o núcleo, que pára
+     * tudo por uns minutos: insistir só piora e deixa os módulos cegos.
+     *
+     * Visto em jogo: uma passagem com 60 pedidos a mais pôs tudo a 429 — o
+     * recrutamento falhou, os alertas ficaram sem dados, a esquiva também. */
+    try {
+      if (resposta && Number(resposta.status) === 429) {
+        const t = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroTravar;
+        if (t) t(2);
+      }
+    } catch (e) {}
     try {
       const txt = await resposta.text();
       if (!txt || !txt.trim()) {
@@ -21854,6 +22016,17 @@ function makeFundacaoModule(opts) {
    * Devolve sempre um objecto: `{ json: {...} }` no caso normal, ou
    * `{ json: { error: '...' } }` quando a resposta não presta. */
   async function lerResposta(resposta) {
+    /* 429 = o servidor está a limitar os pedidos. Avisa o núcleo, que pára
+     * tudo por uns minutos: insistir só piora e deixa os módulos cegos.
+     *
+     * Visto em jogo: uma passagem com 60 pedidos a mais pôs tudo a 429 — o
+     * recrutamento falhou, os alertas ficaram sem dados, a esquiva também. */
+    try {
+      if (resposta && Number(resposta.status) === 429) {
+        const t = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroTravar;
+        if (t) t(2);
+      }
+    } catch (e) {}
     try {
       const txt = await resposta.text();
       if (!txt || !txt.trim()) {
@@ -22283,17 +22456,27 @@ function makeFundacaoModule(opts) {
       // guardar o que se soube, para a lista do painel mostrar
       anotarIlha(chave, { livres: livres.length, ocupados, aldeias });
 
-      /* "Só ilhas grandes" descarta as que não têm aldeias bárbaras. Mas se o
-       * mapa não trouxer nenhuma cidade da ilha, `aldeias` vem a zero sem que
-       * isso queira dizer que a ilha é pequena — só que não há dados. Por isso
-       * só se descarta quando o mapa devolveu ALGUMA coisa sobre a ilha. */
-      const semDados = !aldeias && !ocupados;
-      if (c.exigirAldeias && !aldeias && !semDados) {
-        log(`— ${chave}: ilha pequena (sem aldeias bárbaras); salto.`);
+      /* "SÓ ILHAS GRANDES" — as que têm aldeias bárbaras.
+       *
+       * O número de aldeias é o que distingue uma ilha grande de uma pequena.
+       * Uma ilha sem aldeias tem poucos lugares e não vale a pena.
+       *
+       * A regra anterior tinha uma saída de emergência: se `aldeias` e
+       * `ocupados` fossem ambos zero, assumia-se "não há dados" e fundava-se
+       * na mesma. Mas uma ilha PEQUENA E VAZIA é exactamente isso — zero e
+       * zero — e era tratada como desconhecida. Fundou-se em várias.
+       *
+       * O sinal de que o mapa respondeu é haver LUGARES LIVRES: se ele nos
+       * disse onde há espaço, também nos teria dito das aldeias. */
+      const mapaRespondeu = livres.length > 0 || ocupados > 0;
+
+      if (c.exigirAldeias && !aldeias) {
+        if (mapaRespondeu) {
+          log(`— ${chave}: ilha pequena (sem aldeias bárbaras); salto.`);
+        } else {
+          log(`— ${chave}: o mapa não devolveu nada desta ilha; salto por segurança.`);
+        }
         continue;
-      }
-      if (semDados) {
-        log(`— ${chave}: o mapa não devolveu dados desta ilha; tento na mesma.`);
       }
       if (!livres.length) continue;
 
@@ -22840,6 +23023,17 @@ function makeRelatoriosModule(opts) {
   }
 
   async function lerResposta(resposta) {
+    /* 429 = o servidor está a limitar os pedidos. Avisa o núcleo, que pára
+     * tudo por uns minutos: insistir só piora e deixa os módulos cegos.
+     *
+     * Visto em jogo: uma passagem com 60 pedidos a mais pôs tudo a 429 — o
+     * recrutamento falhou, os alertas ficaram sem dados, a esquiva também. */
+    try {
+      if (resposta && Number(resposta.status) === 429) {
+        const t = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroTravar;
+        if (t) t(2);
+      }
+    } catch (e) {}
     try {
       const txt = await resposta.text();
       if (!txt || !txt.trim()) {
@@ -23079,27 +23273,27 @@ function makeRelatoriosModule(opts) {
   // o núcleo também precisa deles, para o perfil partilhado
   try { GIST_ID_GLOBAL = GIST_ID; GIST_TOKEN_GLOBAL = GIST_TOKEN; } catch (e) {}
 
-  registerModule(makeConstrucaoModule({ intervaloMin: 10, gistId: GIST_ID, gistToken: GIST_TOKEN }));
-  registerModule(makePesquisaModule({ intervaloMin: 15, gistId: GIST_ID, gistToken: GIST_TOKEN }));
-  registerModule(makeRecrutamentoModule({ intervaloMin: 10, gistId: GIST_ID, gistToken: GIST_TOKEN }));
-  registerModule(makeHeroisModule({ intervaloMin: 60, gistId: GIST_ID, gistToken: GIST_TOKEN }));
-  registerModule(makeGrutaModule({ intervaloMin: 10 }));
+  registerModule(makeConstrucaoModule({ intervaloMin: 20, gistId: GIST_ID, gistToken: GIST_TOKEN }));
+  registerModule(makePesquisaModule({ intervaloMin: 30, gistId: GIST_ID, gistToken: GIST_TOKEN }));
+  registerModule(makeRecrutamentoModule({ intervaloMin: 20, gistId: GIST_ID, gistToken: GIST_TOKEN }));
+  registerModule(makeHeroisModule({ intervaloMin: 120, gistId: GIST_ID, gistToken: GIST_TOKEN }));
+  registerModule(makeGrutaModule({ intervaloMin: 20 }));
   registerModule(makeTrocaCidadesModule({ intervaloMin: 15 }));
   registerModule(makeEncaixeModule({ intervaloMin: 1 }));
   // As ALDEIAS são registadas antes da CULTURA: como o maestro corre os
   // módulos por ordem, as aldeias servem-se primeiro dos pontos de combate.
   // A evolução de aldeias é finita; a cultura consome sempre e os pontos
   // repõem-se ao combater.
-  registerModule(makeAldeiasModule({ intervaloMin: 5 }));
+  registerModule(makeAldeiasModule({ intervaloMin: 10 }));
   registerModule(makeCulturaModule({ intervaloMin: 30 }));
   registerModule(makeAlertasModule({ intervaloMin: 1 }));
-  registerModule(makeDeusesModule({ intervaloMin: 20, gistId: GIST_ID, gistToken: GIST_TOKEN }));
-  registerModule(makeEsquivaModule({ intervaloMin: 1 }));
-  registerModule(makeMissoesModule({ intervaloMin: 30 }));
-  registerModule(makeColonosModule({ intervaloMin: 10, gistId: GIST_ID, gistToken: GIST_TOKEN }));
-  registerModule(makeApoioModule({ intervaloMin: 2, gistId: GIST_ID, gistToken: GIST_TOKEN }));
-  registerModule(makeFundacaoModule({ intervaloMin: 20 }));
-  registerModule(makeRelatoriosModule({ intervaloMin: 30 }));
+  registerModule(makeDeusesModule({ intervaloMin: 15, gistId: GIST_ID, gistToken: GIST_TOKEN }));
+  registerModule(makeEsquivaModule({ intervaloMin: 0.5 }));
+  registerModule(makeMissoesModule({ intervaloMin: 60 }));
+  registerModule(makeColonosModule({ intervaloMin: 30, gistId: GIST_ID, gistToken: GIST_TOKEN }));
+  registerModule(makeApoioModule({ intervaloMin: 5, gistId: GIST_ID, gistToken: GIST_TOKEN }));
+  registerModule(makeFundacaoModule({ intervaloMin: 30 }));
+  registerModule(makeRelatoriosModule({ intervaloMin: 60 }));
 
   // (sem módulos registados ainda — adiciona os teus acima desta linha)
 
