@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.29.1314
+// @version      2026.08.29.1316
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -546,7 +546,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.29.1314';
+  const MAESTRO_VERSAO = '2026.08.29.1316';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -14023,7 +14023,10 @@ function makeEsquivaModule(opts) {
       for (const k of Object.keys(p)) {
         const x = p[k] || {};
         const fim = Number(x.casa) || Number(x.S) || 0;
-        if (fim && (agora - fim) > 3600) { delete p[k]; n++; }
+        /* 10 minutos depois de a tropa dever estar em casa, o plano já não
+         * serve para nada. Guardava-se uma hora, e a lista enchia-se de
+         * planos mortos. */
+        if (fim && (agora - fim) > 600) { delete p[k]; n++; }
       }
       if (n) {
         gravarPlanos(p);
@@ -17623,7 +17626,29 @@ function makeEncaixeModule(opts) {
     return c;
   }
   function guardarCfg(c) { try { armazem.setItem(CFG_KEY, JSON.stringify(c)); } catch (e) {} }
-  function lerPlanos() { try { return JSON.parse(armazem.getItem(PLANOS_KEY) || '[]'); } catch (e) { return []; } }
+  function lerPlanos() {
+    try {
+      const v = JSON.parse(armazem.getItem(PLANOS_KEY) || '[]');
+      if (!Array.isArray(v)) return [];
+
+      /* ESQUECER OS QUE JÁ PASSARAM.
+       *
+       * Um envio cuja hora de chegada já passou não serve para nada: ou foi
+       * feito, ou falhou. Ficava na lista para sempre, a ocupar espaço e a
+       * confundir — com dezenas de ataques agendados, a lista enchia-se de
+       * coisas mortas.
+       *
+       * Dá-se 10 minutos de folga depois da chegada, para o registo do
+       * resultado ter tempo de acontecer. */
+      const limite = agora() - 600;
+      const vivos = v.filter((p) => !p || !p.chegada || Number(p.chegada) > limite);
+
+      if (vivos.length !== v.length) {
+        try { armazem.setItem(PLANOS_KEY, JSON.stringify(vivos)); } catch (e) {}
+      }
+      return vivos;
+    } catch (e) { return []; }
+  }
   /* Nunca apagar TODOS os planos de uma vez.
    *
    * Vi os planos desaparecerem 25 minutos antes da hora de envio, sem motivo
