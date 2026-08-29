@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.29.1248
+// @version      2026.08.29.1254
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -544,7 +544,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.29.1248';
+  const MAESTRO_VERSAO = '2026.08.29.1254';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -18666,9 +18666,44 @@ function makeEncaixeModule(opts) {
         if (!ps.length) { cx.innerHTML = ''; return; }
         const off = desvioFuso();
         const hh = (t) => new Date((t + off) * 1000).toISOString().substr(11, 8);
-        cx.innerHTML = ps.map((p) => `<div style="display:flex;justify-content:space-between;border-top:1px solid #223;padding:2px 0">
-          <span>${p.tipo === 'attack' ? '⚔' : '🛡'} → ${p.alvoId} · chega ${hh(p.chegada)}</span>
-          <a href="#" data-canc="${p.id}" style="color:#f88;text-decoration:none">✕</a></div>`).join('');
+        /* Cada linha diz DE ONDE, PARA ONDE, o QUÊ e QUANDO — com só o número
+         * da cidade alvo não se sabia qual envio era qual. */
+        /* Escapar aqui mesmo: o `esc` do núcleo não está ao alcance deste
+         * módulo, e usá-lo fazia o painel rebentar com "esc is not defined". */
+        const lim = (x) => String(x == null ? '' : x)
+          .replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
+
+        const nomeDe = (id) => {
+          try {
+            const t = mUw.ITowns.getTown(Number(id));
+            if (t && t.getName) return t.getName();
+          } catch (e) {}
+          return '#' + id;
+        };
+        const nomeAlvo = (p) => {
+          /* O nome do alvo, se o soubermos; senão o número. */
+          try {
+            if (p.alvoNome) return p.alvoNome;
+            const t = mUw.ITowns.getTown(Number(p.alvoId));
+            if (t && t.getName) return t.getName();
+          } catch (e) {}
+          return '#' + p.alvoId;
+        };
+
+        cx.innerHTML = ps.map((p) => {
+          const tropas = Object.keys(p.unidades || {})
+            .map((u) => p.unidades[u] + ' ' + u).join(', ');
+          const icone = p.tipo === 'attack' ? '⚔'
+            : (p.tipo === 'colonize' ? '🚢' : '🛡');
+          return `<div style="border-top:1px solid #223;padding:3px 0">
+            <div style="display:flex;justify-content:space-between;align-items:center">
+              <b>${icone} ${lim(nomeDe(p.origemId))} → ${lim(nomeAlvo(p))}</b>
+              <a href="#" data-canc="${p.id}" style="color:#f88;text-decoration:none">✕</a>
+            </div>
+            <div style="opacity:.85">chega <b>${hh(p.chegada)}</b></div>
+            <div style="opacity:.65;font-size:10px">${lim(tropas || 'sem unidades')}</div>
+          </div>`;
+        }).join('');
         cx.querySelectorAll('[data-canc]').forEach((el) => {
           el.onclick = (ev) => {
             ev.preventDefault();
