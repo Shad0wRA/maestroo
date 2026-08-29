@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.29.1347
+// @version      2026.08.29.1358
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -546,7 +546,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.29.1347';
+  const MAESTRO_VERSAO = '2026.08.29.1358';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -1665,7 +1665,40 @@
     } catch (e) { return { ok: false, msg: e.message }; }
   }
 
+  /* OBRAS PRESAS na fila de construção.
+   *
+   * O jogo deixa lá obras que já acabaram no servidor, e cada uma ocupa um
+   * dos 7 lugares. A limpeza estava no módulo de construção, que corre de 20
+   * em 20 minutos — nesse intervalo a cidade ficava parada.
+   *
+   * Aqui corre a cada passagem do maestro. Só mexe no modelo local: o que
+   * está lá já foi construído. */
+  function limparFilaDeObras() {
+    try {
+      const col = uw.MM.getCollections().BuildingOrder[0];
+      if (!col || !col.models || typeof col.remove !== 'function') return;
+      const agora = Number(uw.Timestamp.now());
+      if (!agora) return;
+
+      /* Margem de 30 s: uma obra a acabar mesmo agora não está presa. */
+      const mortas = col.models.filter((m) => {
+        const a = (m && m.attributes) || {};
+        const fim = Number(a.to_be_completed_at) || 0;
+        return fim > 0 && (fim + 30) < agora;
+      });
+
+      for (const m of mortas) {
+        try { col.remove(m); } catch (e) {}
+      }
+      if (mortas.length) {
+        log('core', `🧹 Libertei ${mortas.length} lugar(es) na fila de construção `
+          + '(obras já concluídas no servidor).');
+      }
+    } catch (e) {}
+  }
+
   function limparNotificacoes() {
+    limparFilaDeObras();
     vigiarNotificacoes();
     vigiarEcra();
     if (Date.now() - ultimaLimpeza < LIMPAR_CADA_MS) return;
