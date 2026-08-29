@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.29.2307
+// @version      2026.08.29.2315
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -546,7 +546,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.29.2307';
+  const MAESTRO_VERSAO = '2026.08.29.2315';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -8396,6 +8396,92 @@ function makeHeroisModule(opts) {
     } catch (e) { return { wisdom: 0, war: 0, both: 0 }; }
   }
 
+  /* ============ TROCAR MOEDAS ===========================================
+   * O jogo deixa trocar moedas de guerra por sabedoria e vice-versa, com um
+   * câmbio que piora à medida que se troca.
+   *
+   * Pedido apanhado no jogo:
+   *   frontend_bridge?action=execute
+   *   { model_url: 'Heroes/<jogador>', action_name: 'exchangeCoins',
+   *     arguments: { type: 'coins_of_war', amount: 2 } }
+   *
+   * O `type` é a moeda que se DÁ. A resposta traz os saldos novos.
+   * ==================================================================== */
+  async function trocarMoedas(tipo, quantas) {
+    try {
+      const t = mUw.Game.townId;
+      const jogador = mUw.Game.player_id;
+      const url = mUw.location.origin + '/game/frontend_bridge?town_id=' + Number(t)
+        + '&action=execute&h=' + mUw.Game.csrfToken;
+
+      const r = await mUw.fetch(url, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
+          'x-requested-with': 'XMLHttpRequest',
+        },
+        credentials: 'include',
+        body: 'json=' + encodeURIComponent(JSON.stringify({
+          model_url: 'Heroes/' + Number(jogador),
+          action_name: 'exchangeCoins',
+          captcha: null,
+          arguments: { type: String(tipo), amount: Number(quantas) },
+          town_id: Number(t),
+          nl_init: true,
+        })),
+      }).then(lerResposta);
+
+      aplicarNotificacoes(r);
+      const j = (r && r.json) || {};
+      if (j.error) return { ok: false, msg: j.error };
+
+      /* A resposta traz os saldos novos — útil para o registo. */
+      const nova = {};
+      try {
+        if (j.new_offer_currency) nova[j.new_offer_currency.currency] = j.new_offer_currency.amount;
+        if (j.new_demand_currency) nova[j.new_demand_currency.currency] = j.new_demand_currency.amount;
+      } catch (e) {}
+      return { ok: true, saldos: nova };
+    } catch (e) { return { ok: false, msg: e.message }; }
+  }
+
+  /* ============ TROCAR PELO QUE FAZ FALTA ===============================
+   * Decide se vale a pena trocar moedas, e em que sentido.
+   *
+   * A regra é simples: se falta uma moeda para fazer o que está configurado
+   * — comprar um herói, subir outro de nível — e há excedente da outra,
+   * troca-se o que falta.
+   *
+   * O câmbio piora à medida que se troca, por isso não se troca tudo: só o
+   * que falta, e só se sobrar folga na moeda que se dá.
+   *
+   * Devolve `{ tipo, quantas }` ou null se não valer a pena.
+   * ==================================================================== */
+  function decidirTroca(moedas, precisoWisdom, precisoWar, folgaMinima) {
+    const folga = Number(folgaMinima) || 0;
+
+    const faltaW = Math.max(0, Number(precisoWisdom) - (Number(moedas.wisdom) + Number(moedas.both)));
+    const faltaG = Math.max(0, Number(precisoWar) - (Number(moedas.war) + Number(moedas.both)));
+
+    /* Faltam as duas: não há nada a fazer, trocar só pioraria. */
+    if (faltaW > 0 && faltaG > 0) return null;
+
+    if (faltaW > 0) {
+      /* Falta sabedoria: dar guerra, se sobrar acima do que é preciso. */
+      const sobraGuerra = Number(moedas.war) - Number(precisoWar) - folga;
+      if (sobraGuerra <= 0) return null;
+      return { tipo: 'coins_of_war', quantas: Math.min(faltaW, sobraGuerra), para: 'sabedoria' };
+    }
+
+    if (faltaG > 0) {
+      const sobraSab = Number(moedas.wisdom) - Number(precisoWisdom) - folga;
+      if (sobraSab <= 0) return null;
+      return { tipo: 'coins_of_wisdom', quantas: Math.min(faltaG, sobraSab), para: 'guerra' };
+    }
+
+    return null;   // não falta nada
+  }
+
   // Oferta do dia: { hero_of_war, hero_of_wisdom }
   function getOferta() {
     try {
@@ -9393,6 +9479,46 @@ function makeHeroisModule(opts) {
       }
     }
 
+    /* 0. TROCAR MOEDAS, se faltar uma para o que está configurado.
+     *
+     * Antes de comprar, vê-se se falta a moeda certa. Se faltar e houver
+     * excedente da outra, troca-se o que falta — e a compra a seguir já
+     * encontra o saldo em condições. */
+    if (cfg.trocarMoedas !== false && oferta && desejados.length && meta.slotsLivres > 0) {
+      try {
+        /* Quanto custa o que se quer comprar hoje, de cada moeda. */
+        let precisoW = 0;
+        let precisoG = 0;
+        for (const lado of ['wisdom', 'war']) {
+          const id = oferta[lado];
+          if (!id || desejados.indexOf(id) < 0) continue;
+          if (meus.some((h) => h.type === id)) continue;      // já o tenho
+          const custo = (herois[id] && herois[id].cost) || 0;
+          if (lado === 'wisdom') precisoW = Math.max(precisoW, custo);
+          else precisoG = Math.max(precisoG, custo);
+        }
+
+        if (precisoW || precisoG) {
+          const t = decidirTroca(moedas, precisoW, precisoG, Number(cfg.folgaMoedas) || 0);
+          if (t && t.quantas > 0) {
+            const r = await trocarMoedas(t.tipo, t.quantas);
+            if (r.ok) {
+              log(`🪙 Troquei ${t.quantas} moeda(s) de `
+                + `${t.tipo === 'coins_of_war' ? 'guerra' : 'sabedoria'} por ${t.para}.`);
+              /* Actualizar o saldo com o que o servidor devolveu. */
+              if (r.saldos) {
+                if (r.saldos.coins_of_wisdom != null) moedas.wisdom = r.saldos.coins_of_wisdom;
+                if (r.saldos.coins_of_war != null) moedas.war = r.saldos.coins_of_war;
+              }
+              await ctx.sleep(ctx.rand(600, 1200));
+            } else {
+              rotina(`Troca de moedas falhou: ${r.msg}`);
+            }
+          }
+        }
+      } catch (e) {}
+    }
+
     // 1. COMPRA (prioritária)
     let comprou = false;
     if (desejados.length) {
@@ -9472,7 +9598,16 @@ function makeHeroisModule(opts) {
         <span style="opacity:.7">Slots livres: ${meta.slotsLivres}</span></div>`;
     }
 
-    html += `<div style="font-size:11px;opacity:.8;margin-bottom:3px">
+    html += `<label style="display:block;font-size:11px;margin-bottom:2px">
+      <input type="checkbox" id="her-trocar"${cfgEdicao.trocarMoedas !== false ? ' checked' : ''}>
+      trocar moedas quando faltar para comprar
+    </label>
+    <div style="opacity:.6;font-size:10px;margin:0 0 6px 18px">
+      Se faltar sabedoria e sobrar guerra (ou o inverso), troca só o que falta.
+      O câmbio piora a cada troca, por isso nunca troca de mais.
+    </div>
+
+    <div style="font-size:11px;opacity:.8;margin-bottom:3px">
       <b>C</b> = comprar · <b>N</b> = subir nível · <b>R</b> = rodar para a cidade onde o bónus dele rende mais</div>
       <div style="max-height:200px;overflow:auto;background:#0d141c;padding:4px;border-radius:4px">`;
     for (const h of lista) {
@@ -9568,6 +9703,13 @@ function makeHeroisModule(opts) {
           guardarHeroisAgora();
         };
       });
+    };
+
+    /* Trocar moedas — grava ao clicar, como o resto. */
+    const chkT = container.querySelector('#her-trocar');
+    if (chkT) chkT.onchange = () => {
+      cfgEdicao.trocarMoedas = chkT.checked;
+      try { saveLocal(cfgEdicao); } catch (e) {}
     };
 
     ligarCaixa('data-c', 'comprar');
@@ -13686,18 +13828,6 @@ function makeDeusesModule(opts) {
       ctx.log(`Encontrados ${outros.length} jogador(es) nas ilhas de farm. Marca os que são multis tuas.`);
     };
 
-    // ---- controlos das cidades de farm ----
-    container.querySelectorAll('[data-farm]').forEach((el) => {
-      el.onchange = () => {
-        const id = el.getAttribute('data-farm');
-        const tipoSel = container.querySelector(`[data-farmtipo="${id}"]`);
-        const deusSel = container.querySelector(`[data-farmdeus="${id}"]`);
-        if (tipoSel) tipoSel.disabled = !el.checked;
-        if (deusSel) deusSel.disabled = !el.checked || tipoSel.value !== 'fixo';
-        el.closest('tr').style.background = el.checked ? '#141d28' : '';
-        try { guardarFarmAgora(); } catch (e) {}
-      };
-    });
     /* GUARDAR ASSIM QUE SE ESCOLHE.
      *
      * Antes só se guardava ao carregar em "Guardar". Se o painel se
@@ -13718,6 +13848,19 @@ function makeDeusesModule(opts) {
         guardarLocal(cc);
       } catch (e) {}
     };
+
+    // ---- controlos das cidades de farm ----
+    container.querySelectorAll('[data-farm]').forEach((el) => {
+      el.onchange = () => {
+        const id = el.getAttribute('data-farm');
+        const tipoSel = container.querySelector(`[data-farmtipo="${id}"]`);
+        const deusSel = container.querySelector(`[data-farmdeus="${id}"]`);
+        if (tipoSel) tipoSel.disabled = !el.checked;
+        if (deusSel) deusSel.disabled = !el.checked || tipoSel.value !== 'fixo';
+        el.closest('tr').style.background = el.checked ? '#141d28' : '';
+        try { guardarFarmAgora(); } catch (e) {}
+      };
+    });
 
     container.querySelectorAll('[data-farmtipo]').forEach((el) => {
       el.onchange = () => {
