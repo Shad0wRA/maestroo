@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.29.1358
+// @version      2026.08.29.1603
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -546,7 +546,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.29.1358';
+  const MAESTRO_VERSAO = '2026.08.29.1603';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -12708,11 +12708,34 @@ function makeDeusesModule(opts) {
 
         // cidade a mudar: uma que tenha deus SEM voadores, ou a mais repetida
         const efetivo = (id) => deusDa(id) || (c.simular ? deusesSimulados[id] : null);
-        let alvo = townsGrupo.find((t) => {
+
+        /* QUEM MUDA É QUEM TEM MENOS A PERDER.
+         *
+         * Usava-se o primeiro da lista, sem olhar a nada. Visto em jogo: ao
+         * acrescentar uma cidade recém-fundada ao grupo, mudou-se o deus de
+         * uma que já produzia voadores há dias — com favor acumulado e fila a
+         * andar — e deixou-se a nova como estava.
+         *
+         * Mudar de deus deita fora o favor acumulado. Ordena-se por favor
+         * crescente: as cidades com pouco (as novas, entre elas) mudam
+         * primeiro. */
+        const porFavor = (a, b) => {
+          const fa = Number(favores[efetivo(a.id)] || 0);
+          const fb = Number(favores[efetivo(b.id)] || 0);
+          return fa - fb;
+        };
+
+        let alvo = townsGrupo.filter((t) => {
           const d = efetivo(t.id);
           return d && !DEUSES_VOADORES[d]
             && !(c.protegerMiticas && miticasNaCidade(t.id, d));
-        });
+        }).sort(porFavor)[0];
+
+        /* Uma cidade SEM deus nenhum é a melhor candidata de todas: não há
+         * favor a perder. */
+        if (!alvo) {
+          alvo = townsGrupo.find((t) => !efetivo(t.id));
+        }
         if (!alvo) {
           // nenhum deus inútil: tirar do que está mais acima do que devia
           const cont = {};
@@ -12721,8 +12744,9 @@ function makeDeusesModule(opts) {
             .filter((d) => cont[d] > (falta.querido[d] || 0))
             .sort((a, b) => (cont[b] - (falta.querido[b] || 0)) - (cont[a] - (falta.querido[a] || 0)))[0];
           if (!excesso) break;
-          alvo = townsGrupo.find((t) => efetivo(t.id) === excesso
-            && !(c.protegerMiticas && miticasNaCidade(t.id, excesso)));
+          alvo = townsGrupo.filter((t) => efetivo(t.id) === excesso
+            && !(c.protegerMiticas && miticasNaCidade(t.id, excesso)))
+            .sort(porFavor)[0];
         }
         if (!alvo) break;
 
