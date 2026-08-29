@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.29.2315
+// @version      2026.08.29.2331
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -546,7 +546,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.29.2315';
+  const MAESTRO_VERSAO = '2026.08.29.2331';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -8457,8 +8457,15 @@ function makeHeroisModule(opts) {
    *
    * Devolve `{ tipo, quantas }` ou null se não valer a pena.
    * ==================================================================== */
-  function decidirTroca(moedas, precisoWisdom, precisoWar, folgaMinima) {
-    const folga = Number(folgaMinima) || 0;
+  function decidirTroca(moedas, precisoWisdom, precisoWar, reserva, querWisdom, querWar) {
+    /* A RESERVA é o que nunca se deixa baixar de cada moeda.
+     *
+     * Vem por categoria: de cada lado guarda-se o custo do herói mais caro
+     * que ainda falta comprar desse lado. Se não há heróis marcados desse
+     * lado, não se guarda nada — seria guardar moedas que nunca se gastam. */
+    const r = (typeof reserva === 'object' && reserva) ? reserva : { wisdom: reserva, war: reserva };
+    const resW = querWisdom ? (Number(r.wisdom) || 0) : 0;
+    const resG = querWar ? (Number(r.war) || 0) : 0;
 
     const faltaW = Math.max(0, Number(precisoWisdom) - (Number(moedas.wisdom) + Number(moedas.both)));
     const faltaG = Math.max(0, Number(precisoWar) - (Number(moedas.war) + Number(moedas.both)));
@@ -8467,19 +8474,33 @@ function makeHeroisModule(opts) {
     if (faltaW > 0 && faltaG > 0) return null;
 
     if (faltaW > 0) {
-      /* Falta sabedoria: dar guerra, se sobrar acima do que é preciso. */
-      const sobraGuerra = Number(moedas.war) - Number(precisoWar) - folga;
+      const sobraGuerra = Number(moedas.war) - Number(precisoWar) - resG;
       if (sobraGuerra <= 0) return null;
       return { tipo: 'coins_of_war', quantas: Math.min(faltaW, sobraGuerra), para: 'sabedoria' };
     }
 
     if (faltaG > 0) {
-      const sobraSab = Number(moedas.wisdom) - Number(precisoWisdom) - folga;
+      const sobraSab = Number(moedas.wisdom) - Number(precisoWisdom) - resW;
       if (sobraSab <= 0) return null;
       return { tipo: 'coins_of_wisdom', quantas: Math.min(faltaG, sobraSab), para: 'guerra' };
     }
 
-    return null;   // não falta nada
+    /* NÃO FALTA NADA AGORA — mas se uma das moedas não serve para nada,
+     * troca-se o excedente na mesma.
+     *
+     * Se só há heróis de sabedoria marcados, as moedas de guerra acima da
+     * reserva estão paradas: mais vale passá-las para o lado que se usa. */
+    if (querWisdom && !querWar) {
+      /* Guerra não serve para nada: trocar TUDO, sem reserva. */
+      const sobra = Number(moedas.war);
+      if (sobra > 0) return { tipo: 'coins_of_war', quantas: sobra, para: 'sabedoria', excedente: true };
+    }
+    if (querWar && !querWisdom) {
+      const sobra = Number(moedas.wisdom);
+      if (sobra > 0) return { tipo: 'coins_of_wisdom', quantas: sobra, para: 'guerra', excedente: true };
+    }
+
+    return null;
   }
 
   // Oferta do dia: { hero_of_war, hero_of_wisdom }
@@ -9311,14 +9332,25 @@ function makeHeroisModule(opts) {
   }
 
   // Decide as subidas de nível com o EXCEDENTE (acima da reserva, se aplicável).
-  function decidirSubidas(marcados, meus, moedas, limites, maxLvl, reservaAtiva) {
-    // reservaAtiva = ainda faltam heróis por comprar
-    const reserva = reservaAtiva ? RESERVA_MOEDAS : RESERVA_DEPOIS;
+  function decidirSubidas(marcados, meus, moedas, limites, maxLvl, reservaAtiva, reservaPorCat) {
+    /* RESERVA POR CATEGORIA.
+     *
+     * Era 120 de cada moeda enquanto faltasse comprar algum herói, fosse de
+     * que lado fosse. Com quatro heróis de sabedoria marcados e nenhum de
+     * guerra, isso guardava 120 moedas de guerra que nunca se iam gastar.
+     *
+     * Agora reserva-se, de cada lado, o custo do herói MAIS CARO que ainda
+     * falta comprar desse lado — é o que pode aparecer na loja amanhã. Se não
+     * falta nenhum desse lado, guarda-se só uma folga pequena. */
+    const rc = reservaPorCat || {};
+    const resW = rc.wisdom != null ? rc.wisdom : (reservaAtiva ? RESERVA_MOEDAS : RESERVA_DEPOIS);
+    const resG = rc.war != null ? rc.war : (reservaAtiva ? RESERVA_MOEDAS : RESERVA_DEPOIS);
+
     // orçamento por categoria (as "both" ficam num bolo comum)
     const orc = {
-      wisdom: Math.max(0, moedas.wisdom - reserva),
-      war: Math.max(0, moedas.war - reserva),
-      both: Math.max(0, moedas.both - reserva),
+      wisdom: Math.max(0, moedas.wisdom - resW),
+      war: Math.max(0, moedas.war - resG),
+      both: Math.max(0, moedas.both - Math.max(resW, resG)),
     };
     /* SUBIR POR IGUAL.
      *
@@ -9479,32 +9511,69 @@ function makeHeroisModule(opts) {
       }
     }
 
+    /* A RESERVA DE CADA MOEDA.
+     *
+     * De cada lado guarda-se o custo do herói MAIS CARO que ainda falta
+     * comprar desse lado — pode aparecer na loja a qualquer momento e seria
+     * pena não ter com que o comprar.
+     *
+     * Se já não falta nenhum desse lado, guarda-se só 30 de folga. */
+    const reservaDe = (cat) => {
+      let maior = 0;
+      for (const id of desejados) {
+        if ((herois[id] || {}).category !== cat) continue;
+        if (meus.some((h) => h.type === id)) continue;        // já o tenho
+        maior = Math.max(maior, Number((herois[id] || {}).cost) || 0);
+      }
+      return maior || 30;
+    };
+    const reservaPorCat = { wisdom: reservaDe('wisdom'), war: reservaDe('war') };
+
     /* 0. TROCAR MOEDAS, se faltar uma para o que está configurado.
      *
      * Antes de comprar, vê-se se falta a moeda certa. Se faltar e houver
      * excedente da outra, troca-se o que falta — e a compra a seguir já
      * encontra o saldo em condições. */
-    if (cfg.trocarMoedas !== false && oferta && desejados.length && meta.slotsLivres > 0) {
+    if (cfg.trocarMoedas !== false) {
       try {
         /* Quanto custa o que se quer comprar hoje, de cada moeda. */
         let precisoW = 0;
         let precisoG = 0;
-        for (const lado of ['wisdom', 'war']) {
-          const id = oferta[lado];
-          if (!id || desejados.indexOf(id) < 0) continue;
-          if (meus.some((h) => h.type === id)) continue;      // já o tenho
-          const custo = (herois[id] && herois[id].cost) || 0;
-          if (lado === 'wisdom') precisoW = Math.max(precisoW, custo);
-          else precisoG = Math.max(precisoG, custo);
+        if (oferta && meta.slotsLivres > 0) {
+          for (const lado of ['wisdom', 'war']) {
+            const id = oferta[lado];
+            if (!id || desejados.indexOf(id) < 0) continue;
+            if (meus.some((h) => h.type === id)) continue;      // já o tenho
+            const custo = (herois[id] && herois[id].cost) || 0;
+            if (lado === 'wisdom') precisoW = Math.max(precisoW, custo);
+            else precisoG = Math.max(precisoG, custo);
+          }
         }
 
-        if (precisoW || precisoG) {
-          const t = decidirTroca(moedas, precisoW, precisoG, Number(cfg.folgaMoedas) || 0);
+        /* HÁ HERÓIS DE CADA LADO por comprar ou subir?
+         *
+         * Se só há de sabedoria, as moedas de guerra não servem para nada e
+         * devem ser trocadas — não faz sentido guardar reserva de uma moeda
+         * que nunca se vai gastar. */
+        const interessa = (cat) => {
+          for (const id of desejados.concat(marcados)) {
+            if ((herois[id] || {}).category === cat) return true;
+          }
+          return false;
+        };
+        const querW = interessa('wisdom');
+        const querG = interessa('war');
+
+        {
+          /* A reserva de CADA lado: o herói mais caro que falta comprar desse
+           * lado, ou 30 se já não falta nenhum. */
+          const t = decidirTroca(moedas, precisoW, precisoG, reservaPorCat, querW, querG);
           if (t && t.quantas > 0) {
             const r = await trocarMoedas(t.tipo, t.quantas);
             if (r.ok) {
               log(`🪙 Troquei ${t.quantas} moeda(s) de `
-                + `${t.tipo === 'coins_of_war' ? 'guerra' : 'sabedoria'} por ${t.para}.`);
+                + `${t.tipo === 'coins_of_war' ? 'guerra' : 'sabedoria'} por ${t.para}`
+                + (t.excedente ? ' (não tenho heróis dessa moeda marcados).' : '.'));
               /* Actualizar o saldo com o que o servidor devolveu. */
               if (r.saldos) {
                 if (r.saldos.coins_of_wisdom != null) moedas.wisdom = r.saldos.coins_of_wisdom;
@@ -9540,7 +9609,8 @@ function makeHeroisModule(opts) {
     // 2. SUBIDAS DE NÍVEL (com o excedente; reserva liberta-se se já tiver todos)
     if (marcados.length) {
       const reservaAtiva = faltamHeroisDesejados(desejados, meus);
-      const subidas = decidirSubidas(marcados, meus.filter((h) => h.id), moedas, meta.limites, nivelMaximo(), reservaAtiva);
+      const subidas = decidirSubidas(marcados, meus.filter((h) => h.id), moedas, meta.limites,
+        nivelMaximo(), reservaAtiva, reservaPorCat);
       for (const s of subidas) {
         const r = await subirNivel(s.heroId, s.type, s.amount, townId);
         const nome = (herois[s.type] && herois[s.type].name) || s.type;
