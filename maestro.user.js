@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.29.1232
+// @version      2026.08.29.1248
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -544,7 +544,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.29.1232';
+  const MAESTRO_VERSAO = '2026.08.29.1248';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -18520,6 +18520,24 @@ function makeEncaixeModule(opts) {
       if (!document.querySelector('input.unit_input[name]')) return;  // não é a janela certa
 
       const c = cfg();
+
+      /* QUE TIPO DE ENVIO é esta janela — para usar o desvio certo.
+       *
+       * A janela do jogo é a mesma para atacar e apoiar; o que muda são os
+       * botões. Se houver um colonizador entre as unidades, conta como
+       * colonização. */
+      const tipoEnvio = (() => {
+        try {
+          if (document.querySelector('input.unit_input[name="colonize_ship"]')) {
+            const el = document.querySelector('input.unit_input[name="colonize_ship"]');
+            if (el && Number(el.value) > 0) return 'colonize';
+          }
+          const txt = String(document.querySelector('.gpwindow_content').textContent || '').toLowerCase();
+          if (/apoi|support/.test(txt) && !/atac|attack/.test(txt)) return 'support';
+        } catch (e) {}
+        return 'attack';
+      })();
+
       const box = document.createElement('div');
       box.id = 'encaixe-box';
       box.style.cssText = 'margin:6px;padding:7px;background:#1b2838;color:#cde;border-radius:6px;font:11px sans-serif';
@@ -18540,22 +18558,36 @@ function makeEncaixeModule(opts) {
             <input id="encj-s" type="number" min="0" max="59" placeholder="SS" style="width:46px;text-align:center">
           </div>
 
-          <div style="border:1px solid #2c3e50;border-radius:5px;padding:6px;margin-bottom:8px">
-            <div style="font-size:10px;letter-spacing:.5px;opacity:.65;margin-bottom:4px">TOLERÂNCIA DE CHEGADA</div>
-            <div style="display:flex;gap:5px;align-items:center;flex-wrap:wrap">
-              <span>Desvio máx.:</span>
-              <select id="encj-margem" style="width:62px">
-                ${[0,1,2,3,4,5].map((n) => `<option value="${n}"${n === c.margemSeg ? ' selected' : ''}>${n}s</option>`).join('')}
-              </select>
-              <span>Direção:</span>
-              <select id="encj-dir" style="width:104px">
-                <option value="ambos"${c.direcao === 'ambos' ? ' selected' : ''}>Os dois</option>
-                <option value="antes"${c.direcao === 'antes' ? ' selected' : ''}>Só antes</option>
-                <option value="depois"${c.direcao === 'depois' ? ' selected' : ''}>Só depois</option>
-              </select>
+          <!-- A TOLERÂNCIA vem do painel do Maestro, por tipo de envio.
+               Estava aqui e obrigava a escolhê-la de cada vez; agora define-se
+               uma vez e vale para todos os ataques, apoios e colonizadores.
+               Os campos ficam escondidos porque o resto do código os lê. -->
+          <div style="display:none">
+            <select id="encj-margem"><option value="${(() => {
+              const d = (c.porTipo || {})[tipoEnvio] || {};
+              return d.margemSeg != null ? d.margemSeg : c.margemSeg;
+            })()}" selected></option></select>
+            <select id="encj-dir"><option value="${(() => {
+              const d = (c.porTipo || {})[tipoEnvio] || {};
+              return d.direcao || c.direcao || 'ambos';
+            })()}" selected></option></select>
+            <span id="encj-aviso-margem"></span>
+          </div>
+
+          <div style="border:1px solid #2c3e50;border-radius:5px;padding:6px;margin-bottom:8px;font-size:11px">
+            <div style="font-size:10px;letter-spacing:.5px;opacity:.65;margin-bottom:3px">TOLERÂNCIA</div>
+            <div style="opacity:.8">
+              ${(() => {
+                const d = (c.porTipo || {})[tipoEnvio] || {};
+                const m = d.margemSeg != null ? d.margemSeg : c.margemSeg;
+                const dir = d.direcao || c.direcao || 'ambos';
+                const txt = dir === 'antes' ? 'só antes' : dir === 'depois' ? 'só depois' : 'antes e depois';
+                const nome = tipoEnvio === 'attack' ? 'ataques'
+                  : (tipoEnvio === 'colonize' ? 'colonizadores' : 'apoios');
+                return `±${m}s · ${txt} <span style="opacity:.6">(o que definiste para ${nome})</span>`;
+              })()}
             </div>
-            <div style="font-size:10px;opacity:.55;margin-top:3px">Aceita esta diferença entre a chegada real e a pretendida.</div>
-            <div id="encj-aviso-margem" style="font-size:10px;opacity:.75;margin-top:2px"></div>
+            <div style="font-size:10px;opacity:.5;margin-top:2px">Muda-se no painel do Maestro, em Encaixe.</div>
           </div>
 
           <div style="display:flex;gap:5px;align-items:center;margin-bottom:8px;font-size:11px">
@@ -18582,7 +18614,8 @@ function makeEncaixeModule(opts) {
           </div>
 
           <div id="encj-info" style="margin-top:6px;background:#0d141c;padding:5px;border-radius:4px;min-height:15px;font-size:11px"></div>
-          <div id="encj-agendados" style="margin-top:4px;font-size:11px"></div>
+          <!-- SCROLL: com muitos envios agendados a lista cobria o ecrã todo. -->
+          <div id="encj-agendados" style="margin-top:4px;font-size:11px;max-height:180px;overflow-y:auto"></div>
           <div style="opacity:.5;margin-top:4px;font-size:10px">O jogo varia a viagem ~6s. Com ±3s costuma acertar à primeira; margens apertadas exigem muitas tentativas.</div>
         </div>`;
       cont.insertBefore(box, cont.firstChild);
