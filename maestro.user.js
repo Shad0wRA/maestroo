@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.29.1254
+// @version      2026.08.29.1313
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -125,6 +125,8 @@
 
       /* Funcionamento normal, não erros. */
       /vagas de treino|vagas est[ãa]o cheias|queue is full/i,   // fila do quartel cheia
+      /n[ãa]o h[áa] aldeias b[áa]rbaras nesta ilha/i,           // condição da ilha, não muda
+      /requisitos de pesquisa .* n[ãa]o foram preenchidos/i,     // falta pesquisa: já se vê no painel
       /que o jogo não trouxe/i,                                 // o cruzamento a funcionar
       /vou perguntar ao servidor/i,
       /servidor a limitar|limitar os pedidos/i,                  // já tem o seu próprio travão
@@ -544,7 +546,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.29.1254';
+  const MAESTRO_VERSAO = '2026.08.29.1313';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -5485,7 +5487,10 @@ function makePesquisaModule(opts) {
            * estão construídos.
            *
            * As outras falhas continuam a aparecer: essas podem ser problemas. */
-          const normal = /pontos de pesquisa|requisitos|research points|prerequisit|academia n[íi]vel|academia no n[íi]vel|academy/i
+          /* Condições que não são problema: falta de pontos, requisitos por
+           * cumprir, ou a ilha simplesmente não ter aldeias bárbaras — essa
+           * última nunca muda, e enchia o registo a cada passagem. */
+          const normal = /pontos de pesquisa|requisitos|research points|prerequisit|academia n[íi]vel|academia no n[íi]vel|academy|aldeias b[áa]rbaras/i
             .test(String(r.msg));
           if (normal) {
             rotina(`${town.name}: ainda não dá para investigar ${nomePesquisaPT(id) || id} (${r.msg}).`);
@@ -18345,6 +18350,10 @@ function makeEncaixeModule(opts) {
   // dessa cidade no parâmetro "id". É a via fiável — a janela em si não o
   // expõe, e o endereço da página nem sempre o tem.
   let alvoDetetado = null;
+  /* O nome da cidade alvo, tirado do título da janela do jogo. Guarda-se no
+   * plano para a lista dos agendados o poder mostrar — sobretudo em inimigos,
+   * que raramente estão nas caches de nomes. */
+  let alvoNomeDetetado = null;
 
   let espiaoInstalado = false;
   function instalarEspiaoDeAlvo() {
@@ -18366,8 +18375,27 @@ function makeEncaixeModule(opts) {
               alvoDetetado = Number(id);
               const campo = document.getElementById('encj-alvo');
               if (campo && !campo.dataset.manual) campo.value = alvoDetetado;
+              /* GUARDAR O NOME DA CIDADE ALVO.
+               *
+               * O jogo mostra-o no título da janela. Sem isto, a lista dos
+               * agendados ficava com o número — e para inimigos que nunca
+               * apareceram num varrimento do mapa não havia outra via. */
+              try {
+                const tit = document.querySelector('.gpwindow_content .game_header, .gpwindow_content h3, .window_curtain_wrapper .gpwindow_title');
+                let nome = tit ? String(tit.textContent || '').trim() : '';
+                /* O título costuma ser "Atacar Cidade — 123:456"; fica-se com
+                 * a parte antes do travessão e sem o verbo. */
+                nome = nome.replace(/^(atacar|apoiar|attack|support)\s+/i, '')
+                  .split(/\s+[—–-]\s+/)[0].trim();
+                if (nome && nome.length < 40) alvoNomeDetetado = nome;
+              } catch (e) {}
+
               const nb = document.getElementById('encj-alvo-nome');
-              if (nb) nb.textContent = 'alvo ' + alvoDetetado + ' (detetado)';
+              if (nb) {
+                nb.textContent = alvoNomeDetetado
+                  ? alvoNomeDetetado + ' (' + alvoDetetado + ')'
+                  : 'alvo ' + alvoDetetado + ' (detetado)';
+              }
             }
           }
           // 2) captura manual (botão "captar"), se ainda for usada
@@ -18673,6 +18701,14 @@ function makeEncaixeModule(opts) {
         const lim = (x) => String(x == null ? '' : x)
           .replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
 
+        const nomeUn = (id) => {
+          try {
+            const g = (mUw.GameData && mUw.GameData.units) ? mUw.GameData.units[id] : null;
+            if (g && g.name) return g.name;
+          } catch (e) {}
+          return id;
+        };
+
         const nomeDe = (id) => {
           try {
             const t = mUw.ITowns.getTown(Number(id));
@@ -18680,19 +18716,40 @@ function makeEncaixeModule(opts) {
           } catch (e) {}
           return '#' + id;
         };
+
+        /* O NOME DA CIDADE ALVO.
+         *
+         * Se não for minha, procura-se onde já há nomes descobertos: o módulo
+         * de apoio guarda milhares deles, aprendidos da tropa estacionada e
+         * do mapa. Sem isto ficava só o número, que não diz nada. */
+        const nomeCache = (() => {
+          try {
+            for (const suf of ['__main', '__multi', '']) {
+              const raw = localStorage.getItem('grepoApoio_nomes_v1' + suf);
+              if (!raw) continue;
+              const o = JSON.parse(raw);
+              if (o && Object.keys(o).length) return o;
+            }
+          } catch (e) {}
+          return {};
+        })();
+
         const nomeAlvo = (p) => {
-          /* O nome do alvo, se o soubermos; senão o número. */
           try {
             if (p.alvoNome) return p.alvoNome;
             const t = mUw.ITowns.getTown(Number(p.alvoId));
             if (t && t.getName) return t.getName();
+          } catch (e) {}
+          try {
+            const i = nomeCache[p.alvoId];
+            if (i && i.nome) return i.nome;
           } catch (e) {}
           return '#' + p.alvoId;
         };
 
         cx.innerHTML = ps.map((p) => {
           const tropas = Object.keys(p.unidades || {})
-            .map((u) => p.unidades[u] + ' ' + u).join(', ');
+            .map((u) => p.unidades[u] + ' ' + nomeUn(u)).join(', ');
           const icone = p.tipo === 'attack' ? '⚔'
             : (p.tipo === 'colonize' ? '🚢' : '🛡');
           return `<div style="border-top:1px solid #223;padding:3px 0">
@@ -18780,6 +18837,8 @@ function makeEncaixeModule(opts) {
         } catch (e) {}
 
         adicionarPlano({ origemId, alvoId: alvo.id, alvoCoords: alvo, unidades, tipo, chegada,
+          /* O nome da cidade alvo, apanhado do título da janela. */
+          alvoNome: alvoNomeDetetado || undefined,
           direcao: box.querySelector('#encj-dir').value,
           margemSeg: conf.margemSeg,
           atrasosSeguidosParaParar: conf.atrasosSeguidosParaParar,
@@ -18864,14 +18923,32 @@ function makeEncaixeModule(opts) {
     };
 
     const lista = planos.map((p) => {
+      /* O nome da unidade em português, como o jogo lhe chama. `attack_ship`
+       * não diz nada a quem está a ler. */
+      const nomeUn = (id) => {
+        try {
+          const g = (mUw.GameData && mUw.GameData.units) ? mUw.GameData.units[id] : null;
+          if (g && g.name) return g.name;
+        } catch (e) {}
+        return id;
+      };
+
+
       const alvo = p.alvoCoords || coordsCidade(p.alvoId);
       const dur = p.duracaoJogo || duracaoPrevista(p.origemId, alvo, p.unidades, c);
       const falta = p.chegada - agora();
       const envio = dur ? hh(p.chegada - dur) : '?';
-      const tropas = Object.keys(p.unidades || {}).map((u) => p.unidades[u] + ' ' + u).join(', ');
+      const tropas = Object.keys(p.unidades || {})
+        .map((u) => p.unidades[u] + ' ' + nomeUn(u)).join(', ');
       const quando = falta > 0
         ? (falta > 3600 ? `daqui a ${Math.round(falta / 3600)}h` : `daqui a ${Math.round(falta / 60)} min`)
         : 'já passou';
+      /* Escapar aqui: o `esc` do módulo não está ao alcance desta função e
+       * fazia o painel rebentar com "esc is not defined". */
+      const lim = (x) => String(x == null ? '' : x)
+        .replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
+
+
       /* QUE CIDADE ENVIA — sem isto, com vários envios agendados não se sabia
        * qual era qual. */
       let origem = '#' + p.origemId;
@@ -18890,12 +18967,30 @@ function makeEncaixeModule(opts) {
       const nomeTipo = p.tipo === 'attack' ? 'ataque'
         : (p.tipo === 'colonize' ? 'colonizador' : 'apoio');
 
+      /* O nome do alvo: o que se apanhou ao agendar, senão uma cidade minha,
+       * senão o que o módulo de apoio já descobriu, senão o número. */
+      const alvoTxt = (() => {
+        if (p.alvoNome) return p.alvoNome;
+        try {
+          const t = mUw.ITowns.getTown(Number(p.alvoId));
+          if (t && t.getName) return t.getName();
+        } catch (e) {}
+        try {
+          for (const suf of ['__main', '__multi', '']) {
+            const raw = localStorage.getItem('grepoApoio_nomes_v1' + suf);
+            if (!raw) continue;
+            const o = JSON.parse(raw);
+            if (o && o[p.alvoId] && o[p.alvoId].nome) return o[p.alvoId].nome;
+          }
+        } catch (e) {}
+        return '#' + p.alvoId;
+      })();
+
       return `<div style="border-top:1px solid #223;padding:5px 0;font-size:11px">
         <div style="display:flex;justify-content:space-between;align-items:center">
-          <b>${icone} ${nomeTipo} → ${p.alvoId}</b>
+          <b>${icone} ${lim(origem)} → ${lim(alvoTxt)}</b>
           <a href="#" data-cancelar="${p.id}" style="color:#f88;text-decoration:none" title="cancelar este agendamento">✕ cancelar</a>
         </div>
-        <div style="opacity:.9">de <b>${esc(origem)}</b></div>
         <div>chega <b>${hh(p.chegada)}</b>${dia(p.chegada)} · ${quando}</div>
         <div style="opacity:.75">${tropas || 'sem unidades'}</div>
         <div style="opacity:.6;font-size:10px">sai ${envio} · margem ±${margUsada}s${
