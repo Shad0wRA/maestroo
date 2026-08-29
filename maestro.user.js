@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.29.1313
+// @version      2026.08.29.1314
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -546,7 +546,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.29.1313';
+  const MAESTRO_VERSAO = '2026.08.29.1314';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -17949,13 +17949,29 @@ function makeEncaixeModule(opts) {
   })();
 
   function lerDesvios() {
-    try { const v = JSON.parse(armazem.getItem(DESVIOS_KEY) || '[]'); return Array.isArray(v) ? v : []; }
-    catch (e) { return []; }
+    try {
+      const v = JSON.parse(armazem.getItem(DESVIOS_KEY) || '[]');
+      if (!Array.isArray(v)) return [];
+      /* Deitar fora o lixo já guardado — valores de horas em vez de segundos. */
+      return v.filter((x) => Number.isFinite(Number(x)) && Math.abs(Number(x)) <= 120);
+    } catch (e) { return []; }
   }
   function registarDesvio(d) {
     try {
+      const n = Number(d);
+
+      /* SÓ DESVIOS PLAUSÍVEIS.
+       *
+       * Um encaixe erra por segundos, não por horas. Visto em jogo: a
+       * estatística mostrava "de -25s a +32853s" — nove horas — vindas de
+       * envios que falharam ou de planos abandonados. Isso estraga a mediana
+       * e, com a correcção de viés ligada, estragaria os envios seguintes.
+       *
+       * Fora de ±120 s não é uma medição, é lixo. */
+      if (!Number.isFinite(n) || Math.abs(n) > 120) return;
+
       const v = lerDesvios();
-      v.push(Number(d));
+      v.push(n);
       armazem.setItem(DESVIOS_KEY, JSON.stringify(v.slice(-200)));
     } catch (e) {}
   }
@@ -18040,6 +18056,22 @@ function makeEncaixeModule(opts) {
       // antes, e todo o varrimento inicial se perdia.
       const antecipacao = (plano.comecarAntes != null) ? Number(plano.comecarAntes) : c.comecarAntes;
       const inicioRajada = envioPrevisto - antecipacao - vies;
+
+      /* A HORA DE ENVIO JÁ PASSOU?
+       *
+       * Visto em jogo: às 14:06:12 armou-se uma rajada para as 14:05:57 — 15 s
+       * antes — e o envio foi abandonado quatro segundos depois. Toda a
+       * preparação para nada.
+       *
+       * Se já passou, não vale a pena começar: o comando chegaria tarde e o
+       * encaixe falharia na mesma. */
+      const jaPassou = agora() - envioPrevisto;
+      if (jaPassou > 0) {
+        log(`🛑 Encaixe: a hora de envio (${horaJogo(envioPrevisto)}) já passou há `
+          + `${jaPassou}s — não envio. Agenda com mais antecedência.`);
+        return;
+      }
+
       log(`   (rajada começa ${antecipacao}s antes da hora de envio)`);
       const esperar = (inicioRajada - agora()) * 1000;
       if (esperar > 0) await new Promise((r) => setTimeout(r, esperar));
