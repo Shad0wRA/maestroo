@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.29.1603
+// @version      2026.08.29.2307
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -546,7 +546,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.29.1603';
+  const MAESTRO_VERSAO = '2026.08.29.2307';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -853,7 +853,16 @@
   /* Dentro da configuração dos colonizadores, estes campos são de CADA conta
    * e não se sobrepõem no Buscar. Os restantes — bases, modo, mínimos — vêm
    * do perfil partilhado. */
-  const CAMPOS_LOCAIS_DOS_COLONOS = ['equipa'];
+  /* Campos da configuração dos colonos que NÃO vêm do perfil.
+   *
+   * A `equipa` é de cada conta (embora agora venha da lista fixa por nome).
+   *
+   * O `modo`, o `destino` e as `bases` viajam no ficheiro PRÓPRIO dos colonos
+   * (`colonos_<mundo>.json`), que é a fonte de verdade. Vinham TAMBÉM no
+   * perfil, e as duas fontes discordavam: visto em jogo, o ficheiro dizia
+   * "rotacao" e o perfil dizia "destino" — o que ganhava dependia da ordem
+   * por que eram aplicados, e a definição parecia mudar sozinha. */
+  const CAMPOS_LOCAIS_DOS_COLONOS = ['equipa', 'modo', 'destino', 'baseA', 'baseB'];
 
   /* ============ EQUIPAS FIXAS DOS COLONIZADORES =========================
    * Quem pertence a que equipa, por nome de conta.
@@ -20139,6 +20148,47 @@ function makeMissoesModule(opts) {
        *
        * Por isso vale sempre a pena activar a milícia, mesmo quando parece
        * insuficiente: cada vaga mata alguns. */
+      /* MISSÃO DE ESTACIONAR TROPA: reconhece-se pelo `count_to_rally`.
+       * Não é ataque — pede população numa cidade da ilha, e as tropas
+       * voltam quando se recolher a recompensa. */
+      const pedeTropa = Number((m.configuration || {}).count_to_rally) || 0;
+      if (pedeTropa && c.estacionarTropa !== false) {
+        const alvoId = Number((m.configuration || {}).town_id) || 0;
+        if (!alvoId) {
+          log(`— ${nome}: pede ${pedeTropa} de população mas não sei para que cidade.`);
+          continue;
+        }
+
+        const jaLa = popJaEstacionada(m);
+        const faltam = Math.max(0, pedeTropa - jaLa);
+        if (!faltam) continue;
+
+        /* SÓ a cidade que está NA ILHA da missão pode enviar — as outras
+         * não têm acesso. Se essa cidade não tiver tropa terrestre que
+         * chegue, a missão não se consegue cumprir. */
+        const esc = escolherTropaParaMissao(cidade.id, faltam);
+        if (esc.populacao < faltam) {
+          log(`— ${nome} (${cidade.name}): precisa de ${faltam} de população e a cidade `
+            + `só tem ${esc.populacao}. Não dá para cumprir.`);
+          continue;
+        }
+
+        const r3 = await enviarTropa(cidade.id, alvoId, esc.unidades);
+        if (r3.ok) {
+          const det = Object.keys(esc.unidades)
+            .map((u) => `${esc.unidades[u]} ${(mUw.GameData.units[u] || {}).name || u}`)
+            .join(', ');
+          log(`🛡️ ${nome} (${cidade.name}): ${det} — ${esc.populacao} de população. `
+            + 'Voltam quando a missão acabar.');
+          agiu++;
+          await ctx.sleep(ctx.rand(800, 1600));
+        } else {
+          log(`⚠️ ${nome}: envio falhou (${r3.msg}).`);
+        }
+        continue;
+      }
+
+
       const ataque = forcaAtacante(m);
       if (ataque) {
         const det = Object.keys(ataque.unidades)
@@ -20173,46 +20223,6 @@ function makeMissoesModule(opts) {
           log(`🛡️ ${nome} (${cidade.name}): restam ${det} — milícia activada.`);
           agiu++;
           await ctx.sleep(ctx.rand(600, 1200));
-        }
-
-        /* MISSÃO DE ESTACIONAR TROPA: reconhece-se pelo `count_to_rally`.
-         * Não é ataque — pede população numa cidade da ilha, e as tropas
-         * voltam quando se recolher a recompensa. */
-        const pedeTropa = Number((m.configuration || {}).count_to_rally) || 0;
-        if (pedeTropa && c.estacionarTropa !== false) {
-          const alvoId = Number((m.configuration || {}).town_id) || 0;
-          if (!alvoId) {
-            log(`— ${nome}: pede ${pedeTropa} de população mas não sei para que cidade.`);
-            continue;
-          }
-
-          const jaLa = popJaEstacionada(m);
-          const faltam = Math.max(0, pedeTropa - jaLa);
-          if (!faltam) continue;
-
-          /* SÓ a cidade que está NA ILHA da missão pode enviar — as outras
-           * não têm acesso. Se essa cidade não tiver tropa terrestre que
-           * chegue, a missão não se consegue cumprir. */
-          const esc = escolherTropaParaMissao(cidade.id, faltam);
-          if (esc.populacao < faltam) {
-            log(`— ${nome} (${cidade.name}): precisa de ${faltam} de população e a cidade `
-              + `só tem ${esc.populacao}. Não dá para cumprir.`);
-            continue;
-          }
-
-          const r3 = await enviarTropa(cidade.id, alvoId, esc.unidades);
-          if (r3.ok) {
-            const det = Object.keys(esc.unidades)
-              .map((u) => `${esc.unidades[u]} ${(mUw.GameData.units[u] || {}).name || u}`)
-              .join(', ');
-            log(`🛡️ ${nome} (${cidade.name}): ${det} — ${esc.populacao} de população. `
-              + 'Voltam quando a missão acabar.');
-            agiu++;
-            await ctx.sleep(ctx.rand(800, 1600));
-          } else {
-            log(`⚠️ ${nome}: envio falhou (${r3.msg}).`);
-          }
-          continue;
         }
 
         // Com defesa em casa (própria ou milícia acabada de chamar): pedir a
