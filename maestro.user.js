@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.30.1712
+// @version      2026.08.30.2325
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -611,7 +611,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.30.1712';
+  const MAESTRO_VERSAO = '2026.08.30.2325';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -1128,6 +1128,33 @@
         await new Promise((r2) => setTimeout(r2, espera));
       }
     }
+
+    /* O PERFIL NUNCA FOI PUBLICADO?
+     *
+     * Se o ficheiro não existe no Gist, não adianta insistir: nenhuma conta
+     * deste perfil está marcada como principal. Visto em jogo — a conta main
+     * era a única do perfil "main" e não estava marcada, portanto procurava
+     * um ficheiro que nunca ia existir e avisava a cada arranque.
+     *
+     * Diz-se o que fazer em vez de repetir o mesmo aviso. */
+    let existe = true;
+    try {
+      const r2 = await pedirFora(`https://api.github.com/gists/${GIST_ID_GLOBAL}`, {
+        headers: { Accept: 'application/vnd.github+json' },
+      });
+      if (r2.ok) {
+        const j2 = await r2.json();
+        existe = !!(j2.files || {})[`perfil-${perfil}-${WORLD}.json`];
+      }
+    } catch (e) {}
+
+    if (!existe) {
+      log('core', `ℹ️ Não há perfil "${perfil}" publicado para ${WORLD}. `
+        + 'Se esta é a conta que manda, marca-a como principal no painel — '
+        + 'senão marca a que deve mandar.');
+      return;
+    }
+
     log('core', '⚠️ Não consegui trazer o perfil da conta principal — '
       + 'fico com a configuração que já tinha.');
   }
