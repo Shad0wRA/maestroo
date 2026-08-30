@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.30.1240
+// @version      2026.08.30.1247
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -611,7 +611,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.30.1240';
+  const MAESTRO_VERSAO = '2026.08.30.1247';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -2309,10 +2309,6 @@
           </button>
         </div>
         <label style="display:block;margin-top:3px;font-size:11px">
-          <input type="checkbox" id="maestro-apagar-auto"${apagarNotificacoesLigado() ? ' checked' : ''}>
-          apagar automaticamente as notificações de ruído
-        </label>
-        <label style="display:block;margin-top:3px;font-size:11px">
           <input type="checkbox" id="maestro-refresh"${refreshHorarioLigado() ? ' checked' : ''}>
           recarregar a página de hora a hora
         </label>
@@ -2725,18 +2721,6 @@
        * em memória. */
       setTimeout(() => { try { location.reload(); } catch (e) {} }, 1200);
     };
-    /* ---- apagar notificações automaticamente ---- */
-    const chkA = document.getElementById('maestro-apagar-auto');
-    if (chkA) chkA.onchange = () => {
-      try {
-        if (chkA.checked) localStorage.setItem(APAGAR_NOTIF_KEY, '1');
-        else localStorage.removeItem(APAGAR_NOTIF_KEY);
-      } catch (e) {}
-      log('core', chkA.checked
-        ? 'Notificações: passo a apagá-las no servidor de hora a hora.'
-        : 'Notificações: deixo de as apagar no servidor.');
-    };
-
     /* ---- sininho de erros ---- */
     const sino = document.getElementById('maestro-sino');
     if (sino) sino.onclick = (e) => {
@@ -11183,6 +11167,10 @@ function makeAldeiasModule(opts) {
  * ========================================================================== */
 
 function makeAlertasModule(opts) {
+  let semAdmAte = 0;
+  const marcarSemAdministrador = () => { semAdmAte = Date.now() + 30 * 60 * 1000; };
+  const semAdministrador = () => Date.now() < semAdmAte;
+
   opts = opts || {};
 
   /* ============ QUANDO É QUE VI CADA COMANDO ============================
@@ -11446,9 +11434,6 @@ function makeAlertasModule(opts) {
    * "nenhum ataque a chegar", porque nem chegava a perguntar.
    *
    * Expira ao fim de 30 min e volta a tentar. */
-  let semAdmAte = 0;
-  const marcarSemAdministrador = () => { semAdmAte = Date.now() + 30 * 60 * 1000; };
-  const semAdministrador = () => Date.now() < semAdmAte;
 
   async function ataquesDoServidor(townId) {
     if (semAdministrador()) return [];
