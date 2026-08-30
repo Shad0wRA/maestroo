@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.30.2325
+// @version      2026.08.30.2340
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -364,6 +364,65 @@
     uw.__maestroFb = { ler: fbLer, escrever: fbEscrever, apagar: fbApagar, url: firebaseUrl };
   } catch (e) {}
 
+  /* ============ CONFIRMAÇÃO PRÓPRIA =====================================
+   * O `confirm()` do navegador tem uma armadilha: se o utilizador marcar
+   * "não voltar a perguntar", o Firefox passa a responder NÃO a tudo, sem
+   * mostrar nada. Os botões deixam de funcionar e não há sinal nenhum.
+   *
+   * Visto em jogo: o botão de retirar apoio parecia congelado.
+   *
+   * Esta versão desenha a caixa no próprio painel do jogo, portanto o
+   * navegador não lhe toca.
+   * ==================================================================== */
+  function perguntar(texto) {
+    return new Promise((resolve) => {
+      try {
+        const fundo = document.createElement('div');
+        fundo.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);'
+          + 'z-index:2147483646;display:flex;align-items:center;justify-content:center';
+
+        const cx = document.createElement('div');
+        cx.style.cssText = 'background:#1b2838;color:#cde;border:1px solid #2c3e50;'
+          + 'border-radius:8px;padding:14px 16px;max-width:420px;font:12px sans-serif;'
+          + 'box-shadow:0 8px 30px rgba(0,0,0,.6)';
+
+        const msg = document.createElement('div');
+        msg.style.cssText = 'white-space:pre-wrap;margin-bottom:12px;line-height:1.45';
+        msg.textContent = String(texto || '');
+
+        const linha = document.createElement('div');
+        linha.style.cssText = 'display:flex;gap:8px;justify-content:flex-end';
+
+        const nao = document.createElement('button');
+        nao.textContent = 'Cancelar';
+        nao.style.cssText = 'cursor:pointer;padding:6px 14px;border:none;border-radius:4px;'
+          + 'background:#33404f;color:#cde;font-size:12px';
+
+        const sim = document.createElement('button');
+        sim.textContent = 'Confirmar';
+        sim.style.cssText = 'cursor:pointer;padding:6px 14px;border:none;border-radius:4px;'
+          + 'background:#48d;color:#fff;font-weight:bold;font-size:12px';
+
+        const fechar = (r) => {
+          try { fundo.remove(); } catch (e) {}
+          resolve(r);
+        };
+        nao.onclick = () => fechar(false);
+        sim.onclick = () => fechar(true);
+        fundo.onclick = (ev) => { if (ev.target === fundo) fechar(false); };
+
+        linha.appendChild(nao); linha.appendChild(sim);
+        cx.appendChild(msg); cx.appendChild(linha);
+        fundo.appendChild(cx);
+        document.body.appendChild(fundo);
+        sim.focus();
+      } catch (e) {
+        resolve(false);
+      }
+    });
+  }
+  try { uw.__maestroPerguntar = perguntar; } catch (e) {}
+
   const WEBHOOKS_KEY = 'grepoMaestro_webhooks_v1';
   const WEBHOOKS_OMISSAO = { captcha: '', ataque: '', ataqueNC: '' };
 
@@ -611,7 +670,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.30.2325';
+  const MAESTRO_VERSAO = '2026.08.30.2340';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -2275,7 +2334,7 @@
     setTimeout(encostarAoLado, 1500);
     setTimeout(encostarAoLado, 5000);
     try { window.addEventListener('resize', encostarAoLado); } catch (e) {}
-    btn.onclick = () => { const p = document.getElementById('maestro-panel'); p.style.display = p.style.display === 'none' ? 'block' : 'none'; };
+    btn.onclick = async () => { const p = document.getElementById('maestro-panel'); p.style.display = p.style.display === 'none' ? 'block' : 'none'; };
     document.body.appendChild(btn);
 
     const p = document.createElement('div');
@@ -2777,7 +2836,7 @@
     /* O botão APLICAR estava declarado mas sem clique ligado — não fazia
      * nada, e por isso o perfil activo nunca mudava. Como o sufixo das chaves
      * vem do perfil activo, tudo continuava a ler as do main. */
-    if (btnPerfil) btnPerfil.onclick = () => {
+    if (btnPerfil) btnPerfil.onclick = async () => {
       const nome = selPerfil && selPerfil.value;
       if (!nome) { log('core', 'Escolhe primeiro um perfil na lista.'); return; }
       aplicarPerfil(nome);
@@ -2856,7 +2915,7 @@
     };
 
     const btG = document.getElementById('maestro-gist-guardar');
-    if (btG) btG.onclick = () => {
+    if (btG) btG.onclick = async () => {
       const id = (document.getElementById('maestro-gist-id') || {}).value || '';
       const tk = (document.getElementById('maestro-gist-token') || {}).value || '';
       try {
@@ -2872,7 +2931,7 @@
     /* ---- apagar todas as notificações no servidor ---- */
     const btNot = document.getElementById('maestro-limpar-notif');
     if (btNot) btNot.onclick = async () => {
-      if (!confirm('Apagar TODAS as notificações do jogo?\n\n'
+      if (!await perguntar('Apagar TODAS as notificações do jogo?\n\n'
         + 'Inclui a verificação de bot, se houver alguma por responder.\n'
         + 'Isto não se desfaz.')) return;
 
@@ -2887,7 +2946,7 @@
 
     /* ---- apagar as definições deste perfil ---- */
     const btReset = document.getElementById('perfil-reset');
-    if (btReset) btReset.onclick = () => {
+    if (btReset) btReset.onclick = async () => {
       /* Apagar o perfil ESCOLHIDO no seletor, não o que está activo.
        *
        * Antes usava o perfil activo, e quem estivesse na main a querer limpar
@@ -2897,7 +2956,7 @@
       const p2 = (sel && sel.value) || perfilAtual() || 'main';
       const ativo = perfilAtual();
 
-      if (!confirm(`Apagar TUDO o que o perfil "${p2}" tem guardado?\n\n`
+      if (!await perguntar(`Apagar TUDO o que o perfil "${p2}" tem guardado?\n\n`
         + 'Templates, definições dos módulos, tudo. Fica como novo.\n'
         + 'Os outros perfis não são tocados.\n\nIsto não se desfaz.')) return;
 
@@ -2941,7 +3000,7 @@
     const btPub = document.getElementById('perfil-publicar');
     if (btPub) btPub.onclick = async () => {
       const p2 = perfilAtual() || 'main';
-      if (!confirm(`Publicar o perfil "${p2}" para as outras contas?`)) return;
+      if (!await perguntar(`Publicar o perfil "${p2}" para as outras contas?`)) return;
       btPub.disabled = true; btPub.textContent = 'a publicar...';
       guardarCfgDoPerfil(p2);
       const r = await publicarPerfil(p2);
@@ -2954,7 +3013,7 @@
     const btBus = document.getElementById('perfil-buscar');
     if (btBus) btBus.onclick = async () => {
       const p2 = perfilAtual() || 'main';
-      if (!confirm(`Trazer o perfil "${p2}" publicado?\n\n`
+      if (!await perguntar(`Trazer o perfil "${p2}" publicado?\n\n`
         + 'Substitui os templates e as definições desta conta.')) return;
       btBus.disabled = true; btBus.textContent = 'a buscar...';
       const r = await buscarPerfil(p2);
@@ -3003,10 +3062,10 @@
           + (ok ? ' — já copiadas.' : ' — copia o texto da caixa.'));
       };
 
-      if (bI) bI.onclick = () => {
+      if (bI) bI.onclick = async () => {
         const txt = (cx && cx.value || '').trim();
         if (!txt) { log('core', 'Cola primeiro o texto exportado do outro mundo.'); return; }
-        if (!confirm('Isto substitui as definições deste mundo pelas coladas.\n\nContinuar?')) return;
+        if (!await perguntar('Isto substitui as definições deste mundo pelas coladas.\n\nContinuar?')) return;
         const r = importarDefinicoes(txt);
         if (!r.ok) { log('core', `Importação falhou: ${r.msg}`); return; }
         log('core', `Importadas ${r.n} definição(ões) do perfil "${r.dePerfil}" `
@@ -3379,6 +3438,16 @@
 // Este ficheiro é escrito como uma função-fábrica que devolve o objeto-módulo,
 // para ser registada no maestro: registerModule(makeConstrucaoModule(cfg)).
 function makeConstrucaoModule(opts) {
+  /* A caixa de confirmação do núcleo — o `confirm()` do navegador deixa de
+   * funcionar se o utilizador marcar "não voltar a perguntar". */
+  const perguntar = (t) => {
+    try {
+      const f = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroPerguntar;
+      if (f) return f(t);
+    } catch (e) {}
+    return Promise.resolve(true);
+  };
+
   opts = opts || {};
   const BLOCK_AFTER_ROUNDS = opts.blockAfterRounds || 10;
 
@@ -4981,7 +5050,7 @@ function makeConstrucaoModule(opts) {
     };
     if (gSel) gSel.onchange = (e) => { grupoSelecionado = e.target.value; comRolamento(() => renderPainel(container)); };
     const bCop = container.querySelector('#con-copiar');
-    if (bCop) bCop.onclick = () => {
+    if (bCop) bCop.onclick = async () => {
       const sel = container.querySelector('#con-copiar-de');
       const de = sel && sel.value;
       if (!de) {
@@ -4993,7 +5062,7 @@ function makeConstrucaoModule(opts) {
 
       const destino = templatesEdicao[grupoSelecionado];
       const temCoisas = destino && (destino.blocos || []).some((b) => b.length);
-      if (temCoisas && !confirm(`O grupo "${grupoSelecionado}" já tem edifícios.\n`
+      if (temCoisas && !await perguntar(`O grupo "${grupoSelecionado}" já tem edifícios.\n`
         + `Substituir tudo pelo template de "${de}"?`)) return;
 
       /* Cópia profunda: senão os dois grupos passariam a partilhar os mesmos
@@ -5019,9 +5088,9 @@ function makeConstrucaoModule(opts) {
       comRolamento(() => renderPainel(container));
     };
     const apagar = container.querySelector('#con-apagar');
-    if (apagar) apagar.onclick = () => {
+    if (apagar) apagar.onclick = async () => {
       if (grupoSelecionado === 'todos') { alert('O grupo "todos" não pode ser apagado.'); return; }
-      if (confirm('Apagar o template do grupo "' + grupoSelecionado + '"?')) { delete templatesEdicao[grupoSelecionado]; grupoSelecionado = null; comRolamento(() => renderPainel(container)); }
+      if (await perguntar('Apagar o template do grupo "' + grupoSelecionado + '"?')) { delete templatesEdicao[grupoSelecionado]; grupoSelecionado = null; comRolamento(() => renderPainel(container)); }
     };
   }
 
@@ -5070,7 +5139,7 @@ function makeConstrucaoModule(opts) {
     };
 
     const bAdd = container.querySelector('#con-bloco-add');
-    if (bAdd) bAdd.onclick = () => { tpl.blocos.push(novoBlocoVazio()); comRolamento(() => renderPainel(container)); };
+    if (bAdd) bAdd.onclick = async () => { tpl.blocos.push(novoBlocoVazio()); comRolamento(() => renderPainel(container)); };
 
     const guardar = container.querySelector('#con-guardar');
     if (guardar) guardar.onclick = async () => {
@@ -5136,7 +5205,7 @@ function makeConstrucaoModule(opts) {
       };
       else if (act === 'bloco-up') el.onclick = (e) => { e.preventDefault(); if (bi > 0) { const t = tpl.blocos[bi]; tpl.blocos[bi] = tpl.blocos[bi - 1]; tpl.blocos[bi - 1] = t; comRolamento(() => renderPainel(container)); } };
       else if (act === 'bloco-down') el.onclick = (e) => { e.preventDefault(); if (bi < tpl.blocos.length - 1) { const t = tpl.blocos[bi]; tpl.blocos[bi] = tpl.blocos[bi + 1]; tpl.blocos[bi + 1] = t; comRolamento(() => renderPainel(container)); } };
-      else if (act === 'bloco-del') el.onclick = (e) => { e.preventDefault(); if (confirm('Remover este bloco?')) { tpl.blocos.splice(bi, 1); if (!tpl.blocos.length) tpl.blocos.push(novoBlocoVazio()); comRolamento(() => renderPainel(container)); } };
+      else if (act === 'bloco-del') el.onclick = async (e) => { e.preventDefault(); if (await perguntar('Remover este bloco?')) { tpl.blocos.splice(bi, 1); if (!tpl.blocos.length) tpl.blocos.push(novoBlocoVazio()); comRolamento(() => renderPainel(container)); } };
     });
   }
 
@@ -5182,6 +5251,16 @@ function makeConstrucaoModule(opts) {
  * ========================================================================== */
 
 function makePesquisaModule(opts) {
+  /* A caixa de confirmação do núcleo — o `confirm()` do navegador deixa de
+   * funcionar se o utilizador marcar "não voltar a perguntar". */
+  const perguntar = (t) => {
+    try {
+      const f = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroPerguntar;
+      if (f) return f(t);
+    } catch (e) {}
+    return Promise.resolve(true);
+  };
+
   opts = opts || {};
 
   /* Nome do ficheiro no Gist, COM o mundo.
@@ -6035,13 +6114,13 @@ function makePesquisaModule(opts) {
     };
     if (sel) sel.onchange = (e) => { grupoSelecionado = e.target.value; renderPainel(container); };
     const bCop = container.querySelector('#pes-copiar');
-    if (bCop) bCop.onclick = () => {
+    if (bCop) bCop.onclick = async () => {
       const sel = container.querySelector('#pes-copiar-de');
       const de = sel && sel.value;
       if (!de) { if (pCtx) pCtx.log('Escolhe primeiro o grupo a copiar.'); return; }
       const origem = templatesEdicao[de];
       if (!origem) return;
-      if (templatesEdicao[grupoSelecionado] && !confirm(`Substituir o template de "${grupoSelecionado}" pelo de "${de}"?`)) return;
+      if (templatesEdicao[grupoSelecionado] && !await perguntar(`Substituir o template de "${grupoSelecionado}" pelo de "${de}"?`)) return;
 
       // cópia profunda: senão os dois grupos partilhavam os mesmos objectos
       templatesEdicao[grupoSelecionado] = JSON.parse(JSON.stringify(origem));
@@ -6052,9 +6131,9 @@ function makePesquisaModule(opts) {
     const criar = container.querySelector('#pes-criar');
     if (criar) criar.onclick = () => { if (!templatesEdicao[grupoSelecionado]) templatesEdicao[grupoSelecionado] = { pesquisas: [] }; renderPainel(container); };
     const apagar = container.querySelector('#pes-apagar');
-    if (apagar) apagar.onclick = () => {
+    if (apagar) apagar.onclick = async () => {
       if (grupoSelecionado === 'todos') { alert('O grupo "todos" não pode ser apagado.'); return; }
-      if (confirm('Apagar o template de pesquisa do grupo "' + grupoSelecionado + '"?')) {
+      if (await perguntar('Apagar o template de pesquisa do grupo "' + grupoSelecionado + '"?')) {
         delete templatesEdicao[grupoSelecionado]; grupoSelecionado = null; renderPainel(container);
       }
     };
@@ -6171,6 +6250,16 @@ function makePesquisaModule(opts) {
  * ========================================================================== */
 
 function makeRecrutamentoModule(opts) {
+  /* A caixa de confirmação do núcleo — o `confirm()` do navegador deixa de
+   * funcionar se o utilizador marcar "não voltar a perguntar". */
+  const perguntar = (t) => {
+    try {
+      const f = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroPerguntar;
+      if (f) return f(t);
+    } catch (e) {}
+    return Promise.resolve(true);
+  };
+
   opts = opts || {};
 
   /* Nome do ficheiro no Gist, COM o mundo.
@@ -8275,13 +8364,13 @@ function makeRecrutamentoModule(opts) {
     const sel = container.querySelector('#rec-grupo');
     if (sel) sel.onchange = (e) => { grupoSel = e.target.value; render(container); };
     const bCop = container.querySelector('#rec-copiar');
-    if (bCop) bCop.onclick = () => {
+    if (bCop) bCop.onclick = async () => {
       const sel = container.querySelector('#rec-copiar-de');
       const de = sel && sel.value;
       if (!de) { if (pCtx) pCtx.log('Escolhe primeiro o grupo a copiar.'); return; }
       const origem = tplEdicao[de];
       if (!origem) return;
-      if (tplEdicao[grupoSel] && !confirm(`Substituir o template de "${grupoSel}" pelo de "${de}"?`)) return;
+      if (tplEdicao[grupoSel] && !await perguntar(`Substituir o template de "${grupoSel}" pelo de "${de}"?`)) return;
 
       // cópia profunda: senão os dois grupos partilhavam os mesmos objectos
       tplEdicao[grupoSel] = JSON.parse(JSON.stringify(origem));
@@ -8292,9 +8381,9 @@ function makeRecrutamentoModule(opts) {
     const criar = container.querySelector('#rec-criar');
     if (criar) criar.onclick = () => { if (!tplEdicao[grupoSel]) tplEdicao[grupoSel] = { unidades: {}, reservaPct: 0 }; render(container); };
     const apagar = container.querySelector('#rec-apagar');
-    if (apagar) apagar.onclick = () => {
+    if (apagar) apagar.onclick = async () => {
       if (grupoSel === 'todos') { alert('O grupo "todos" não pode ser apagado.'); return; }
-      if (confirm('Apagar os alvos do grupo "' + grupoSel + '"?')) { delete tplEdicao[grupoSel]; grupoSel = null; render(container); }
+      if (await perguntar('Apagar os alvos do grupo "' + grupoSel + '"?')) { delete tplEdicao[grupoSel]; grupoSel = null; render(container); }
     };
   }
 
@@ -8316,7 +8405,7 @@ function makeRecrutamentoModule(opts) {
       el.onclick = (e) => { e.preventDefault(); delete tpl.unidades[el.getAttribute('data-rem')]; render(container); };
     });
     const add = container.querySelector('#rec-add');
-    if (add) add.onclick = () => {
+    if (add) add.onclick = async () => {
       const id = container.querySelector('#rec-add-sel').value;
       if (!(id in tpl.unidades)) tpl.unidades[id] = 0;
       render(container);
@@ -10097,6 +10186,16 @@ function makeHeroisModule(opts) {
  * ========================================================================== */
 
 function makeAldeiasModule(opts) {
+  /* A caixa de confirmação do núcleo — o `confirm()` do navegador deixa de
+   * funcionar se o utilizador marcar "não voltar a perguntar". */
+  const perguntar = (t) => {
+    try {
+      const f = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroPerguntar;
+      if (f) return f(t);
+    } catch (e) {}
+    return Promise.resolve(true);
+  };
+
   opts = opts || {};
 
   // Opção de recolha: 1..4 → cooldowns [300,1200,5400,14400] s
@@ -11165,7 +11264,7 @@ function makeAldeiasModule(opts) {
     };
     const be = container.querySelector('#ald-forcar-evo');
     if (be) be.onclick = async () => {
-      if (!confirm('Evoluir aldeias gasta pontos de combate e é irreversível. Continuar?')) return;
+      if (!await perguntar('Evoluir aldeias gasta pontos de combate e é irreversível. Continuar?')) return;
       mUw = ctx.uw; mWorld = ctx.WORLD;
       be.disabled = true; be.textContent = 'a evoluir...';
       try {
@@ -22022,7 +22121,7 @@ function makeColonosModule(opts) {
     });
 
     const g = container.querySelector('#col-guardar');
-    if (g) g.onclick = () => {
+    if (g) g.onclick = async () => {
       const extrairId = (t) => {
         const m = String(t || '').match(/\[town\]\s*(\d+)/i) || String(t || '').match(/(\d+)/);
         return m ? Number(m[1]) : null;
@@ -22075,6 +22174,16 @@ function makeColonosModule(opts) {
  * ========================================================================== */
 
 function makeApoioModule(opts) {
+  /* A caixa de confirmação do núcleo — o `confirm()` do navegador deixa de
+   * funcionar se o utilizador marcar "não voltar a perguntar". */
+  const perguntar = (t) => {
+    try {
+      const f = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroPerguntar;
+      if (f) return f(t);
+    } catch (e) {}
+    return Promise.resolve(true);
+  };
+
   /* Pedidos a domínios de fora, pela ponte do carregador quando existe.
    * Ver `pedirFora` no núcleo. */
   const pedirForaM = (url, op) => {
@@ -23384,7 +23493,7 @@ function makeApoioModule(opts) {
       b.onclick = async () => {
         const id = Number(b.getAttribute('data-remover'));
         const info = cacheCidades[id] || { nome: '#' + id };
-        if (!confirm(`Retirar o apoio de ${info.nome}?\n\nA cidade sai da lista e as tropas que lá tens voltam.`)) return;
+        if (!await perguntar(`Retirar o apoio de ${info.nome}?\n\nA cidade sai da lista e as tropas que lá tens voltam.`)) return;
 
         b.disabled = true; b.textContent = '...';
         paraRemover.add(id);
@@ -24789,7 +24898,10 @@ function makeRelatoriosModule(opts) {
   registerModule(makeEsquivaModule({ intervaloMin: 0.5 }));
   registerModule(makeMissoesModule({ intervaloMin: 60 }));
   registerModule(makeColonosModule({ intervaloMin: 30, gistId: GIST_ID, gistToken: GIST_TOKEN }));
-  registerModule(makeApoioModule({ intervaloMin: 5, gistId: GIST_ID, gistToken: GIST_TOKEN }));
+  /* 2 minutos: com a lista no Firebase, ler é barato — e quando retiras um
+   * alvo numa conta, as outras devem notar depressa para trazer as tropas de
+   * volta. Com 5 min, uma remoção demorava a propagar-se. */
+  registerModule(makeApoioModule({ intervaloMin: 2, gistId: GIST_ID, gistToken: GIST_TOKEN }));
   registerModule(makeFundacaoModule({ intervaloMin: 30 }));
   registerModule(makeRelatoriosModule({ intervaloMin: 60 }));
 
