@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.30.1259
+// @version      2026.08.30.1301
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -611,7 +611,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.30.1259';
+  const MAESTRO_VERSAO = '2026.08.30.1301';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -22128,7 +22128,41 @@ function makeApoioModule(opts) {
    * perfil aqui isolaria cada conta e a coordenação deixava de funcionar. */
   const FICHEIRO = () => `apoio-${mWorld}.json`;
 
+    /* A LISTA DE ALVOS — do Firebase primeiro, do Gist como recurso.
+   *
+   * O apoio é o módulo que mais escreve, e o Gist tem um limite secundário
+   * que 20 contas atingem com facilidade: retirar cinco alvos era suficiente
+   * para o GitHub cortar e a lista ficar por actualizar nas outras contas.
+   *
+   * A migração é automática: enquanto o Firebase estiver vazio lê-se o Gist,
+   * e a primeira escrita passa a lista para lá. Não é preciso fazer nada. */
+  const fbCaminhoApoio = () => `apoio/${mWorld}`;
+
+  /* Atalhos para a camada do núcleo — o módulo não lhe chega directamente. */
+  const fbAlvo = () => {
+    try { return (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroFb; }
+    catch (e) { return null; }
+  };
+  const fbLerM = (c) => { const f = fbAlvo(); return f ? f.ler(c) : Promise.resolve(null); };
+  const fbEscreverM = (c, d) => {
+    const f = fbAlvo();
+    return f ? f.escrever(c, d) : Promise.resolve({ ok: false, msg: 'sem Firebase' });
+  };
+  const fbUrlM = () => { const f = fbAlvo(); return f ? f.url() : ''; };
+
   async function lerLista() {
+    /* 1) Firebase. */
+    try {
+      if (typeof fbLerM === 'function') {
+        const d = await fbLerM(fbCaminhoApoio());
+        if (d && (d.alvos || d.targets)) {
+          try { armazem.setItem(CACHE_ALVOS, JSON.stringify(d)); } catch (e) {}
+          return d;
+        }
+      }
+    } catch (e) {}
+
+    /* 2) Gist, enquanto a migração não estiver feita. */
     if (!GIST_ID) return null;
     try {
       const r = await pedirForaM(`https://api.github.com/gists/${GIST_ID}`, {
@@ -22153,7 +22187,22 @@ function makeApoioModule(opts) {
   async function escreverLista(dados) {
     // não segurar o processo (importante nos testes)
     try { if (typeof t2 !== 'undefined' && t2 && t2.unref) t2.unref(); } catch (e) {}
-    if (!GIST_ID || !GIST_TOKEN) return { ok: false, msg: 'sem Gist configurado' };
+
+    /* FIREBASE PRIMEIRO — não tem o limite de escritas do GitHub.
+     *
+     * É esta escrita que faz a migração: a partir da primeira, a lista passa a
+     * viver no Firebase e o Gist deixa de ser lido. */
+    try {
+      if (typeof fbEscreverM === 'function' && fbUrlM && fbUrlM()) {
+        const r0 = await fbEscreverM(fbCaminhoApoio(), dados);
+        if (r0.ok) {
+          try { armazem.setItem(CACHE_ALVOS, JSON.stringify(dados)); } catch (e) {}
+          return { ok: true };
+        }
+      }
+    } catch (e) {}
+
+    if (!GIST_ID || !GIST_TOKEN) return { ok: false, msg: 'sem Gist nem Firebase configurados' };
     try {
       const body = { files: {} };
       body.files[FICHEIRO()] = { content: JSON.stringify(dados, null, 1) };
