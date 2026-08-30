@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.30.2340
+// @version      2026.08.31.0026
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -670,7 +670,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.30.2340';
+  const MAESTRO_VERSAO = '2026.08.31.0026';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -3290,6 +3290,42 @@
         const esc = lerEscolhas() || { perfil: 'main', ativos: {} };
         esc.ativos[m.id] = e.target.checked;
         guardarEscolhas(esc);
+
+        /* LIGAR TAMBÉM O INTERRUPTOR DO PRÓPRIO MÓDULO.
+         *
+         * Havia dois: este, que decide se o módulo CORRE, e um lá dentro que
+         * decide se ele FAZ alguma coisa. Ficavam dessincronizados — visto em
+         * jogo: o visto verde ligado no canto e o módulo a dizer que estava
+         * desligado.
+         *
+         * Quem liga aqui quer o módulo a trabalhar. */
+        try {
+          /* O nome da chave de cada módulo — não se deduz do id, porque nem
+           * todos seguem o mesmo padrão (`trocacidades` → `TrocaCid`). */
+          const CHAVE_DO_MODULO = {
+            deuses: 'grepoDeuses_cfg_v1',
+            esquiva: 'grepoEsquiva_cfg_v1',
+            cultura: 'grepoCultura_cfg_v1',
+            gruta: 'grepoGruta_cfg_v1',
+            apoio: 'grepoApoio_cfg_v1',
+            colonos: 'grepoColonos_cfg_v1',
+            fundacao: 'grepoFundacao_cfg_v1',
+            missoes: 'grepoMissoes_cfg_v1',
+            encaixe: 'grepoEncaixe_cfg_v1',
+            relatorios: 'grepoRelatorios_cfg_v1',
+            alertas: 'grepoAlertas_cfg_v1',
+            trocacidades: 'grepoTrocaCid_cfg_v1',
+          };
+          const nomeChave = CHAVE_DO_MODULO[m.id];
+          if (!nomeChave) throw new Error('sem chave');
+          const chave = chavePorPerfil(nomeChave);
+          const cfgMod = JSON.parse(localStorage.getItem(chave) || 'null');
+          if (cfgMod && typeof cfgMod === 'object' && 'ativo' in cfgMod) {
+            cfgMod.ativo = e.target.checked;
+            localStorage.setItem(chave, JSON.stringify(cfgMod));
+          }
+        } catch (e2) {}
+
         const st = modState[m.id];
         log('core', e.target.checked
           ? `▶ ${m.nome}: ligado.`
@@ -23815,6 +23851,109 @@ function makeFundacaoModule(opts) {
    * SEM CACHE de propósito: com 20 contas a fundar na mesma ilha, os lugares
    * mudam de minuto a minuto. Dados velhos fariam tentar sítios já ocupados —
    * e o custo de um pedido é menor do que o de gastar tentativas à toa. */
+  /* QUANTOS LUGARES TEM A ILHA, perguntando ao `island_info`.
+   *
+   * O código assumia 20 lugares em TODAS as ilhas e calculava os livres como
+   * "20 menos os ocupados" — numa ilha pequena isso inventava lugares que não
+   * existem.
+   *
+   * E o critério das aldeias bárbaras não servia: elas não aparecem no
+   * `map_data` de uma ilha onde não se tem cidade. Foi por isso que a fundação
+   * saltava tudo — 47 ilhas seguidas dadas como pequenas.
+   *
+   * O `island_info` resolve os dois problemas de uma vez:
+   *   uninhabited_place_count → lugares livres
+   *   town_list               → cidades já lá
+   *   farm_town_spots         → aldeias bárbaras, mesmo sem lá ter nada
+   *
+   * Confirmado em jogo numa ilha vazia: 20 livres, 6 aldeias.
+   *
+   * Devolve `{ total, livres, ocupados, aldeias }` ou null. */
+  /* AS COORDENADAS DE UMA CIDADE, pelo identificador.
+   *
+   * Serve para o "fundar à volta de": a cidade escolhida pode ser de outro
+   * jogador, portanto não basta olhar às minhas.
+   *
+   * Procura-se primeiro nas minhas cidades (imediato) e depois nos nomes que
+   * o módulo de apoio já descobriu, que trazem as coordenadas da ilha. */
+  const centrosConhecidos = {};
+
+  async function coordenadasDaCidade(townId, base) {
+    const id = Number(townId);
+    if (!id) return null;
+    if (centrosConhecidos[id]) return centrosConhecidos[id];
+
+    /* Uma cidade minha? */
+    try {
+      const t = mUw.ITowns.getTown(id);
+      if (t && t.getIslandCoordinateX) {
+        const co = { x: Number(t.getIslandCoordinateX()), y: Number(t.getIslandCoordinateY()) };
+        if (co.x) { centrosConhecidos[id] = co; return co; }
+      }
+    } catch (e) {}
+
+    /* Nos nomes que o apoio guardou — trazem a ilha de cada cidade. */
+    try {
+      for (const suf of ['__main', '__multi', '']) {
+        const raw = localStorage.getItem('grepoApoio_nomes_v1' + suf);
+        if (!raw) continue;
+        const o = JSON.parse(raw);
+        const i = o && o[id];
+        if (i && i.ilha && i.ilha.x) {
+          const co = { x: Number(i.ilha.x), y: Number(i.ilha.y) };
+          centrosConhecidos[id] = co;
+          return co;
+        }
+      }
+    } catch (e) {}
+
+    return null;
+  }
+
+  async function infoDaIlha(islandId, townIdBase, ix, iy) {
+    try {
+      /* Sem `id` — as ilhas marcadas à mão no painel só têm coordenadas —
+       * procura-se no bloco do mapa correspondente. */
+      let id = Number(islandId) || 0;
+      if (!id && ix != null && iy != null) {
+        const base0 = Number(townIdBase) || Number(Object.keys(mUw.ITowns.towns)[0]);
+        const cx = Math.floor(Number(ix) / CHUNK);
+        const cy = Math.floor(Number(iy) / CHUNK);
+        const u0 = mUw.location.origin + '/game/map_data?town_id=' + base0
+          + '&action=get_chunks&h=' + mUw.Game.csrfToken
+          + '&json=' + encodeURIComponent(JSON.stringify({
+              chunks: [{ x: cx, y: cy, timestamp: 0 }], town_id: base0, nl_init: true }));
+        const r0 = await mUw.fetch(u0, {
+          headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
+        }).then(lerResposta);
+        const d0 = (r0 && r0.json && r0.json.data) || {};
+        const b0 = d0[0] || d0['0'];
+        const achada = ((b0 && b0.islands) || []).find(
+          (z) => Number(z.x) === Number(ix) && Number(z.y) === Number(iy));
+        if (achada) id = Number(achada.id) || 0;
+      }
+      if (!id) return null;
+      islandId = id;
+
+      const base = Number(townIdBase) || Number(Object.keys(mUw.ITowns.towns)[0]);
+      const url = mUw.location.origin + '/game/island_info?town_id=' + base
+        + '&action=index&h=' + mUw.Game.csrfToken
+        + '&json=' + encodeURIComponent(JSON.stringify({
+            island_id: Number(islandId), town_id: base, nl_init: true }));
+      const r = await mUw.fetch(url, {
+        headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
+      }).then(lerResposta);
+
+      const d = (r && r.json && (r.json.json || r.json)) || {};
+      const ocupados = ((d.town_list || []).length) || 0;
+      const livres = Number(d.uninhabited_place_count) || 0;
+      const aldeias = Number(d.farm_town_spots) || ((d.farm_town_list || []).length) || 0;
+
+      if (!ocupados && !livres) return null;      // resposta vazia
+      return { total: ocupados + livres, livres, ocupados, aldeias };
+    } catch (e) { return null; }
+  }
+
   async function lugaresLivres(ix, iy, townIdBase) {
     try {
       const cx = Math.floor(ix / CHUNK), cy = Math.floor(iy / CHUNK);
@@ -23994,7 +24133,11 @@ function makeFundacaoModule(opts) {
     } else if ((c.oceanos || []).length) {
       for (const oc of c.oceanos) {
         const ilhas = await ilhasDoOceano(oc, t.id);
-        ilhas.forEach((i) => aTentar.push({ x: i.x, y: i.y, origem: 'oceano ' + oc }));
+        /* Levar o `id` da ilha: é o que o `island_info` precisa para dizer
+       * quantos lugares ela tem. */
+      ilhas.forEach((i) => aTentar.push({
+        x: i.x, y: i.y, id: i.id, origem: 'oceano ' + oc,
+      }));
       }
 
       /* ORDENAR pelas MAIS PERTO da cidade que vai fundar.
@@ -24006,11 +24149,28 @@ function makeFundacaoModule(opts) {
        *
        * Menos viagem é menos tempo exposto e menos hipótese de ser
        * interceptado. */
-      const daqui = ilhaDe(t.id);
-      if (daqui) {
+      /* CENTRO DA ORDENAÇÃO: a cidade que fundas, ou uma que tu escolhas.
+       *
+       * Pondo o identificador de uma cidade no painel, todas as contas passam
+       * a fundar à volta dela — é assim que se fazem núcleos, com as 20 multis
+       * a fechar as ilhas de uma zona em vez de se espalharem cada uma para o
+       * seu lado.
+       *
+       * A cidade não tem de ser tua: serve qualquer uma do mapa como ponto de
+       * referência. */
+      let centro = null;
+      if (c.centroId) {
+        centro = await coordenadasDaCidade(c.centroId, t.id);
+        if (!centro) {
+          log(`⚠️ Não consegui achar a cidade ${c.centroId} — ordeno pela cidade que funda.`);
+        }
+      }
+      if (!centro) centro = ilhaDe(t.id);
+
+      if (centro) {
         aTentar.sort((a, b) => {
-          const da = Math.hypot(a.x - daqui.x, a.y - daqui.y);
-          const db = Math.hypot(b.x - daqui.x, b.y - daqui.y);
+          const da = Math.hypot(a.x - centro.x, a.y - centro.y);
+          const db = Math.hypot(b.x - centro.x, b.y - centro.y);
           return da - db;
         });
       }
@@ -24065,27 +24225,31 @@ function makeFundacaoModule(opts) {
       // guardar o que se soube, para a lista do painel mostrar
       anotarIlha(chave, { livres: livres.length, ocupados, aldeias });
 
-      /* "SÓ ILHAS GRANDES" — as que têm aldeias bárbaras.
+      /* "SÓ ILHAS GRANDES" — as que têm 20 lugares.
        *
-       * O número de aldeias é o que distingue uma ilha grande de uma pequena.
-       * Uma ilha sem aldeias tem poucos lugares e não vale a pena.
+       * Pergunta-se ao `island_info`, que diz o número certo de lugares e as
+       * aldeias bárbaras mesmo em ilhas onde não temos nada.
        *
-       * A regra anterior tinha uma saída de emergência: se `aldeias` e
-       * `ocupados` fossem ambos zero, assumia-se "não há dados" e fundava-se
-       * na mesma. Mas uma ilha PEQUENA E VAZIA é exactamente isso — zero e
-       * zero — e era tratada como desconhecida. Fundou-se em várias.
-       *
-       * O sinal de que o mapa respondeu é haver LUGARES LIVRES: se ele nos
-       * disse onde há espaço, também nos teria dito das aldeias. */
-      const mapaRespondeu = livres.length > 0 || ocupados > 0;
+       * O critério anterior — contar aldeias no `map_data` — nunca funcionava:
+       * elas não vêm de fora. Saltavam-se todas as ilhas, sem excepção. */
+      if (c.exigirAldeias) {
+        const info = await infoDaIlha(ilha.id, t.id, ilha.x, ilha.y);
+        await ctx.sleep(ctx.rand(700, 1300));
 
-      if (c.exigirAldeias && !aldeias) {
-        if (mapaRespondeu) {
-          log(`— ${chave}: ilha pequena (sem aldeias bárbaras); salto.`);
-        } else {
-          log(`— ${chave}: o mapa não devolveu nada desta ilha; salto por segurança.`);
+        if (!info) {
+          log(`— ${chave}: não consegui saber o tamanho da ilha; salto por segurança.`);
+          continue;
         }
-        continue;
+        if (info.total < 20) {
+          log(`— ${chave}: ilha pequena (${info.total} lugares); salto.`);
+          continue;
+        }
+        if (!info.livres) {
+          log(`— ${chave}: ilha grande mas cheia (${info.ocupados}/${info.total}); salto.`);
+          continue;
+        }
+        log(`✓ ${chave}: ilha de ${info.total} lugares, ${info.livres} livre(s), `
+          + `${info.aldeias} aldeia(s).`);
       }
       if (!livres.length) continue;
 
@@ -24399,7 +24563,18 @@ function makeFundacaoModule(opts) {
         <label><input type="checkbox" id="fun-sim"${c.simular ? ' checked' : ''}> só simular</label>
         <span style="opacity:.6;font-size:10px">— diz onde fundaria sem gastar o colonizador</span><br>
         <label><input type="checkbox" id="fun-ald"${c.exigirAldeias ? ' checked' : ''}> só ilhas grandes</label>
-        <span style="opacity:.6;font-size:10px">— as que têm aldeias bárbaras</span>
+        <span style="opacity:.6;font-size:10px">— as de 20 lugares</span>
+
+        <div style="margin-top:6px">
+          Fundar à volta da cidade:
+          <input type="number" id="fun-centro" value="${c.centroId || ''}"
+            placeholder="id" style="width:80px">
+          <div style="opacity:.6;font-size:10px;margin-top:2px">
+            Deixa vazio para fundar perto da cidade que envia o colonizador.
+            Pondo um id, todas as contas fundam à volta dessa cidade — é assim
+            que se faz um núcleo. Serve qualquer cidade do mapa.
+          </div>
+        </div>
       </div>
 
       <div style="background:#0d141c;padding:6px;border-radius:4px;margin-top:6px;font-size:11px">
@@ -24527,6 +24702,7 @@ function makeFundacaoModule(opts) {
       cc.ativo = container.querySelector('#fun-on').checked;
       cc.simular = container.querySelector('#fun-sim').checked;
       cc.exigirAldeias = container.querySelector('#fun-ald').checked;
+      cc.centroId = Number(container.querySelector('#fun-centro').value) || 0;
       cc.oceanos = String(container.querySelector('#fun-oceanos').value || '')
         .split(/[,\s]+/).map((x) => x.trim()).filter(Boolean);
       guardar(cc);
