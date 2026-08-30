@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.30.1222
+// @version      2026.08.30.1235
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -126,6 +126,7 @@
       /* Funcionamento normal, não erros. */
       /vagas de treino|vagas est[ãa]o cheias|queue is full/i,   // fila do quartel cheia
       /fila de constru[çc][ãa]o est[áa] cheia/i,                 // fila no limite: normal
+      /fila de pesquisas est[áa] cheia/i,                        // idem, nas pesquisas
       /n[ãa]o h[áa] aldeias b[áa]rbaras nesta ilha/i,           // condição da ilha, não muda
       /requisitos de pesquisa .* n[ãa]o foram preenchidos/i,     // falta pesquisa: já se vê no painel
       /que o jogo não trouxe/i,                                 // o cruzamento a funcionar
@@ -610,7 +611,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.30.1222';
+  const MAESTRO_VERSAO = '2026.08.30.1235';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -1230,7 +1231,19 @@
          * Aceita os dois formatos no Gist: as chaves publicadas por versões
          * antigas trazem o sufixo de quem publicou, e sem tirá-lo iam parar ao
          * perfil errado. Por isso usa-se sempre o nome limpo. */
-        try { localStorage.setItem(chavePorPerfil(semSufixo), dados.chaves[k]); n++; } catch (e) {}
+        /* AS CHAVES DO NÚCLEO NÃO LEVAM SUFIXO.
+         *
+         * O `grepoMaestro_firebase_v1` é lido sem sufixo pelo `firebaseUrl()`.
+         * Escrevê-lo como `..._v1__multi` fazia o endereço chegar à conta e
+         * nunca ser encontrado — a multi ficava sem Firebase apesar de o
+         * perfil o trazer.
+         *
+         * As chaves dos módulos continuam com sufixo, que é o que as separa
+         * entre perfis. */
+        const chaveFinal = /^grepoMaestro_/.test(semSufixo)
+          ? semSufixo
+          : chavePorPerfil(semSufixo);
+        try { localStorage.setItem(chaveFinal, dados.chaves[k]); n++; } catch (e) {}
       }
 
       /* Aplicar os MÓDULOS LIGADOS que vieram no perfil.
@@ -5723,7 +5736,7 @@ function makePesquisaModule(opts) {
           /* Condições que não são problema: falta de pontos, requisitos por
            * cumprir, ou a ilha simplesmente não ter aldeias bárbaras — essa
            * última nunca muda, e enchia o registo a cada passagem. */
-          const normal = /pontos de pesquisa|requisitos|research points|prerequisit|academia n[íi]vel|academia no n[íi]vel|academy|aldeias b[áa]rbaras/i
+          const normal = /pontos de pesquisa|requisitos|research points|prerequisit|academia n[íi]vel|academia no n[íi]vel|academy|aldeias b[áa]rbaras|fila de pesquisas/i
             .test(String(r.msg));
           if (normal) {
             rotina(`${town.name}: ainda não dá para investigar ${nomePesquisaPT(id) || id} (${r.msg}).`);
