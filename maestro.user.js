@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.30.1450
+// @version      2026.08.30.1519
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -611,7 +611,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.30.1450';
+  const MAESTRO_VERSAO = '2026.08.30.1519';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -15892,8 +15892,35 @@ function makeEsquivaModule(opts) {
       contadosLocal[String(alvo)] = (contadosLocal[String(alvo)] || 0) + 1;
     }
 
+    /* CIDADES QUE O SERVIDOR JÁ DESMENTIU.
+     *
+     * A colecção `Attack` só traz um contador — sem hora, sem origem. Se um
+     * ataque bater e ela não for limpa, fica a dizer que há um a chegar para
+     * sempre, e o maestro pergunta ao servidor a cada passagem sem nunca
+     * encontrar nada.
+     *
+     * Visto em jogo: 3 cidades assinaladas, nenhuma com ataque real.
+     *
+     * Depois de o servidor desmentir, essa cidade fica de quarentena 10 min. */
+    const desmentidas = (() => {
+      try { return JSON.parse(armazem.getItem('grepoEsquiva_desmentidas_v1') || '{}'); }
+      catch (e) { return {}; }
+    })();
+    const agoraMs = Date.now();
+
+    /* Só se desiste ao fim de 10 consultas seguidas sem confirmação: uma
+     * falha pode ser azar — o servidor a hesitar, um 429 — e desistir logo
+     * arriscava perder um ataque a sério. */
+    const DESMENTIDAS_ATE_DESISTIR = 10;
+
     const emFalta = Object.keys(esperados)
       .filter((tid) => (contadosLocal[tid] || 0) < esperados[tid])
+      .filter((tid) => {
+        const d = desmentidas[tid];
+        if (!d) return true;
+        if ((Number(d.falhas) || 0) < DESMENTIDAS_ATE_DESISTIR) return true;
+        return (agoraMs - (Number(d.quando) || 0)) >= 600000;   // quarentena expirou
+      })
       .map(Number);
 
     if (emFalta.length) {
@@ -15925,6 +15952,30 @@ function makeEsquivaModule(opts) {
       try {
         const cmds = await comandosDoServidor(tid);
         cmds.forEach((cd) => doServidor.push(cd));
+
+        /* O servidor não confirmou nenhum ataque a esta cidade: a colecção
+         * `Attack` está a mentir. Fica de quarentena para não se perguntar
+         * outra vez já a seguir. */
+        const paraEsta = cmds.filter((cd) => Number(cd.target_town_id) === Number(tid));
+        const k = String(tid);
+        if (!paraEsta.length) {
+          const antes = desmentidas[k] || { falhas: 0 };
+          desmentidas[k] = { falhas: (Number(antes.falhas) || 0) + 1, quando: agoraMs };
+          if (desmentidas[k].falhas === DESMENTIDAS_ATE_DESISTIR) {
+            rotina(`Esquiva: a cidade ${tid} aparece com ataque mas o servidor nunca o `
+              + 'confirma — deixo de perguntar por 10 min.');
+          }
+          try {
+            armazem.setItem('grepoEsquiva_desmentidas_v1', JSON.stringify(desmentidas));
+          } catch (e2) {}
+        } else if (desmentidas[k]) {
+          /* O servidor confirmou: limpar a contagem. */
+          delete desmentidas[k];
+          try {
+            armazem.setItem('grepoEsquiva_desmentidas_v1', JSON.stringify(desmentidas));
+          } catch (e2) {}
+        }
+
         await ctx.sleep(ctx.rand(500, 900));
       } catch (e) {}
     }
@@ -19316,18 +19367,11 @@ function makeEncaixeModule(opts) {
 
           <div style="border:1px solid #2c3e50;border-radius:5px;padding:6px;margin-bottom:8px;font-size:11px">
             <div style="font-size:10px;letter-spacing:.5px;opacity:.65;margin-bottom:3px">TOLERÂNCIA</div>
-            <div style="opacity:.8">
-              ${(() => {
-                const d = (c.porTipo || {})[tipoEnvio] || {};
-                const m = d.margemSeg != null ? d.margemSeg : c.margemSeg;
-                const dir = d.direcao || c.direcao || 'ambos';
-                const txt = dir === 'antes' ? 'só antes' : dir === 'depois' ? 'só depois' : 'antes e depois';
-                const nome = tipoEnvio === 'attack' ? 'ataques'
-                  : (tipoEnvio === 'colonize' ? 'colonizadores' : 'apoios');
-                return `±${m}s · ${txt} <span style="opacity:.6">(o que definiste para ${nome})</span>`;
-              })()}
+            <div id="encj-tolerancia" style="opacity:.8">a ver...</div>
+            <div style="font-size:10px;opacity:.5;margin-top:2px">
+              Muda-se no painel do Maestro, em Encaixe. Se puseres um colonizador
+              nas unidades, usa a tolerância dos colonizadores.
             </div>
-            <div style="font-size:10px;opacity:.5;margin-top:2px">Muda-se no painel do Maestro, em Encaixe.</div>
           </div>
 
           <div style="display:flex;gap:5px;align-items:center;margin-bottom:8px;font-size:11px">
@@ -19506,8 +19550,23 @@ function makeEncaixeModule(opts) {
         return ts;
       };
 
-      const programar = (tipo) => {
+      const programar = (tipoBotao) => {
         if (agora() == null) { diz('Sem relógio do servidor — não programo às cegas.'); return; }
+
+        /* O TIPO VEM DO QUE VAI DENTRO, não do botão.
+         *
+         * Um envio com colonizador é uma colonização, quer o tenhas mandado
+         * pelo botão de atacar quer pelo de apoiar. Sem isto ficava com os
+         * desvios dos ataques — chegava 2 s antes, quando devia ter folga dos
+         * dois lados.
+         *
+         * A detecção é feita AQUI e não ao abrir a janela: quando ela abre
+         * ainda não puseste as unidades lá dentro. */
+        let tipo = tipoBotao;
+        try {
+          const nc = document.querySelector('input.unit_input[name="colonize_ship"]');
+          if (nc && Number(nc.value) > 0) tipo = 'colonize';
+        } catch (e) {}
         const conf = Object.assign({}, cfg(), {
           // ATENÇÃO: nunca usar "|| 2" aqui — em JavaScript o zero é falso, e
           // uma margem de 0 (a mais exigente) seria silenciosamente trocada
@@ -19620,6 +19679,35 @@ function makeEncaixeModule(opts) {
         if (el) el.onchange = () => { guardarOpcoes(); avaliarMargem(); };
       });
       avaliarMargem();
+
+      /* A TOLERÂNCIA MOSTRADA acompanha o que puseres nas unidades: mete um
+       * colonizador e ela passa a mostrar a dos colonizadores. */
+      const mostrarTolerancia = () => {
+        try {
+          const cc = cfg();
+          let tp = 'attack';
+          const nc = document.querySelector('input.unit_input[name="colonize_ship"]');
+          if (nc && Number(nc.value) > 0) tp = 'colonize';
+          else {
+            const txt = String(document.querySelector('.gpwindow_content').textContent || '').toLowerCase();
+            if (/apoi|support/.test(txt) && !/atac|attack/.test(txt)) tp = 'support';
+          }
+          const d = (cc.porTipo || {})[tp] || {};
+          const m = d.margemSeg != null ? d.margemSeg : cc.margemSeg;
+          const dir = d.direcao || cc.direcao || 'ambos';
+          const comoTxt = dir === 'antes' ? 'só antes' : dir === 'depois' ? 'só depois' : 'antes e depois';
+          const nome = tp === 'attack' ? 'ataques' : (tp === 'colonize' ? 'colonizadores' : 'apoios');
+          const el = box.querySelector('#encj-tolerancia');
+          if (el) el.innerHTML = `±${m}s · ${comoTxt} <span style="opacity:.6">(dos ${nome})</span>`;
+        } catch (e) {}
+      };
+      mostrarTolerancia();
+      try {
+        document.querySelectorAll('input.unit_input[name]').forEach((el) => {
+          el.addEventListener('input', mostrarTolerancia);
+          el.addEventListener('change', mostrarTolerancia);
+        });
+      } catch (e) {}
 
       box.querySelector('#encj-atk').onclick = () => programar('attack');
       box.querySelector('#encj-sup').onclick = () => programar('support');
