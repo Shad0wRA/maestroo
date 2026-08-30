@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.30.1256
+// @version      2026.08.30.1259
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -611,7 +611,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.30.1256';
+  const MAESTRO_VERSAO = '2026.08.30.1259';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -1081,18 +1081,36 @@
     const perfil = (esc && esc.perfil) || '';
     if (!perfil) return;
 
-    try {
-      const r = await buscarPerfil(perfil);
-      if (!r.ok) return;
+    /* INSISTIR SE FALHAR.
+     *
+     * Ao reiniciar a VPS, as 40 abas arrancam ao mesmo tempo e o GitHub corta
+     * as leituras. O perfil não era aplicado e a conta ficava sem o que dele
+     * depende — visto em jogo: sem o endereço do Firebase, e portanto sem
+     * avisos de ataque, até alguém recarregar a página à mão.
+     *
+     * Tenta-se até 5 vezes, com esperas cada vez maiores e um desvio aleatório
+     * para as abas não voltarem todas ao mesmo segundo. */
+    for (let tentativa = 1; tentativa <= 5; tentativa++) {
+      try {
+        const r = await buscarPerfil(perfil);
+        if (r.ok) {
+          const antes = Number(localStorage.getItem(APLICADO_KEY)) || 0;
+          if (r.quando && r.quando > antes) {
+            localStorage.setItem(APLICADO_KEY, String(r.quando));
+            log('core', `Perfil "${perfil}" actualizado a partir da conta principal `
+              + `(${r.n} definição(ões)).`);
+          }
+          return;
+        }
+      } catch (e) {}
 
-      /* Só avisa se trouxe algo de novo. */
-      const antes = Number(localStorage.getItem(APLICADO_KEY)) || 0;
-      if (r.quando && r.quando > antes) {
-        localStorage.setItem(APLICADO_KEY, String(r.quando));
-        log('core', `Perfil "${perfil}" actualizado a partir da conta principal `
-          + `(${r.n} definição(ões)).`);
+      if (tentativa < 5) {
+        const espera = tentativa * 20000 + Math.floor(Math.random() * 15000);
+        await new Promise((r2) => setTimeout(r2, espera));
       }
-    } catch (e) {}
+    }
+    log('core', '⚠️ Não consegui trazer o perfil da conta principal — '
+      + 'fico com a configuração que já tinha.');
   }
 
   async function publicarPerfil(nome) {
@@ -24598,7 +24616,11 @@ function makeRelatoriosModule(opts) {
         }
       } catch (e) {}
     } else {
-      await aplicarPerfilAoArrancar();
+      /* Uma tentativa AGORA, para o painel já mostrar a configuração certa.
+       * Se falhar, o `aplicarPerfilAoArrancar` continua a tentar em segundo
+       * plano — sem prender o arranque durante minutos. */
+      aplicarPerfilAoArrancar();
+      await new Promise((r) => setTimeout(r, 1500));
     }
 
     buildPanel();
