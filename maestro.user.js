@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.30.1437
+// @version      2026.08.30.1450
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -611,7 +611,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.30.1437';
+  const MAESTRO_VERSAO = '2026.08.30.1450';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -1090,6 +1090,18 @@
      *
      * Tenta-se até 5 vezes, com esperas cada vez maiores e um desvio aleatório
      * para as abas não voltarem todas ao mesmo segundo. */
+    /* ESPERA ALEATÓRIA ANTES DA PRIMEIRA TENTATIVA.
+     *
+     * Ao reiniciar a VPS, as 40 abas leem o Gist no mesmo segundo e o GitHub
+     * corta. Espalhar as primeiras leituras por 20 segundos resolve a maior
+     * parte das colisões.
+     *
+     * É curta de propósito: a esquiva e o encaixe já estão a correr com a
+     * configuração guardada, mas se ela estiver errada convém corrigi-la
+     * depressa. Se ainda assim falhar, as tentativas seguintes esperam cada
+     * vez mais. */
+    await new Promise((r) => setTimeout(r, Math.floor(Math.random() * 20000)));
+
     for (let tentativa = 1; tentativa <= 5; tentativa++) {
       try {
         const r = await buscarPerfil(perfil);
