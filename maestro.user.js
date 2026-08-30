@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.30.1146
+// @version      2026.08.30.1209
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -610,7 +610,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.30.1146';
+  const MAESTRO_VERSAO = '2026.08.30.1209';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -4199,11 +4199,38 @@ function makeConstrucaoModule(opts) {
     const estado = loadEstado();
 
     let construiuAlgo = false;
+    let saltadas = 0;
+    estado.cumpridas = estado.cumpridas || {};
+
+    /* A ASSINATURA de um template: muda quando ele muda.
+     *
+     * Serve para invalidar a marca de "cumprida" sem ter de comparar o
+     * template todo a cada passagem. */
+    const assinaturaDoTemplate = (t) => {
+      try {
+        return JSON.stringify(t.blocos).length + ':' + JSON.stringify(t.blocos).slice(0, 60);
+      } catch (e) { return 'x'; }
+    };
+
     for (const town of towns) {
       const tplNome = mapa[town.id];
       if (!tplNome) continue; // cidade sem template aplicável
       const template = templates[tplNome];
       if (!template || !template.blocos || !template.blocos.length) continue;
+
+      /* CIDADE JÁ CUMPRIDA: nem se troca para ela.
+       *
+       * Trocar de cidade custa tempo e um pedido. Numa conta com 100 cidades,
+       * a maioria já tem o template todo construído e a passagem gastava-se
+       * a visitá-las para não fazer nada.
+       *
+       * A marca guarda a ASSINATURA do template. Se ele mudar — outro nível,
+       * outro edifício — a assinatura muda e a cidade volta a ser vista. */
+      const assinatura = assinaturaDoTemplate(template);
+      if (estado.cumpridas && estado.cumpridas[town.id] === assinatura) {
+        saltadas++;
+        continue;
+      }
 
       // trocar para a cidade para ter dados atualizados
       await ctx.switchToTown(town.id);
@@ -4327,13 +4354,31 @@ function makeConstrucaoModule(opts) {
         // só o que NÃO é falta de recursos conta para o bloqueio
         (dec.naoDao || []).forEach((b) => naoDaoAgoraGlobal.add(b));
         (dec.semRecursos || []).forEach((b) => semRecursosGlobal.add(b));
-        if (!dec.acoes.length) break; // nada construível agora neste bloco
+        if (!dec.acoes.length) {
+          /* MARCAR A CIDADE COMO CUMPRIDA, se não falta mesmo nada.
+           *
+           * Distingue-se "não há nada a construir" de "não dá agora": só se
+           * marca quando não há nenhum edifício em falta — se o que trava é
+           * falta de recursos ou a fila cheia, a cidade tem de continuar a ser
+           * vista.
+           *
+           * A marca guarda a assinatura do template, portanto uma alteração
+           * ao template traz a cidade de volta sozinha. */
+          const faltaAlgo = (dec.naoDao || []).length > 0
+            || (dec.semRecursos || []).length > 0
+            || (dec.aEsperar || []).length > 0;
+          if (!faltaAlgo && !deuAgora.length) {
+            estado.cumpridas[town.id] = assinatura;
+          }
+          break; // nada construível agora neste bloco
+        }
 
         // construir o primeiro que dá
         const alvo = dec.acoes[0];
         const r = await buildUp(town.id, alvo);
         if (r.ok) {
           construiuAlgo = true; deuAgora.push(alvo);
+          delete estado.cumpridas[town.id];   // já não está cumprida
           log(`🏗️ ${town.name}: ${NOMES_PT[alvo] || alvo} (bloco ${dec.blocoAtivo + 1}).`);
           await ctx.sleep(ctx.rand(600, 1200));
           bdAtual = getBuildData(town.id) || bdAtual; // reler estado (fila/recursos mudaram)
@@ -4395,6 +4440,14 @@ function makeConstrucaoModule(opts) {
       log(`⛔ População esgotada em ${semPop.length} cidade(s): ${semPop.slice(0, 6).join(', ')}`
         + (semPop.length > 6 ? ` e mais ${semPop.length - 6}` : '')
         + ' — nada sobe até libertares população.');
+    }
+    /* Gravar SEMPRE as marcas de cumprida: se só se gravasse quando algo
+     * acontece, a marca perdia-se nas passagens em que não há nada a fazer —
+     * que são justamente aquelas em que ela é útil. */
+    try { saveEstado(estado); } catch (e) {}
+
+    if (saltadas) {
+      rotina(`Construção: ${saltadas} cidade(s) com o template cumprido — não as visitei.`);
     }
     if (!construiuAlgo && !aEsperar.length) rotina('Ronda de construção: nada a construir agora.');
   }
