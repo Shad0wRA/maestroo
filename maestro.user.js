@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.30.1214
+// @version      2026.08.30.1222
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -610,7 +610,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.30.1214';
+  const MAESTRO_VERSAO = '2026.08.30.1222';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -1117,7 +1117,13 @@
          * elas a lista de módulos ligados — quem fizesse Buscar tinha de os
          * voltar a ligar um a um. Levam-se as que fazem sentido replicar. */
         if (/^grepoMaestro_/.test(k)) {
-          const replicaveis = /^grepoMaestro_(ativos_|webhooks_|autostart_)/;
+          /* O endereço do FIREBASE viaja: é o mesmo para todas as contas e
+           * tê-lo de colar uma a uma era trabalho sem razão.
+           *
+           * As credenciais do Gist (`grepoMaestro_gist_v1`) continuam de
+           * fora — essas ficam em cada conta de propósito, para não andarem
+           * num ficheiro partilhado. */
+          const replicaveis = /^grepoMaestro_(ativos_|webhooks_|autostart_|firebase_)/;
           if (!replicaveis.test(k)) continue;
         }
 
@@ -14753,7 +14759,10 @@ function makeEsquivaModule(opts) {
           link_origin: '',
           link_destino: '',
           town_name_origin: String(a.origemNome || a.deQuem || ''),
-          daMain: true,
+          /* Marca a ORIGEM DA INFORMAÇÃO (o aviso do Firebase), que é
+           * diferente de `daMain` — esse diz que o ATACANTE é a minha main e
+           * é decidido pelo nome da cidade. */
+          viaAviso: true,
         });
       }
     } catch (e) {}
@@ -15956,6 +15965,10 @@ function makeEsquivaModule(opts) {
       const alvo = cidades.find((x) => x.id === alvoId);
       (porCidade[alvoId] = porCidade[alvoId] || []).push({
         cmd: a.command_id, arrival: Number(a.arrival_at), nc: pareceNC(a, alvo, c),
+        /* Veio pelo aviso da main no Firebase? Serve para o histórico dizer
+         * de onde soube do ataque — sem isto não se distingue de o jogo o ter
+         * trazido. */
+        viaAviso: !!a.viaAviso,
         // guardar quem ataca: é o que permite distinguir a main no modo farm
         jogador: a.jogador || '', jogador_id: a.jogador_id || 0,
         origem_town_id: a.origem_town_id || Number(a.home_town_id) || 0,
@@ -16124,7 +16137,10 @@ function makeEsquivaModule(opts) {
 
       agendados.add(chave);
       planos[chave] = { townId: Number(townId), daMain, S: tempos.S, C: tempos.C, casa: tempos.casa, tipo: tempos.tipo };
-      anotar(impactos[0] && impactos[0].cmd, townId, 'plano criado',
+      /* De onde veio a informação — para se saber se o aviso da main está a
+       * funcionar ou se foi o jogo que acabou por trazer o ataque. */
+      const fonte = impactos.some((x) => x.viaAviso) ? ' [pelo Firebase]' : '';
+      anotar(impactos[0] && impactos[0].cmd, townId, 'plano criado' + fonte,
         `tipo ${tempos.tipo}, sai em ${Math.round((tempos.S - t) / 60)} min`);
       const faltam = tempos.S - t;
       if (ultimaClassificacao) {
