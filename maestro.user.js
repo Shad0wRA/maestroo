@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.30.1247
+// @version      2026.08.30.1256
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -611,7 +611,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.30.1247';
+  const MAESTRO_VERSAO = '2026.08.30.1256';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -16504,6 +16504,14 @@ function makeCulturaModule(opts) {
 
   /* ---------------------- leitura do jogo ------------------------------- */
   // Celebrações em curso: { town_id: finished_at }
+  /* AS CELEBRAÇÕES EM CURSO, por cidade E POR TIPO.
+   *
+   * Guardava-se uma só por cidade, e a cidade era excluída por inteiro se
+   * tivesse qualquer celebração a decorrer. Como os três tipos podem correr em
+   * paralelo — confirmado no jogo — uma cidade com uma festa nunca chegava a
+   * fazer desfile, mesmo com pontos de combate de sobra.
+   *
+   * Agora sabe-se o que está a decorrer de CADA tipo, e só esse é saltado. */
   function celebracoesEmCurso() {
     const out = {};
     try {
@@ -16511,7 +16519,12 @@ function makeCulturaModule(opts) {
       for (const k of Object.keys(m)) {
         const a = m[k].attributes || {};
         const fim = Number(a.finished_at) || 0;
-        if (fim > agora()) out[Number(a.town_id)] = { fim, tipo: a.celebration_type };
+        if (fim <= agora()) continue;
+        const id = Number(a.town_id);
+        const tipo = String(a.celebration_type || '');
+        out[id] = out[id] || { fim: 0, tipos: {} };
+        out[id].tipos[tipo] = fim;
+        if (fim > out[id].fim) out[id].fim = fim;   // a que acaba mais tarde
       }
     } catch (e) {}
     return out;
@@ -16681,7 +16694,10 @@ function makeCulturaModule(opts) {
 
     const emCurso = celebracoesEmCurso();
     const teatros = teatroPorCidade();
-    const livres = towns.filter((t) => !emCurso[t.id]);
+    /* Nenhuma cidade é excluída por ter uma celebração: os três tipos correm
+     * em paralelo. O que se salta é o TIPO que já está a decorrer, mais
+     * abaixo. */
+    const livres = towns;
 
     // Reserva de pontos de combate para as procissões pendentes (as aldeias
     // descontam isto). Só é possível depois de conhecer o custo.
@@ -16701,10 +16717,14 @@ function makeCulturaModule(opts) {
     let semPontosParaDesfile = false;
     for (const t of livres) {
       // que tipos tentar, por esta ordem
+      const jaCorre = ((emCurso[t.id] || {}).tipos) || {};
       const tentativas = [];
-      if (c.teatro && teatros[t.id] > 0) tentativas.push(TIPOS.teatro);
-      if (c.festa) tentativas.push(TIPOS.festa);
-      if (c.procissao && !semPontosParaDesfile) tentativas.push(TIPOS.procissao);
+      if (c.teatro && teatros[t.id] > 0 && !jaCorre[TIPOS.teatro]) tentativas.push(TIPOS.teatro);
+      if (c.festa && !jaCorre[TIPOS.festa]) tentativas.push(TIPOS.festa);
+      if (c.procissao && !semPontosParaDesfile && !jaCorre[TIPOS.procissao]) {
+        tentativas.push(TIPOS.procissao);
+      }
+      if (!tentativas.length) continue;   // esta cidade já tem tudo a decorrer
       // Jogos Olímpicos NUNCA entram aqui (custam ouro).
 
       // Tentar TODAS as celebrações possíveis na mesma cidade, não parar à
