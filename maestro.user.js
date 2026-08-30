@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.30.1209
+// @version      2026.08.30.1214
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -610,7 +610,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.30.1209';
+  const MAESTRO_VERSAO = '2026.08.30.1214';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -1031,6 +1031,12 @@
     'grepoEsquiva_arranque_v1',
     'grepoEsquiva_planos_v1',
     'grepoEsquiva_cidadesMain_v1',
+    /* O HISTÓRICO é de cada conta.
+     *
+     * Sem isto viajava no perfil: todas as multis ficavam com o histórico de
+     * quem publicou por último, e ao investigar uma esquiva falhada via-se as
+     * decisões de outra conta. */
+    'grepoEsquiva_historico_v1',
     'grepoAlertas_vistosEm_v1',
     'grepoAlertas_arranque_v1',
 
@@ -13482,7 +13488,11 @@ function makeDeusesModule(opts) {
     } catch (e) { return 0; }
   }
 
+  /* O que aconteceu ao último aviso — para o registo dizer se foi publicado. */
+  let avisoPublicado = null;
+
   async function enviarAtaque(origemId, alvoId, quantos, escudo) {
+    avisoPublicado = null;
     const url = mUw.location.origin + '/game/town_info?town_id=' + Number(origemId)
       + '&action=send_units&h=' + mUw.Game.csrfToken;
     const payload = {};
@@ -13516,8 +13526,47 @@ function makeDeusesModule(opts) {
        * substitui o anterior, portanto não se acumula lixo. */
       if (!erro) {
         try {
-          const cmd = (j && j.command) || {};
-          const chegada = Number(cmd.arrival_at) || 0;
+          /* A HORA DE CHEGADA pode vir em vários sítios da resposta, e nem
+           * sempre vem. Procura-se em todos os que o jogo usa; se não vier
+           * nenhum, lê-se o movimento que acabou de ser criado. */
+          let chegada = 0;
+          let idCmd = 0;
+          try {
+            const c1 = (j && (j.command || j.command_data)) || {};
+            chegada = Number(c1.arrival_at) || Number(c1.arrivalAt) || 0;
+            idCmd = Number(c1.id) || Number(c1.command_id) || 0;
+
+            /* Nas notificações da resposta: é assim que a interface se
+             * actualiza, portanto o comando novo vem lá. */
+            if (!chegada) {
+              for (const n of ((j && j.notifications) || [])) {
+                let d = null;
+                try { d = JSON.parse(n.param_str); } catch (e2) { continue; }
+                const mv = d && (d.MovementsUnits || d.Movement || d.UnitsMovement);
+                if (mv && mv.arrival_at) {
+                  chegada = Number(mv.arrival_at);
+                  idCmd = Number(mv.id) || idCmd;
+                  break;
+                }
+              }
+            }
+
+            /* Último recurso: o movimento mais recente para esta cidade. */
+            if (!chegada) {
+              const mods = mUw.MM.getModels().MovementsUnits || {};
+              let melhor = 0;
+              for (const k of Object.keys(mods)) {
+                const a2 = mods[k].attributes || {};
+                if (Number(a2.target_town_id) !== Number(alvoId)) continue;
+                if (!/attack/i.test(String(a2.type || ''))) continue;
+                const t2 = Number(a2.arrival_at) || 0;
+                if (t2 > melhor) { melhor = t2; idCmd = Number(a2.id) || idCmd; }
+              }
+              chegada = melhor;
+            }
+          } catch (e2) {}
+
+          const cmd = { id: idCmd };
           if (chegada) {
             await fbEscrever(`avisos/${mWorld}/${Number(alvoId)}`, {
               cidade: Number(alvoId),
@@ -13529,8 +13578,11 @@ function makeDeusesModule(opts) {
               deQuem: String(mUw.Game.player_name || ''),
               quando: Math.floor(Date.now() / 1000),
             });
+            avisoPublicado = { alvo: Number(alvoId), chegada };
+          } else {
+            avisoPublicado = { falhou: 'não consegui saber a hora de chegada' };
           }
-        } catch (e) {}
+        } catch (e) { avisoPublicado = { falhou: e.message }; }
       }
 
       return { ok: !erro, msg: erro || (j && j.success) || 'ok' };
@@ -13621,9 +13673,17 @@ function makeDeusesModule(opts) {
       const escudo = escudoDisponivel(t.id, c);
       const r = await enviarAtaque(t.id, alvo.townId, quantos, escudo);
       if (r.ok) {
+        /* Dizer se a multi foi avisada — sem isto, a falha do aviso passava
+         * despercebida e só se via quando a esquiva não acontecia. */
+        let nota = '';
+        if (firebaseUrl()) {
+          if (avisoPublicado && avisoPublicado.alvo) nota = ' · multi avisada';
+          else if (avisoPublicado && avisoPublicado.falhou) nota = ` · ⚠️ aviso falhou (${avisoPublicado.falhou})`;
+          else nota = ' · ⚠️ aviso não publicado';
+        }
         log(`⚔️ ${t.name} → ${alvo.nome} (${alvo.jogador}): ${quantos} enviados divinos`
           + (escudo ? ` + ${escudo} espadachins de escudo` : '')
-          + ` — favor de ${NOMES[deus]} estava em ${favor}.`);
+          + ` — favor de ${NOMES[deus]} estava em ${favor}.${nota}`);
         enviados++;
         await ctx.sleep(ctx.rand(1200, 2400));
       } else {
