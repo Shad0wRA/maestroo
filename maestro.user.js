@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.30.1519
+// @version      2026.08.30.1531
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -611,7 +611,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.30.1519';
+  const MAESTRO_VERSAO = '2026.08.30.1531';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -19822,8 +19822,9 @@ function makeEncaixeModule(opts) {
         </div>
         <div>chega <b>${hh(p.chegada)}</b>${dia(p.chegada)} · ${quando}</div>
         <div style="opacity:.9">${tropas || '<span style="opacity:.5">sem unidades</span>'}</div>
-        <div style="opacity:.6;font-size:10px">sai ${envio} · margem ±${margUsada}s${
-          dirUsada === 'antes' ? ' (só antes)' : dirUsada === 'depois' ? ' (só depois)' : ''}</div>
+        <div style="opacity:.6;font-size:10px">sai ${envio} · ±${margUsada}s ${
+          dirUsada === 'antes' ? 'só antes' : dirUsada === 'depois' ? 'só depois' : 'antes e depois'
+        } <span style="opacity:.8">(${nomeTipo})</span></div>
         ${p.duracaoJogo ? '' : '<div style="color:#fc8">⚠ duração estimada — o alvo não tinha coordenadas</div>'}
       </div>`;
     }).join('');
