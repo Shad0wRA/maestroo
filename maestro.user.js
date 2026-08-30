@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.30.1301
+// @version      2026.08.30.1312
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -611,7 +611,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.30.1301';
+  const MAESTRO_VERSAO = '2026.08.30.1312';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -1100,6 +1100,13 @@
             log('core', `Perfil "${perfil}" actualizado a partir da conta principal `
               + `(${r.n} definição(ões)).`);
           }
+          /* REDESENHAR O PAINEL.
+           *
+           * Quando o perfil chega atrasado — o que acontece se a primeira
+           * leitura falhar — o painel já foi desenhado com os valores
+           * antigos. Sem isto, o campo do Firebase aparecia vazio apesar de o
+           * endereço estar guardado e a funcionar. */
+          try { buildPanel(); atualizarPainelEstado(); } catch (e) {}
           return;
         }
       } catch (e) {}
@@ -23276,7 +23283,9 @@ function makeApoioModule(opts) {
               + 'Tento outra vez sozinho.');
           }
           comRolamento(() => painel(container, ctx));
-        }, 2000);
+        }, 15000);  /* 15 s: tempo de sobra para confirmar vários alvos
+                     * seguidos, e a lista não tem pressa nenhuma — as tropas
+                     * já voltaram no momento do clique. */
 
         comRolamento(() => painel(container, ctx));
       };
