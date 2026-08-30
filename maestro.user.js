@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.30.1235
+// @version      2026.08.30.1240
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -611,7 +611,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.30.1235';
+  const MAESTRO_VERSAO = '2026.08.30.1240';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -1795,49 +1795,24 @@
     } catch (e) {}
   }
 
+  /* NÃO MEXER NAS NOTIFICAÇÕES.
+   *
+   * Escondia-se cada uma ao fim de segundo e meio. Antes disso removiam-se do
+   * documento, o que impedia o jogo de as processar — e é ao processá-las que
+   * ele actualiza os contadores de tropas. Custou uma tarde de enviados
+   * divinos até se perceber.
+   *
+   * Já não removemos, mas mexer no que o jogo desenha continua a ser risco
+   * sem ganho: as notificações são do jogador, não do bot. Ficam como estão.
+   *
+   * A limpeza da fila de construção MANTÉM-SE — essa mexe no modelo interno,
+   * não no ecrã, e resolve as obras que ficam presas. */
   function limparNotificacoes() {
+    /* Só a fila de construção. As notificações ficam como o jogo as põe. */
     limparFilaDeObras();
-    vigiarNotificacoes();
-    vigiarEcra();
-    if (Date.now() - ultimaLimpeza < LIMPAR_CADA_MS) return;
-    ultimaLimpeza = Date.now();
-    try {
-      const st = uw.GrepoNotificationStack;
-      // deleteBotCheckNotification NÃO é chamado de propósito
-      if (st && typeof st.deleteOutdated === 'function') st.deleteOutdated();
-    } catch (e) {}
-    tirarDoEcra();
-
-    /* APAGAR NO SERVIDOR, de hora a hora.
-     *
-     * UM pedido apaga tudo — `notify?action=delete_all`. A tentativa anterior
-     * chamava um pedido POR NOTIFICAÇÃO e, com centenas acumuladas, deu 429 e
-     * corrompeu a pilha do jogo. Este é o pedido que o botão "X" do jogo faz.
-     *
-     * ATENÇÃO: apaga TUDO, incluindo a verificação de bot. Por isso só corre
-     * se estiver LIGADO no painel — vem desligado. */
-    if (apagarNotificacoesLigado()) apagarTodasNoServidorSeHoras();
   }
 
-  /* Apagar todas no servidor, no máximo uma vez por hora. */
-  const APAGAR_NOTIF_KEY = 'grepoMaestro_apagarNotif_v1';
-  const ULTIMO_APAGAR_KEY = 'grepoMaestro_ultimoApagar_v1';
 
-  /* DESLIGADO por omissão.
-   *
-   * O jogo actualiza os contadores de tropas quando PROCESSA a notificação de
-   * "unidades recrutadas". Apagar as notificações no servidor antes disso faz
-   * o contador ficar preso: uma cidade com 27 espadachins mostra 16 até se
-   * recarregar a página.
-   *
-   * Era isso que fazia o recrutamento pedir 1 e 2 unidades sem fim, e a
-   * esquiva enviar números que o servidor recusava.
-   *
-   * Liga-se no painel se preferires a caixa limpa — mas sabendo que os
-   * contadores deixam de acompanhar. */
-  function apagarNotificacoesLigado() {
-    try { return localStorage.getItem(APAGAR_NOTIF_KEY) === '1'; } catch (e) { return false; }
-  }
 
   /* Há uma verificação de bot por responder?
    *
@@ -24499,9 +24474,7 @@ function makeRelatoriosModule(opts) {
             Os de <b>"está a atacar o seu apoio"</b> são sempre guardados —
             esses dizem que perdeste tropa a defender.
           </div>
-          <label><input type="checkbox" id="rel-transp"${c.transportes ? ' checked' : ''}>
-            relatórios de <b>transporte de recursos</b></label>
-        </div>
+          
 
         <div style="background:#0d141c;padding:6px 8px;border-radius:4px;margin-bottom:6px">
           Apagar até <input type="number" id="rel-max" min="10" max="500"
