@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.29.2331
+// @version      2026.08.30.1146
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -125,6 +125,7 @@
 
       /* Funcionamento normal, não erros. */
       /vagas de treino|vagas est[ãa]o cheias|queue is full/i,   // fila do quartel cheia
+      /fila de constru[çc][ãa]o est[áa] cheia/i,                 // fila no limite: normal
       /n[ãa]o h[áa] aldeias b[áa]rbaras nesta ilha/i,           // condição da ilha, não muda
       /requisitos de pesquisa .* n[ãa]o foram preenchidos/i,     // falta pesquisa: já se vê no painel
       /que o jogo não trouxe/i,                                 // o cruzamento a funcionar
@@ -297,6 +298,69 @@
   try {
     uw.__maestroTravado = servidorTravado;
     uw.__maestroTravar = marcarTravado;
+  } catch (e) {}
+
+  /* ============ FIREBASE ================================================
+   * O Gist do GitHub tem um limite secundário de escritas que não aparece no
+   * `rate_limit` e que 20 contas atingem com facilidade — sobretudo o apoio,
+   * que grava sempre que se mexe na lista.
+   *
+   * O Firebase não tem esse limite e responde em tempo real, o que importa
+   * para os AVISOS DE ATAQUE: com viagens de 6 minutos, esperar pela passagem
+   * seguinte já é meio minuto perdido.
+   *
+   * Usa-se só para o que escreve muito — avisos e apoio. O resto (perfis,
+   * templates, colonos) fica no Gist, onde funciona bem.
+   * ==================================================================== */
+  const FIREBASE_KEY = 'grepoMaestro_firebase_v1';
+
+  function firebaseUrl() {
+    try {
+      const u = String(localStorage.getItem(FIREBASE_KEY) || '').trim();
+      if (!u) return '';
+      return u.replace(/\/+$/, '');
+    } catch (e) { return ''; }
+  }
+
+  /* Ler um caminho. Devolve o objecto, ou null se não houver nada. */
+  async function fbLer(caminho) {
+    const base = firebaseUrl();
+    if (!base) return null;
+    try {
+      const r = await pedirFora(`${base}/${caminho}.json?_=${Date.now()}`, { method: 'GET' });
+      if (!r.ok) return null;
+      const t = await r.text();
+      if (!t || t === 'null') return null;
+      return JSON.parse(t);
+    } catch (e) { return null; }
+  }
+
+  /* Escrever num caminho (substitui o que lá está). */
+  async function fbEscrever(caminho, dados) {
+    const base = firebaseUrl();
+    if (!base) return { ok: false, msg: 'Firebase não configurado' };
+    try {
+      const r = await pedirFora(`${base}/${caminho}.json`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(dados),
+      });
+      return { ok: r.ok, msg: r.ok ? 'ok' : `HTTP ${r.status}` };
+    } catch (e) { return { ok: false, msg: e.message }; }
+  }
+
+  /* Apagar um caminho. */
+  async function fbApagar(caminho) {
+    const base = firebaseUrl();
+    if (!base) return { ok: false, msg: 'Firebase não configurado' };
+    try {
+      const r = await pedirFora(`${base}/${caminho}.json`, { method: 'DELETE' });
+      return { ok: r.ok, msg: r.ok ? 'ok' : `HTTP ${r.status}` };
+    } catch (e) { return { ok: false, msg: e.message }; }
+  }
+
+  try {
+    uw.__maestroFb = { ler: fbLer, escrever: fbEscrever, apagar: fbApagar, url: firebaseUrl };
   } catch (e) {}
 
   const WEBHOOKS_KEY = 'grepoMaestro_webhooks_v1';
@@ -546,7 +610,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.29.2331';
+  const MAESTRO_VERSAO = '2026.08.30.1146';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -2296,6 +2360,21 @@
             Guardar credenciais
           </button>
         </div>
+
+        <div style="background:#0d141c;padding:6px 8px;border-radius:4px;margin-top:7px">
+          <b style="font-size:11px">Firebase (avisos de ataque)</b>
+          <div style="opacity:.6;font-size:10px;margin:2px 0 4px">
+            A main avisa as multis dos ataques que envia. Sem isto, uma conta
+            sem Administrador não vê os ataques a chegar e não esquiva.
+          </div>
+          <input type="text" id="maestro-fb-url"
+            value="${String(localStorage.getItem('grepoMaestro_firebase_v1') || '').replace(/[<>"&]/g, '')}"
+            placeholder="https://....firebasedatabase.app" style="width:100%;font-size:10px">
+          <button id="maestro-fb-guardar" style="width:100%;margin-top:4px;font-size:10px">
+            Guardar e testar
+          </button>
+          <div id="maestro-fb-estado" style="font-size:10px;opacity:.75;margin-top:3px"></div>
+        </div>
         <div style="display:flex;gap:6px;align-items:center">
           <span class="mEtiq" style="flex:0 0 auto">partilhar</span>
           <button id="perfil-publicar" style="flex:1" title="Enviar este perfil para as outras contas">↑ Publicar</button>
@@ -2712,6 +2791,22 @@
     };
 
     /* ---- credenciais do Gist ---- */
+    /* Firebase: guardar e testar logo, para não ficar a dúvida se funciona. */
+    const btFb = document.getElementById('maestro-fb-guardar');
+    if (btFb) btFb.onclick = async () => {
+      const campo = document.getElementById('maestro-fb-url');
+      const est = document.getElementById('maestro-fb-estado');
+      const url = String(campo.value || '').trim().replace(/\/+$/, '');
+      try { localStorage.setItem(FIREBASE_KEY, url); } catch (e) {}
+      if (!url) { if (est) est.textContent = 'Apagado.'; return; }
+      if (est) est.textContent = 'A testar...';
+      const r = await fbEscrever('teste', { quando: Date.now() });
+      if (est) {
+        est.textContent = r.ok ? '✓ Funciona.' : '✗ Não consegui escrever: ' + r.msg;
+        est.style.color = r.ok ? '#4fc7a1' : '#f88';
+      }
+    };
+
     const btG = document.getElementById('maestro-gist-guardar');
     if (btG) btG.onclick = () => {
       const id = (document.getElementById('maestro-gist-id') || {}).value || '';
@@ -13354,6 +13449,37 @@ function makeDeusesModule(opts) {
       aplicarNotificacoes(r);
       const j = r && r.json;
       const erro = j && j.error;
+
+      /* AVISAR A MULTI, pelo Firebase.
+       *
+       * A multi não tem Administrador, portanto não consegue ver os ataques a
+       * chegar — a vista de comandos exige-o, e o modelo local só actualiza
+       * ao recarregar a página. Sem isto, a esquiva nunca sabe do ataque.
+       *
+       * Mas a MAIN sabe: acabou de o enviar. Publica-se o aviso e a multi
+       * agenda a esquiva sem depender de detectar nada.
+       *
+       * O aviso é escrito por cidade atacada; cada novo ataque à mesma cidade
+       * substitui o anterior, portanto não se acumula lixo. */
+      if (!erro) {
+        try {
+          const cmd = (j && j.command) || {};
+          const chegada = Number(cmd.arrival_at) || 0;
+          if (chegada) {
+            await fbEscrever(`avisos/${mWorld}/${Number(alvoId)}`, {
+              cidade: Number(alvoId),
+              origem: Number(origemId),
+              chegada,                                   // hora do jogo
+              enviados: Number(quantos) || 0,
+              escudo: Number(escudo) || 0,
+              cmd: Number(cmd.id) || 0,
+              deQuem: String(mUw.Game.player_name || ''),
+              quando: Math.floor(Date.now() / 1000),
+            });
+          }
+        } catch (e) {}
+      }
+
       return { ok: !erro, msg: erro || (j && j.success) || 'ok' };
     } catch (e) { return { ok: false, msg: e.message }; }
   }
@@ -14475,6 +14601,52 @@ function makeEsquivaModule(opts) {
   // vazio até a página ser atualizada. Perguntamos ao servidor, tal como o
   // encaixe faz — senão a esquiva não veria o ataque e não agiria, deixando as
   // tropas a apanhar o golpe sem aviso nenhum.
+  /* AVISOS DA MAIN, pelo Firebase.
+   *
+   * Sem Administrador, a multi não vê os ataques a chegar: a vista de
+   * comandos exige-o e o modelo local só actualiza ao recarregar a página.
+   * Confirmado em jogo — a esquiva dizia "nenhum ataque a chegar" enquanto a
+   * main atacava, e a tropa ficou em casa a matar os enviados.
+   *
+   * A main publica o que envia. Aqui lê-se isso e trata-se como se fosse um
+   * ataque detectado — com a vantagem de chegar no instante do envio, e não
+   * quando o jogo se lembra de actualizar. */
+  async function avisosDaMain(minhasCidades) {
+    const out = [];
+    try {
+      const dados = await fbLer(`avisos/${mWorld}`);
+      if (!dados) return out;
+
+      const agora = agoraJogo();
+      if (agora == null) return out;
+
+      for (const k of Object.keys(dados)) {
+        const a = dados[k] || {};
+        const alvo = Number(a.cidade) || Number(k);
+        if (!minhasCidades.has(alvo)) continue;          // não é minha
+        const chegada = Number(a.chegada) || 0;
+        if (!chegada || chegada < agora - 60) {
+          /* Já bateu: limpar para não crescer sem fim. */
+          fbApagar(`avisos/${mWorld}/${k}`).catch(() => {});
+          continue;
+        }
+        out.push({
+          command_id: Number(a.cmd) || (900000000 + alvo),   // id sintético se não vier
+          arrival_at: chegada,
+          started_at: null,
+          home_town_id: Number(a.origem) || 0,
+          target_town_id: alvo,
+          type: 'attack',
+          link_origin: '',
+          link_destino: '',
+          town_name_origin: String(a.origemNome || a.deQuem || ''),
+          daMain: true,
+        });
+      }
+    } catch (e) {}
+    return out;
+  }
+
   async function ataquesDoServidor(townId) {
     try {
       const url = mUw.location.origin + '/game/town_overviews?town_id=' + Number(townId)
@@ -15600,6 +15772,20 @@ function makeEsquivaModule(opts) {
     }
 
     const doServidor = [];
+
+    /* OS AVISOS DA MAIN entram como se fossem ataques detectados.
+     *
+     * São a única fonte fiável numa conta SEM Administrador: a vista de
+     * comandos exige-o e o modelo local só actualiza ao recarregar. E chegam
+     * no instante do envio, não quando o jogo se lembra. */
+    try {
+      const avisos = await avisosDaMain(minhas);
+      for (const a of avisos) doServidor.push(a);
+      if (avisos.length) {
+        rotina(`Esquiva: ${avisos.length} aviso(s) da main pelo Firebase.`);
+      }
+    } catch (e) {}
+
     const haNoLocal = Object.keys(esperados).length > 0 && !emFalta.length;
 
     /* Perguntar ao servidor SÓ pelas cidades onde faltam ataques. */
