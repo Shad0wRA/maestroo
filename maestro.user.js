@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.31.0114
+// @version      2026.08.31.0126
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -423,6 +423,23 @@
   }
   try { uw.__maestroPerguntar = perguntar; } catch (e) {}
 
+  /* O MÓDULO ESTÁ LIGADO NO PAINEL?
+   *
+   * Cada módulo tem um `ativo` próprio, além do visto verde do painel. Os dois
+   * dessincronizavam-se — visto em jogo: o visto ligado e o módulo a dizer
+   * que estava desligado.
+   *
+   * Com isto, o visto do painel manda: se ele está ligado, o módulo trabalha.
+   */
+  function moduloLigadoNoPainel(id) {
+    try {
+      const esc = JSON.parse(localStorage.getItem('grepoMaestro_modulos_v1') || '{}');
+      const v = (esc.ativos || {})[id];
+      return v === true ? true : (v === false ? false : null);
+    } catch (e) { return null; }
+  }
+  try { uw.__maestroLigado = moduloLigadoNoPainel; } catch (e) {}
+
   const WEBHOOKS_KEY = 'grepoMaestro_webhooks_v1';
   const WEBHOOKS_OMISSAO = { captcha: '', ataque: '', ataqueNC: '' };
 
@@ -670,7 +687,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.31.0114';
+  const MAESTRO_VERSAO = '2026.08.31.0126';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -10374,6 +10391,17 @@ function makeBandidosModule(opts) {
     const rotina = ctx.logRotina || ctx.log;
     const c = cfg();
 
+    /* O visto do painel manda sobre o `ativo` do módulo: quem liga ali
+     * quer o módulo a trabalhar. */
+    try {
+      const doPainel = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroLigado;
+      if (doPainel) {
+        const v = doPainel('bandidos');
+        if (v === true) c.ativo = true;
+        if (v === false) c.ativo = false;
+      }
+    } catch (e) {}
+
     if (!c.ativo) { rotina('Bandidos: está desligado.'); return; }
 
     const p = pontoDeAtaque();
@@ -12197,6 +12225,17 @@ function makeAlertasModule(opts) {
       }
     }
     const c = cfg();
+    /* O visto do painel manda sobre o `ativo` do módulo: quem liga ali
+     * quer o módulo a trabalhar. */
+    try {
+      const doPainel = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroLigado;
+      if (doPainel) {
+        const v = doPainel('alertas');
+        if (v === true) c.ativo = true;
+        if (v === false) c.ativo = false;
+      }
+    } catch (e) {}
+
     if (!c.ativo) { log('Alertas: está DESLIGADO (liga a caixa no painel e guarda).'); return; }
 
     if (agoraJogo() == null) { ctx.log('Sem relógio do servidor — não ajo às cegas.'); return; }
@@ -13369,6 +13408,17 @@ function makeDeusesModule(opts) {
     }
 
     /* ---- PERFIL MULTI: rodar para o deus com mais favor ---- */
+    /* O visto do painel manda sobre o `ativo` do módulo: quem liga ali
+     * quer o módulo a trabalhar. */
+    try {
+      const doPainel = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroLigado;
+      if (doPainel) {
+        const v = doPainel('deuses');
+        if (v === true) c.ativo = true;
+        if (v === false) c.ativo = false;
+      }
+    } catch (e) {}
+
     if (!c.ativo) { log('Rotação de deus: está DESLIGADA (liga a caixa no painel e guarda).'); return; }
 
     /* ===================== AS TRÊS CAMADAS =============================
@@ -16281,6 +16331,17 @@ function makeEsquivaModule(opts) {
     if (momentoArranque == null) marcarArranque();
     const c = cfg();
     const log = ctx.log;
+    /* O visto do painel manda sobre o `ativo` do módulo: quem liga ali
+     * quer o módulo a trabalhar. */
+    try {
+      const doPainel = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroLigado;
+      if (doPainel) {
+        const v = doPainel('esquiva');
+        if (v === true) c.ativo = true;
+        if (v === false) c.ativo = false;
+      }
+    } catch (e) {}
+
     if (!c.ativo) { rotina('Esquiva: está desligada.'); return; }
 
     const cidades = minhasCidades();
@@ -17199,6 +17260,17 @@ function makeCulturaModule(opts) {
     try { if (armazem.getItem(UMA_KEY) === '1') armazem.removeItem(UMA_KEY); } catch (e) {}
     const c = cfg();
     const log = ctx.log;
+    /* O visto do painel manda sobre o `ativo` do módulo: quem liga ali
+     * quer o módulo a trabalhar. */
+    try {
+      const doPainel = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroLigado;
+      if (doPainel) {
+        const v = doPainel('cultura');
+        if (v === true) c.ativo = true;
+        if (v === false) c.ativo = false;
+      }
+    } catch (e) {}
+
     if (!c.ativo) { log('Auto-cultura: está DESLIGADO (liga a caixa no painel e guarda).'); return; }
 
     if (agoraJogo() == null) { log('Sem relógio do servidor — não ajo às cegas.'); return; }
@@ -17691,6 +17763,17 @@ function makeGrutaModule(opts) {
     mUw = ctx.uw; mWorld = ctx.WORLD;
     const c = cfg();
     const log = ctx.log;
+    /* O visto do painel manda sobre o `ativo` do módulo: quem liga ali
+     * quer o módulo a trabalhar. */
+    try {
+      const doPainel = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroLigado;
+      if (doPainel) {
+        const v = doPainel('gruta');
+        if (v === true) c.ativo = true;
+        if (v === false) c.ativo = false;
+      }
+    } catch (e) {}
+
     if (!c.ativo) { log('Auto-gruta: está DESLIGADO (liga a caixa no painel e guarda).'); return; }
 
     const towns = ctx.getMyTowns();
@@ -18426,6 +18509,17 @@ function makeTrocaCidadesModule(opts) {
     mUw = ctx.uw; mWorld = ctx.WORLD;
     const c = cfg();
     const log = ctx.log;
+    /* O visto do painel manda sobre o `ativo` do módulo: quem liga ali
+     * quer o módulo a trabalhar. */
+    try {
+      const doPainel = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroLigado;
+      if (doPainel) {
+        const v = doPainel('trocacidades');
+        if (v === true) c.ativo = true;
+        if (v === false) c.ativo = false;
+      }
+    } catch (e) {}
+
     if (!c.ativo) { log('Trocas entre cidades: está DESLIGADO (liga a caixa no painel e guarda).'); return; }
 
     const towns = ctx.getMyTowns();
@@ -19457,6 +19551,17 @@ function makeEncaixeModule(opts) {
      * saía mal formada no registo (o texto aparecia como nome do módulo). */
     const log = ctx.log;
     const c = cfg();
+    /* O visto do painel manda sobre o `ativo` do módulo: quem liga ali
+     * quer o módulo a trabalhar. */
+    try {
+      const doPainel = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroLigado;
+      if (doPainel) {
+        const v = doPainel('encaixe');
+        if (v === true) c.ativo = true;
+        if (v === false) c.ativo = false;
+      }
+    } catch (e) {}
+
     if (!c.ativo) { rotina('Encaixe: está desligado.'); return; }
 
     const planos = lerPlanos();
@@ -21022,6 +21127,17 @@ function makeMissoesModule(opts) {
     const log = ctx.log;
     const rotina = ctx.logRotina || ctx.log;   // rotina: só nos módulos lentos
     const c = cfg();
+    /* O visto do painel manda sobre o `ativo` do módulo: quem liga ali
+     * quer o módulo a trabalhar. */
+    try {
+      const doPainel = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroLigado;
+      if (doPainel) {
+        const v = doPainel('missoes');
+        if (v === true) c.ativo = true;
+        if (v === false) c.ativo = false;
+      }
+    } catch (e) {}
+
     if (!c.ativo) { log('Missões: está DESLIGADO (liga a caixa no painel e guarda).'); return; }
 
     // pedir o estado ao servidor (as colecções podem estar vazias)
@@ -22113,6 +22229,17 @@ function makeColonosModule(opts) {
     mUw = ctx.uw; mWorld = ctx.WORLD;
     const log = ctx.log;
     const c = cfg();
+    /* O visto do painel manda sobre o `ativo` do módulo: quem liga ali
+     * quer o módulo a trabalhar. */
+    try {
+      const doPainel = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroLigado;
+      if (doPainel) {
+        const v = doPainel('colonos');
+        if (v === true) c.ativo = true;
+        if (v === false) c.ativo = false;
+      }
+    } catch (e) {}
+
     if (!c.ativo) { log('Colonos: está DESLIGADO (liga a caixa no painel e guarda).'); return; }
     if (c.modo === 'destino') {
       if (!c.destino) { log('Colonos: falta indicar a cidade que recebe os colonizadores.'); return; }
@@ -23354,6 +23481,17 @@ function makeApoioModule(opts) {
     const rotina = ctx.logRotina || ctx.log;   // rotina: não vai para o registo
     const log = ctx.log;
     const c = cfg();
+    /* O visto do painel manda sobre o `ativo` do módulo: quem liga ali
+     * quer o módulo a trabalhar. */
+    try {
+      const doPainel = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroLigado;
+      if (doPainel) {
+        const v = doPainel('apoio');
+        if (v === true) c.ativo = true;
+        if (v === false) c.ativo = false;
+      }
+    } catch (e) {}
+
     if (!c.ativo) { log('Apoio: está DESLIGADO (liga a caixa no painel e guarda).'); return; }
 
     /* Aprender nomes e donos da tropa que já está estacionada — de graça, e
@@ -24364,6 +24502,17 @@ function makeFundacaoModule(opts) {
     mUw = ctx.uw; mWorld = ctx.WORLD;
     const log = ctx.log;
     const c = cfg();
+    /* O visto do painel manda sobre o `ativo` do módulo: quem liga ali
+     * quer o módulo a trabalhar. */
+    try {
+      const doPainel = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroLigado;
+      if (doPainel) {
+        const v = doPainel('fundacao');
+        if (v === true) c.ativo = true;
+        if (v === false) c.ativo = false;
+      }
+    } catch (e) {}
+
     if (!c.ativo) { log('Fundação: está DESLIGADA (liga a caixa no painel e guarda).'); return; }
 
     /* Primeiro: há vaga? Sem isto, tentavam-se os 20 lugares da ilha e o
@@ -25177,6 +25326,17 @@ function makeRelatoriosModule(opts) {
     const log = ctx.log;
     const rotina = ctx.logRotina || ctx.log;
     const c = cfg();
+
+    /* O visto do painel manda sobre o `ativo` do módulo: quem liga ali
+     * quer o módulo a trabalhar. */
+    try {
+      const doPainel = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroLigado;
+      if (doPainel) {
+        const v = doPainel('relatorios');
+        if (v === true) c.ativo = true;
+        if (v === false) c.ativo = false;
+      }
+    } catch (e) {}
 
     if (!c.ativo) { rotina('Relatórios: está desligado.'); return; }
 
