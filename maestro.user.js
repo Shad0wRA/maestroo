@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.31.0026
+// @version      2026.08.31.0114
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -670,7 +670,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.31.0026';
+  const MAESTRO_VERSAO = '2026.08.31.0114';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -3315,6 +3315,7 @@
             relatorios: 'grepoRelatorios_cfg_v1',
             alertas: 'grepoAlertas_cfg_v1',
             trocacidades: 'grepoTrocaCid_cfg_v1',
+            bandidos: 'grepoBandidos_cfg_v1',
           };
           const nomeChave = CHAVE_DO_MODULO[m.id];
           if (!nomeChave) throw new Error('sem chave');
@@ -4502,29 +4503,27 @@ function makeConstrucaoModule(opts) {
       while (!bdAtual.filaCheia && seguranca < 15) {
         seguranca++;
         const dec = decidirConstrucao(template, bdAtual.building_data, blockedSet);
-        if (dec.terminado) { break; }
+
+        /* TEMPLATE COMPLETO: marcar a cidade e não voltar a visitá-la.
+         *
+         * É AQUI que se sabe — o `decidirConstrucao` diz `terminado` quando
+         * não há mais nada no template por construir. A marcação estava mais
+         * abaixo, no caso de "não há acções", e nunca era alcançada: com o
+         * template completo sai-se por este `break` primeiro.
+         *
+         * A marca guarda a assinatura do template, portanto alterá-lo traz a
+         * cidade de volta sozinha. */
+        if (dec.terminado) {
+          estado.cumpridas[town.id] = assinatura;
+          break;
+        }
         // registar os que não dão neste momento (para o rastreio de bloqueio)
         // só o que NÃO é falta de recursos conta para o bloqueio
         (dec.naoDao || []).forEach((b) => naoDaoAgoraGlobal.add(b));
         (dec.semRecursos || []).forEach((b) => semRecursosGlobal.add(b));
-        if (!dec.acoes.length) {
-          /* MARCAR A CIDADE COMO CUMPRIDA, se não falta mesmo nada.
-           *
-           * Distingue-se "não há nada a construir" de "não dá agora": só se
-           * marca quando não há nenhum edifício em falta — se o que trava é
-           * falta de recursos ou a fila cheia, a cidade tem de continuar a ser
-           * vista.
-           *
-           * A marca guarda a assinatura do template, portanto uma alteração
-           * ao template traz a cidade de volta sozinha. */
-          const faltaAlgo = (dec.naoDao || []).length > 0
-            || (dec.semRecursos || []).length > 0
-            || (dec.aEsperar || []).length > 0;
-          if (!faltaAlgo && !deuAgora.length) {
-            estado.cumpridas[town.id] = assinatura;
-          }
-          break; // nada construível agora neste bloco
-        }
+        /* Sem acções agora — falta de recursos, fila cheia, requisitos por
+         * cumprir. A cidade NÃO se marca: tem de continuar a ser vista. */
+        if (!dec.acoes.length) break;
 
         // construir o primeiro que dá
         const alvo = dec.acoes[0];
@@ -8616,6 +8615,25 @@ function makeRecrutamentoModule(opts) {
  * ========================================================================== */
 
 function makeHeroisModule(opts) {
+  /* Ler a resposta do jogo. Cada módulo tem a sua cópia porque não alcança a
+   * do núcleo. */
+  async function lerResposta(resposta) {
+    try {
+      if (resposta && Number(resposta.status) === 429) {
+        const t = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroTravar;
+        if (t) t(2);
+      }
+      const txt = await resposta.text();
+      if (!txt || !txt.trim()) {
+        return { json: { error: `o servidor não respondeu (HTTP ${resposta.status})` } };
+      }
+      try { return JSON.parse(txt); }
+      catch (e) {
+        return { json: { error: `resposta ilegível (HTTP ${resposta.status})` } };
+      }
+    } catch (e) { return { json: { error: e.message } }; }
+  }
+
   opts = opts || {};
 
   /* Nome do ficheiro no Gist, COM o mundo.
@@ -10220,6 +10238,251 @@ function makeHeroisModule(opts) {
  *
  *  FASE 2 (a seguir) — TROCAS: portar a lógica do equilibrar-recursos.
  * ========================================================================== */
+
+/* =========================================================================
+ *  MÓDULO: BANDIDOS (ponto de ataque da ilha)
+ *
+ *  O jogo põe um alvo na ilha que se ataca de 3 em 3 minutos. Cada vitória
+ *  dá pontos de combate e sobe o nível do ponto; de vez em quando dá uma
+ *  recompensa — tropa ou recursos.
+ *
+ *  A missão inicial pede 25 vitórias e o ponto vai até ao nível 100, portanto
+ *  são muitos ataques manuais.
+ *
+ *  Pedidos (capturados do jogo):
+ *    PlayerAttackSpot/<jogador> · attack        { <unidade>: n }
+ *    PlayerAttackSpot/<jogador> · collectReward {}
+ *
+ *  O modelo diz a defesa actual (`units`), o nível, o tempo de espera e se
+ *  há recompensa por recolher.
+ * ========================================================================= */
+function makeBandidosModule(opts) {
+  /* Ler a resposta do jogo. Cada módulo tem a sua cópia porque não alcança a
+   * do núcleo. */
+  async function lerResposta(resposta) {
+    try {
+      if (resposta && Number(resposta.status) === 429) {
+        const t = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroTravar;
+        if (t) t(2);
+      }
+      const txt = await resposta.text();
+      if (!txt || !txt.trim()) {
+        return { json: { error: `o servidor não respondeu (HTTP ${resposta.status})` } };
+      }
+      try { return JSON.parse(txt); }
+      catch (e) {
+        return { json: { error: `resposta ilegível (HTTP ${resposta.status})` } };
+      }
+    } catch (e) { return { json: { error: e.message } }; }
+  }
+
+  let mUw = null;
+  let mWorld = '';
+
+  const CFG_KEY = 'grepoBandidos_cfg_v1';
+
+  const DEFAULTS = {
+    ativo: false,          // desligado por omissão: gasta tropa
+    maxNivel: 0,           // 0 = sem limite
+    unidades: ['sword', 'hoplite', 'archer', 'slinger'],   // por que ordem usar
+    reservaPct: 30,        // não gastar abaixo desta percentagem da tropa da cidade
+  };
+
+  const armazem = {
+    getItem: (k) => localStorage.getItem(chavePorPerfil(k)),
+    setItem: (k, v) => localStorage.setItem(chavePorPerfil(k), v),
+    removeItem: (k) => localStorage.removeItem(chavePorPerfil(k)),
+  };
+
+  function cfg() {
+    try {
+      return Object.assign({}, DEFAULTS, JSON.parse(armazem.getItem(CFG_KEY) || '{}'));
+    } catch (e) { return Object.assign({}, DEFAULTS); }
+  }
+  function guardarCfg(c) {
+    try { armazem.setItem(CFG_KEY, JSON.stringify(c)); } catch (e) {}
+  }
+
+  function pontoDeAtaque() {
+    try {
+      const m = mUw.MM.getModels().PlayerAttackSpot || {};
+      const k = Object.keys(m)[0];
+      if (!k) return null;
+      return m[k].attributes || null;
+    } catch (e) { return null; }
+  }
+
+  async function bridge(acao, args, townId) {
+    try {
+      const jogador = Number(mUw.Game.player_id);
+      const url = mUw.location.origin + '/game/frontend_bridge?town_id=' + Number(townId)
+        + '&action=execute&h=' + mUw.Game.csrfToken;
+      const r = await mUw.fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                   'x-requested-with': 'XMLHttpRequest' },
+        credentials: 'include',
+        body: 'json=' + encodeURIComponent(JSON.stringify({
+          model_url: `PlayerAttackSpot/${jogador}`,
+          action_name: acao,
+          captcha: null,
+          arguments: args || {},
+          town_id: Number(townId),
+          nl_init: true,
+        })),
+      }).then(lerResposta);
+      const j = r && r.json;
+      const erro = j && j.error;
+      return { ok: !erro, msg: erro || (j && j.success) || 'ok', dados: j };
+    } catch (e) { return { ok: false, msg: e.message }; }
+  }
+
+  /* MANDAR A TROPA QUE HÁ.
+   *
+   * Tentou-se calcular a força necessária pela defesa do ponto, com uma
+   * margem. Mas isso é adivinhar: o combate do Grepolis tem tipos de ataque,
+   * sorte e bónus, e uma estimativa errada perde a tropa toda.
+   *
+   * Manda-se a tropa terrestre que a cidade tem, guardando a percentagem que
+   * escolheres em casa. Se sobrar força, não faz mal — ela volta. Se faltar,
+   * perde-se um ataque e vê-se no registo. */
+  function escolherTropa(townId, c) {
+    const out = {};
+    try {
+      const t = mUw.ITowns.getTown(Number(townId));
+      const tenho = (t && t.units && t.units()) || {};
+      const gd = mUw.GameData.units || {};
+
+      for (const u of Object.keys(tenho)) {
+        const disp = Number(tenho[u]) || 0;
+        if (!disp) continue;
+        const g = gd[u];
+        if (!g || g.is_naval) continue;          // só tropa de terra
+        if (u === 'godsent') continue;           // os enviados não vão para aqui
+
+        const reserva = Math.ceil(disp * ((Number(c.reservaPct) || 0) / 100));
+        const podeIr = Math.max(0, disp - reserva);
+        if (podeIr > 0) out[u] = podeIr;
+      }
+    } catch (e) { return null; }
+    return Object.keys(out).length ? out : null;
+  }
+
+  async function run(ctx) {
+    mUw = ctx.uw; mWorld = ctx.WORLD;
+    const log = ctx.log;
+    const rotina = ctx.logRotina || ctx.log;
+    const c = cfg();
+
+    if (!c.ativo) { rotina('Bandidos: está desligado.'); return; }
+
+    const p = pontoDeAtaque();
+    if (!p) { rotina('Bandidos: não há ponto de ataque nesta conta.'); return; }
+
+    const townId = Number(p.town_id);
+    if (!townId) { rotina('Bandidos: o ponto não diz de que cidade se ataca.'); return; }
+
+    /* RECOLHER A RECOMPENSA primeiro: não custa nada e liberta o ponto. */
+    if (p.reward_available) {
+      const r = await bridge('collectReward', {}, townId);
+      if (r.ok) {
+        const rec = p.reward || {};
+        const q = (rec.configuration || {});
+        log(`🎁 Bandidos: recompensa recolhida`
+          + (q.amount ? ` (${q.amount} ${q.type || rec.subtype || ''})` : '') + '.');
+      } else {
+        rotina(`Bandidos: não consegui recolher a recompensa — ${r.msg}`);
+      }
+      await ctx.sleep(ctx.rand(800, 1500));
+    }
+
+    /* AINDA EM ESPERA? */
+    const agora = Math.floor(Date.now() / 1000);
+    const espera = Number(p.cooldown_at) - agora;
+    if (espera > 0) {
+      rotina(`Bandidos: em espera — faltam ${espera}s.`);
+      return;
+    }
+
+    /* CHEGOU AO LIMITE DE NÍVEL? */
+    if (c.maxNivel && Number(p.level) >= Number(c.maxNivel)) {
+      rotina(`Bandidos: já está no nível ${p.level} (limite ${c.maxNivel}).`);
+      return;
+    }
+
+    const tropa = escolherTropa(townId, c);
+
+    if (!tropa) {
+      rotina(`Bandidos: a cidade ${townId} não tem tropa de terra disponível `
+        + `(guardo ${c.reservaPct}% em casa).`);
+      return;
+    }
+
+    const r = await bridge('attack', tropa, townId);
+    if (r.ok) {
+      const quais = Object.keys(tropa).map((u) => `${tropa[u]} ${u}`).join(', ');
+      log(`🗡️ Bandidos: atacado o nível ${p.level} com ${quais} `
+        + `(${p.battle_points || 0} pontos de combate).`);
+    } else {
+      log(`⚠️ Bandidos: o ataque falhou — ${r.msg}`);
+    }
+  }
+
+  function painel(container, ctx) {
+    mUw = ctx.uw; mWorld = ctx.WORLD;
+    const c = cfg();
+    const p = pontoDeAtaque();
+
+    const agora = Math.floor(Date.now() / 1000);
+    const espera = p ? Math.max(0, Number(p.cooldown_at) - agora) : 0;
+
+    const defesa = p ? Object.keys(p.units || {})
+      .map((u) => `${p.units[u]} ${u}`).join(', ') : '';
+
+    container.innerHTML = `
+      <label style="display:block;margin-bottom:4px">
+        <input type="checkbox" id="ban-on"${c.ativo ? ' checked' : ''}>
+        <b>Atacar o ponto da ilha</b>
+      </label>
+      <div style="opacity:.6;font-size:10px;margin:0 0 8px 18px">
+        O alvo que aparece na ilha. Cada vitória dá pontos de combate e sobe o
+        nível; de vez em quando dá tropa ou recursos. Ataca-se de 3 em 3 minutos.
+      </div>
+
+      ${p ? `<div style="background:#0d141c;padding:6px 8px;border-radius:4px;margin-bottom:6px;font-size:11px">
+        <div>nível <b>${p.level}</b> · defesa: ${defesa || '—'}</div>
+        <div style="opacity:.75">${espera > 0 ? `em espera, faltam ${espera}s` : 'pronto a atacar'}${
+          p.reward_available ? ' · <b style="color:#4fc7a1">recompensa por recolher</b>' : ''}</div>
+      </div>` : '<div style="opacity:.6;font-size:11px;margin-bottom:6px">Sem ponto de ataque nesta conta.</div>'}
+
+      <div style="font-size:11px">
+        Guardar em casa:
+        <input type="number" id="ban-reserva" value="${c.reservaPct}" min="0" max="90"
+          style="width:52px">%
+        <span style="opacity:.6;font-size:10px">— da tropa da cidade</span>
+      </div>
+
+      <div style="font-size:11px;margin-top:4px">
+        Parar no nível:
+        <input type="number" id="ban-max" value="${c.maxNivel || ''}" min="0" placeholder="sem limite"
+          style="width:76px">
+      </div>
+
+      <button id="ban-guardar" style="cursor:pointer;width:100%;margin-top:8px;background:#48d;color:#fff;padding:6px;border:none;border-radius:4px">Guardar</button>`;
+
+    container.querySelector('#ban-guardar').onclick = () => {
+      const cc = cfg();
+      cc.ativo = container.querySelector('#ban-on').checked;
+      cc.reservaPct = Math.min(90, Math.max(0, Number(container.querySelector('#ban-reserva').value) || 0));
+      cc.maxNivel = Number(container.querySelector('#ban-max').value) || 0;
+      guardarCfg(cc);
+      ctx.log('Bandidos: definições guardadas.');
+      painel(container, ctx);
+    };
+  }
+
+  return { id: 'bandidos', nome: 'Bandidos da ilha', run, painel };
+}
 
 function makeAldeiasModule(opts) {
   /* A caixa de confirmação do núcleo — o `confirm()` do navegador deixa de
@@ -25078,6 +25341,8 @@ function makeRelatoriosModule(opts) {
    * alvo numa conta, as outras devem notar depressa para trazer as tropas de
    * volta. Com 5 min, uma remoção demorava a propagar-se. */
   registerModule(makeApoioModule({ intervaloMin: 2, gistId: GIST_ID, gistToken: GIST_TOKEN }));
+  /* 3 min: é o tempo de espera entre ataques ao ponto da ilha. */
+  registerModule(makeBandidosModule({ intervaloMin: 3 }));
   registerModule(makeFundacaoModule({ intervaloMin: 30 }));
   registerModule(makeRelatoriosModule({ intervaloMin: 60 }));
 
