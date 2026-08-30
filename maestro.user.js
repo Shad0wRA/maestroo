@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.30.1531
+// @version      2026.08.30.1712
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -611,7 +611,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.30.1531';
+  const MAESTRO_VERSAO = '2026.08.30.1712';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -21401,13 +21401,20 @@ function makeColonosModule(opts) {
 
     /* AS BASES E O MODO viajam com a partilha, numa entrada própria.
      *
-     * Assim basta mudá-los NUMA conta: as outras leem-nos na passagem
-     * seguinte, sem ser preciso fazer Buscar em cada uma.
+     * SÓ A CONTA PRINCIPAL os escreve.
      *
-     * Quem os define é quem os tiver preenchidos — a última conta a gravar
-     * manda. Se puseres tudo a enviar para uma cidade só e depois voltares à
-     * rotação, todas seguem. */
-    if (c.baseA || c.baseB || c.destino) {
+     * Antes escrevia qualquer conta, e a última a gravar mandava. Visto em
+     * jogo: pôs-se "rotação" na principal, uma multi com a configuração
+     * antiga gravou "destino" por cima, e a principal leu de volta o valor
+     * velho. Parecia que a mudança não pegava.
+     *
+     * As outras contas só leem. Mudas na principal e todas seguem. */
+    const souAPrincipal = (() => {
+      try { return localStorage.getItem('grepoMaestro_principal_v1') === '1'; }
+      catch (e) { return false; }
+    })();
+
+    if (souAPrincipal && (c.baseA || c.baseB || c.destino)) {
       todos.__comum = {
         baseA: c.baseA || null,
         baseB: c.baseB || null,
