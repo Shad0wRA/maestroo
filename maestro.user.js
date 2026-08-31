@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.31.0650
+// @version      2026.08.31.0705
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -691,7 +691,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.31.0650';
+  const MAESTRO_VERSAO = '2026.08.31.0705';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -14715,6 +14715,8 @@ function makeDeusesModule(opts) {
     const porEnviado = Number(c.favorPorEnviado) || 5;
     const tecto = Number(c.favorMaximo) || 500;
     let enviados = 0;
+    /* Cidades que o servidor já recusou por falta de tropa: não se insiste. */
+    const semTropaNestaRonda = new Set();
 
     for (const t of towns) {
       if (!farm[t.id]) continue;
@@ -20947,12 +20949,47 @@ function makeEncaixeModule(opts) {
           const out = [];
           const vistos = new Set();
 
+          /* A DURAÇÃO QUE O JOGO MOSTRA, como referência.
+           *
+           * Numa cidade de outro jogador não sabemos as coordenadas, e o
+           * cálculo dá viagens absurdas — visto em jogo: 3575 minutos para um
+           * alvo a poucas ilhas.
+           *
+           * A janela do jogo mostra o tempo da composição que lá está. Com
+           * ela e a velocidade dessa composição, deduz-se a das outras: o
+           * tempo é inversamente proporcional à velocidade da unidade mais
+           * lenta. */
+          const durJogo = duracaoDaJanela();
+          const naJanela = unidadesDaJanela();
+          let velJanela = 0;
+          try {
+            for (const u of Object.keys(naJanela)) {
+              if (!(Number(naJanela[u]) > 0)) continue;
+              const v = Number((gd[u] || {}).speed) || 0;
+              if (v && (!velJanela || v < velJanela)) velJanela = v;
+            }
+          } catch (e) {}
+
           for (let i = 0; i < navios.length; i++) {
             const usar = navios.slice(i);             // sem os i mais lentos
             const carga = {};
             for (const u of usar) carga[u] = Number(tenho[u]) || 0;
 
-            const dur = duracaoPrevista(origemId, alvo, carga, conf);
+            let dur = 0;
+
+            /* Preferir a regra de três com o tempo do jogo: funciona com
+             * alvos de que não sabemos as coordenadas. */
+            if (durJogo && velJanela) {
+              let velEsta = 0;
+              for (const u of usar) {
+                const v = Number((gd[u] || {}).speed) || 0;
+                if (v && (!velEsta || v < velEsta)) velEsta = v;
+              }
+              if (velEsta) dur = Math.round(durJogo * (velJanela / velEsta));
+            }
+
+            /* Sem tempo do jogo, calcula-se — só funciona com alvos nossos. */
+            if (!dur) dur = duracaoPrevista(origemId, alvo, carga, conf);
             if (!dur) continue;
 
             /* Duas composições com a mesma duração não interessam. */
@@ -24971,6 +25008,10 @@ function makeApoioModule(opts) {
           const m = k.match(/^(\d+)->(\d+)$/); return m && Number(m[2]) === alvo;
         }).length >= maxPorAlvo) break;
 
+        /* Esta cidade já disse que não tem tropa nesta passagem: não vale a
+         * pena tentá-la para os alvos seguintes. */
+        if (semTropaNestaRonda.has(Number(t.id))) continue;
+
         // só mandar o que a cidade tem
         const tem = (() => { try { return mUw.ITowns.getTown(Number(t.id)).units() || {}; } catch (e) { return {}; } })();
         const carga = {};
@@ -25001,7 +25042,18 @@ function makeApoioModule(opts) {
           log(`🛡️ ${t.name} → ${alvo}: ${Object.keys(cargaFinal).map((k) => `${cargaFinal[k]} ${k}`).join(', ')}.`);
           await ctx.sleep(ctx.rand(800, 1600));
         } else {
-          log(`⚠️ ${t.name} → ${alvo}: ${r.msg}`);
+          /* "Não há unidades suficientes" não é erro: o modelo do jogo mostra
+           * números velhos e a tropa já saiu para outro lado. Com 15 cidades
+           * e 7 alvos, isto enchia o sininho com 40 linhas iguais.
+           *
+           * A cidade fica marcada: não se insiste nela nesta passagem. */
+          const semTropa = /unidades suficientes|not enough units/i.test(String(r.msg));
+          if (semTropa) {
+            rotina(`${t.name} → ${alvo}: sem tropa disponível agora.`);
+            semTropaNestaRonda.add(Number(t.id));
+          } else {
+            log(`⚠️ ${t.name} → ${alvo}: ${r.msg}`);
+          }
         }
       }
     }
