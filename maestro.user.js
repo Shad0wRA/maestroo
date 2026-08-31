@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.31.0248
+// @version      2026.08.31.0257
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -422,6 +422,10 @@
     });
   }
   try { uw.__maestroPerguntar = perguntar; } catch (e) {}
+  try {
+    uw.__maestroHaCaptcha = haVerificacaoDeBot;
+    uw.__maestroAvisarDiscord = avisarDiscord;
+  } catch (e) {}
 
   /* O MÓDULO ESTÁ LIGADO NO PAINEL?
    *
@@ -687,7 +691,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.31.0248';
+  const MAESTRO_VERSAO = '2026.08.31.0257';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -1637,46 +1641,12 @@
   /* ------------------------------ loop principal ------------------------- */
   let maestroTimer = null;
   let running = false;
-  /* Já avisámos que há um captcha? Para não repetir a cada passagem. */
-  let avisouCaptcha = false;
 
   async function tick() {
     if (running) return; // nunca sobrepor
 
     /* O servidor está a limitar? Não insistir — só piora e deixa tudo cego. */
     if (servidorTravado()) return;
-
-    /* HÁ UMA VERIFICAÇÃO DE BOT POR RESPONDER?
-     *
-     * Enquanto ela está no ecrã, o jogo recusa tudo em silêncio: visto em
-     * jogo, o maestro dizia ter recolhido 96 aldeias e zero recursos.
-     *
-     * Pára-se e avisa-se — uma vez, para não encher o registo. */
-    try {
-      if (haVerificacaoDeBot()) {
-        if (!avisouCaptcha) {
-          avisouCaptcha = true;
-          log('core', '🛑 Há uma verificação de bot por responder. Parei tudo — '
-            + 'resolve-a no jogo e eu retomo sozinho.');
-          try {
-            avisarDiscord('captcha', {
-              titulo: '🛑 Verificação de bot',
-              campos: [
-                { nome: '🌍 Mundo', valor: String(WORLD || '') },
-                { nome: '👤 Conta', valor: String(uw.Game.player_name || '') },
-              ],
-              descricao: 'O maestro parou. Resolve no jogo para retomar.',
-            });
-          } catch (e) {}
-        }
-        return;
-      }
-      if (avisouCaptcha) {
-        avisouCaptcha = false;
-        log('core', '✅ Verificação resolvida — retomo o trabalho.');
-      }
-    } catch (e) {}
-
     running = true;
     try {
       const agora = Date.now();
@@ -11868,6 +11838,37 @@ function makeAldeiasModule(opts) {
 
   async function fazerRecolha(ctx, towns) {
     const log = ctx.log;
+
+    /* VERIFICAÇÃO DE BOT: a recolha não passa.
+     *
+     * Enquanto ela está no ecrã, o jogo aceita o pedido e não dá nada — visto
+     * em jogo: "recolhidas 96 aldeias, ~0 recursos".
+     *
+     * Só a recolha pára; o resto do maestro continua. E avisa-se em TODAS as
+     * passagens, não só na primeira: com as contas a correr numa VPS, um aviso
+     * perdido são horas de recolhas vazias. */
+    try {
+      const f = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroHaCaptcha;
+      if (f && f()) {
+        log('🛑 Há uma verificação de bot por responder — não recolho. '
+          + 'Resolve-a no jogo.');
+        try {
+          const av = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroAvisarDiscord;
+          if (av) {
+            av('captcha', {
+              titulo: '🛑 Verificação de bot',
+              campos: [
+                { nome: '🌍 Mundo', valor: String(mWorld || '') },
+                { nome: '👤 Conta', valor: String(mUw.Game.player_name || '') },
+              ],
+              descricao: 'A recolha das aldeias está parada. Resolve no jogo.',
+            });
+          }
+        } catch (e) {}
+        return;
+      }
+    } catch (e) {}
+
     const prontas = relacoesProntas();
     if (!prontas.length) { log('Recolha: nenhuma aldeia pronta.'); return; }
 
