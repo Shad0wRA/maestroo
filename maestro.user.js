@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.31.0558
+// @version      2026.08.31.0642
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -691,7 +691,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.31.0558';
+  const MAESTRO_VERSAO = '2026.08.31.0642';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -8243,7 +8243,11 @@ function makeRecrutamentoModule(opts) {
           log(`⚔️ ${town.name}: +${a.amount} ${a.nome}${a.isNaval ? ' (porto)' : ''}${a.mitica ? ` [${a.deus}, favor resta ~${favorLivre[a.deus]}]` : ''}.`);
           await ctx.sleep(ctx.rand(600, 1200));
         } else {
-          log(`⚠️ ${town.name}: falha a recrutar ${a.nome} (${r.msg}).`);
+          /* Requisitos por cumprir não é erro: é o edifício ainda não ter
+           * nível para essa unidade. Passa a rotina, como as filas cheias. */
+          const rotineiro = /requisit|prerequisit|ainda n[ãa]o foram preenchidos/i.test(String(r.msg));
+          if (rotineiro) rotina(`${town.name}: ainda não dá para recrutar ${a.nome} (${r.msg}).`);
+          else log(`⚠️ ${town.name}: falha a recrutar ${a.nome} (${r.msg}).`);
           break; // não insistir nesta cidade nesta ronda
         }
       }
@@ -14811,7 +14815,14 @@ function makeDeusesModule(opts) {
         enviados++;
         await ctx.sleep(ctx.rand(1200, 2400));
       } else {
-        log(`⚠️ ${t.name}: ataque falhou (${r.msg}).`);
+        /* "A tropa tem de ter pelo menos N habitantes" não é erro: é a cidade
+         * não ter enviados que cheguem para o mínimo que o jogo exige. */
+        const poucaTropa = /pelo menos|habitantes|minimum|too few/i.test(String(r.msg));
+        if (poucaTropa) {
+          rotina(`${t.name}: não tenho tropa que chegue para o mínimo do jogo (${r.msg}).`);
+        } else {
+          log(`⚠️ ${t.name}: ataque falhou (${r.msg}).`);
+        }
       }
     }
 
@@ -15288,6 +15299,24 @@ function makeDeusesModule(opts) {
         });
         cc.cidadesFarm = out;
         guardarLocal(cc);
+
+        /* PUBLICAR AS CIDADES DE FARM para as multis.
+         *
+         * Assim elas reconhecem os ataques de farm pelo identificador da
+         * cidade, sem depender do nome começar por "34." — que falha se
+         * renomeares a cidade.
+         *
+         * O reconhecimento pelo nome continua a existir, para as cidades de
+         * amigos que também farmem. */
+        try {
+          const ids = Object.keys(out).map(Number).filter(Boolean);
+          const f = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroFb;
+          if (f && f.url()) {
+            f.escrever(`cidadesFarm/${mWorld}`, ids);
+          }
+          /* E também no armazenamento local, que viaja no perfil. */
+          localStorage.setItem('grepoEsquiva_cidadesFarm_v1', JSON.stringify(ids));
+        } catch (e) {}
       } catch (e) {}
     };
 
@@ -15602,6 +15631,19 @@ function makeEsquivaModule(opts) {
     } catch (e) { return '?'; }
   }
 
+  /* AS CIDADES DE FARM QUE A MAIN PUBLICOU.
+   *
+   * Guardadas em `grepoEsquiva_cidadesFarm_v1`, que chega pelo Firebase ou
+   * pelo perfil. Sem isto a multi só as reconhece pelo nome. */
+  function cidadesDeFarmPublicadas() {
+    try {
+      const raw = armazem.getItem('grepoEsquiva_cidadesFarm_v1');
+      if (!raw) return new Set();
+      const lista = JSON.parse(raw);
+      return new Set((Array.isArray(lista) ? lista : []).map(Number));
+    } catch (e) { return new Set(); }
+  }
+
   function ehDaMain(ataque, cfg) {
     if (!cfg.modoFarm) return false;
     const lista = (cfg.jogadoresFarm || []).map((x) => String(x).trim().toLowerCase());
@@ -15618,6 +15660,18 @@ function makeEsquivaModule(opts) {
     //    tem nome nem o id bate certo. As cidades aprendem-se sozinhas: sempre
     //    que um ataque é reconhecido pelo nome, guarda-se a origem.
     if (ataque.origem_town_id && cidadesDaMain().has(Number(ataque.origem_town_id))) return true;
+
+    /* 3b) PELA LISTA QUE A MAIN PUBLICA.
+     *
+     * A main sabe exactamente que cidades marcou para farmar favor — é o que
+     * escolhes no painel dos deuses. Publica-as, e as multis reconhecem-nas
+     * pelo identificador, sem depender do nome começar por "34.".
+     *
+     * O reconhecimento pelo nome continua a funcionar: serve para as cidades
+     * de amigos, que não estão na tua lista. */
+    if (ataque.origem_town_id && cidadesDeFarmPublicadas().has(Number(ataque.origem_town_id))) {
+      return true;
+    }
 
     /* 4) pelo NOME DA CIDADE de origem.
      *
@@ -15860,9 +15914,29 @@ function makeEsquivaModule(opts) {
    * A main publica o que envia. Aqui lê-se isso e trata-se como se fosse um
    * ataque detectado — com a vantagem de chegar no instante do envio, e não
    * quando o jogo se lembra de actualizar. */
+  /* Trazer a lista de cidades de farm que a main publicou.
+   *
+   * De hora a hora chega: não muda muitas vezes e ler a cada passagem seria
+   * desperdício. */
+  let cidadesFarmLidasEm = 0;
+
+  async function trazerCidadesDeFarm() {
+    try {
+      if (Date.now() - cidadesFarmLidasEm < 60 * 60 * 1000) return;
+      cidadesFarmLidasEm = Date.now();
+
+      const lista = await fbLer(`cidadesFarm/${mWorld}`);
+      if (!Array.isArray(lista)) return;
+      armazem.setItem('grepoEsquiva_cidadesFarm_v1', JSON.stringify(lista.map(Number)));
+    } catch (e) {}
+  }
+
   async function avisosDaMain(minhasCidades) {
     const out = [];
     try {
+      /* Aproveitar a mesma passagem para actualizar as cidades de farm. */
+      trazerCidadesDeFarm();
+
       const dados = await fbLer(`avisos/${mWorld}`);
       if (!dados) return out;
 
@@ -19898,6 +19972,38 @@ function makeEncaixeModule(opts) {
       return v.filter((x) => Number.isFinite(Number(x)) && Math.abs(Number(x)) <= 120);
     } catch (e) { return []; }
   }
+  /* AS FALHAS DE ENCAIXE, guardadas.
+   *
+   * O registo do ecrã perde-se ao recarregar. Guardam-se as últimas 30, com
+   * a razão — é o que permite perceber depois porque um ataque chegou fora
+   * da janela. Vê-se com `__maestroEncaixeFalhas()`. */
+  const FALHAS_KEY = 'grepoEncaixe_falhas_v1';
+
+  function anotarFalha(f) {
+    try {
+      const lista = JSON.parse(armazem.getItem(FALHAS_KEY) || '[]');
+      lista.push(f);
+      while (lista.length > 30) lista.shift();
+      armazem.setItem(FALHAS_KEY, JSON.stringify(lista));
+    } catch (e) {}
+  }
+
+  try {
+    const alvoGlobal = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window);
+    alvoGlobal.__maestroEncaixeFalhas = () => {
+      try {
+        const lista = JSON.parse(armazem.getItem(FALHAS_KEY) || '[]');
+        if (!lista.length) { console.log('Sem falhas de encaixe registadas.'); return; }
+        console.log(`Falhas de encaixe (${lista.length}):`);
+        for (const f of lista) {
+          const h = new Date(f.quando * 1000).toLocaleTimeString();
+          console.log(`  ${h} · cidade ${f.origem} → ${f.alvo} · `
+            + `${f.desvio >= 0 ? '+' : ''}${f.desvio}s · ${f.motivo}`);
+        }
+      } catch (e) { console.log('erro:', e.message); }
+    };
+  } catch (e) {}
+
   function registarDesvio(d) {
     try {
       const n = Number(d);
@@ -20179,16 +20285,41 @@ function makeEncaixeModule(opts) {
         log(`   tentativa ${tentativa}: ${desvio >= 0 ? '+' : ''}${desvio}s (ciclo ${cicloMs} ms)`);
 
         const cr = await cancelar(cmd.command_id, plano.origemId);
-        if (!cr.ok) { log(`⚠️ Encaixe: chegada ${desvio}s fora e não consegui cancelar (${cr.msg}).`); return; }
+        if (!cr.ok) {
+          /* GUARDAR ISTO: um cancelamento falhado deixa o comando a caminho
+           * com o desvio errado, e é a explicação mais provável quando um
+           * encaixe chega fora da janela.
+           *
+           * O registo do ecrã perde-se ao recarregar a página — visto em
+           * jogo, ficámos sem saber porque um ataque chegou 8s adiantado. */
+          anotarFalha({
+            quando: Math.floor(Date.now() / 1000),
+            origem: plano.origemId, alvo: plano.alvoId,
+            desvio, motivo: 'não consegui cancelar: ' + cr.msg,
+            cmd: cmd.command_id,
+          });
+          log(`⚠️ Encaixe: chegada ${desvio}s fora e não consegui cancelar (${cr.msg}).`);
+          return;
+        }
 
         const limiteAtrasos = numeroOu(plano.atrasosSeguidosParaParar, numeroOu(c.atrasosSeguidosParaParar, 10));
         if (atrasosSeguidos >= limiteAtrasos) {
+          anotarFalha({
+            quando: Math.floor(Date.now() / 1000),
+            origem: plano.origemId, alvo: plano.alvoId,
+            desvio, motivo: `${atrasosSeguidos} atrasos seguidos — janela fechada`,
+          });
           const e2 = estatisticaDesvios();
           log(`🛑 Encaixe: ${atrasosSeguidos} tentativas seguidas já a chegar tarde (último ${desvio >= 0 ? '+' : ''}${desvio}s) — a janela fechou. Desisto sem deixar comando.`);
           if (e2) log(`   (variação acumulada: ${e2.min}s a +${e2.max}s, mediana ${e2.mediana >= 0 ? '+' : ''}${e2.mediana}s em ${e2.n} tentativas)`);
           return;
         }
         if (tentativa === c.maxTentativas) {
+          anotarFalha({
+            quando: Math.floor(Date.now() / 1000),
+            origem: plano.origemId, alvo: plano.alvoId,
+            desvio, motivo: `${c.maxTentativas} tentativas sem acertar`,
+          });
           log(`🛑 Encaixe: ${c.maxTentativas} tentativas sem acertar (último desvio ${desvio}s). Desisto.`);
           return;
         }
@@ -22316,7 +22447,11 @@ function makeMissoesModule(opts) {
         agiu++;
         await ctx.sleep(ctx.rand(800, 1500));
       } else {
-        log(`⚠️ ${nome}: não consegui recolher a recompensa (${r.msg}).`);
+        /* "O efeito já está activo" não é erro: a recompensa foi usada e o
+         * jogo não deixa acumular o mesmo efeito. */
+        const jaAtivo = /j[áa] est[áa] ativ|already active/i.test(String(r.msg));
+        if (jaAtivo) rotina(`${nome}: o efeito já estava activo, nada a fazer.`);
+        else log(`⚠️ ${nome}: não consegui recolher a recompensa (${r.msg}).`);
       }
     }
 
@@ -24965,7 +25100,7 @@ function makeApoioModule(opts) {
       <div style="background:#0d141c;padding:5px;border-radius:4px;margin-top:6px">
         <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px">
           <b style="font-size:11px">Alvos apoiados</b>
-          <button id="ap-nomes" style="cursor:pointer;font-size:10px">🔄 obter nomes</button>
+          <button id="ap-nomes" style="cursor:pointer;font-size:10px" title="traz a lista partilhada e procura os nomes que faltam">🔄 actualizar</button>
           <span style="opacity:.55;font-size:10px">“retirar” tira o alvo da lista e manda o apoio de volta</span>
         </div>
         <div style="max-height:180px;overflow-y:auto">
@@ -25092,13 +25227,38 @@ function makeApoioModule(opts) {
       };
     });
 
-    /* ---- obter nomes das cidades ---- */
+    /* ---- actualizar a lista ---- */
     const btN = container.querySelector('#ap-nomes');
     if (btN) btN.onclick = async () => {
-      btN.disabled = true; btN.textContent = 'a procurar...';
+      /* TRAZER A LISTA PRIMEIRO.
+       *
+       * O botão percorria a lista que estava em memória desde que o painel
+       * foi desenhado. Se tinhas retirado um alvo entretanto, ele ia buscar
+       * o nome dele e voltava a aparecer — parecia que a remoção não pegava.
+       *
+       * Agora traz a lista partilhada, e só depois procura os nomes que
+       * faltam. */
+      btN.disabled = true;
+      btN.textContent = 'a actualizar...';
+
+      let atuais = alvos;
+      try {
+        const dados = await lerLista();
+        if (dados && Array.isArray(dados.alvos)) {
+          atuais = dados.alvos.map(Number);
+          const cc = cfg();
+          cc.alvos = atuais;
+          guardarCfg(cc);
+        }
+      } catch (e) {}
+
       const towns = ctx.getMyTowns();
-      for (const id of alvos) await infoDaCidade(id, towns.length ? towns[0].id : null);
-      btN.disabled = false; btN.textContent = '🔄 obter nomes';
+      for (const id of atuais) {
+        await infoDaCidade(id, towns.length ? towns[0].id : null);
+      }
+
+      btN.disabled = false;
+      btN.textContent = '🔄 actualizar';
       comRolamento(() => painel(container, ctx));
     };
 
