@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.31.0227
+// @version      2026.08.31.0234
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -687,7 +687,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.31.0227';
+  const MAESTRO_VERSAO = '2026.08.31.0234';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -24777,6 +24777,21 @@ function makeFundacaoModule(opts) {
         log(`— ${chave}: já vai um colonizador teu a caminho; salto.`);
         continue;
       }
+
+      /* UMA CIDADE POR ILHA, NESTA CONTA.
+       *
+       * Várias contas na mesma ilha é o que a fecha — isso continua a ser
+       * permitido. O que esta opção evita é a MESMA conta ficar com duas
+       * cidades na mesma ilha, que concentra o risco: um ataque à ilha apanha
+       * as duas. */
+      if (c.umaPorIlha) {
+        const jaTenho = (ctx.getMyTowns() || []).some(
+          (x) => Number(x.ix) === Number(ilha.x) && Number(x.iy) === Number(ilha.y));
+        if (jaTenho) {
+          log(`— ${chave}: já tenho uma cidade nesta ilha; salto.`);
+          continue;
+        }
+      }
       /* Rede de segurança: o que este módulo enviou há pouco. O movimento
        * pode ainda não estar nos dados do jogo logo a seguir ao envio. */
       const st = lerEstado()[chave] || {};
@@ -25133,7 +25148,9 @@ function makeFundacaoModule(opts) {
         <label><input type="checkbox" id="fun-sim"${c.simular ? ' checked' : ''}> só simular</label>
         <span style="opacity:.6;font-size:10px">— diz onde fundaria sem gastar o colonizador</span><br>
         <label><input type="checkbox" id="fun-ald"${c.exigirAldeias ? ' checked' : ''}> só ilhas grandes</label>
-        <span style="opacity:.6;font-size:10px">— as de 20 lugares</span>
+        <span style="opacity:.6;font-size:10px">— as de 20 lugares</span><br>
+        <label><input type="checkbox" id="fun-uma"${c.umaPorIlha ? ' checked' : ''}> uma cidade por ilha</label>
+        <span style="opacity:.6;font-size:10px">— nesta conta; outras contas podem estar na mesma ilha</span>
 
         <div style="margin-top:6px">
           Fundar à volta da cidade:
@@ -25273,6 +25290,7 @@ function makeFundacaoModule(opts) {
       cc.simular = container.querySelector('#fun-sim').checked;
       cc.exigirAldeias = container.querySelector('#fun-ald').checked;
       cc.centroId = Number(container.querySelector('#fun-centro').value) || 0;
+      cc.umaPorIlha = container.querySelector('#fun-uma').checked;
       cc.oceanos = String(container.querySelector('#fun-oceanos').value || '')
         .split(/[,\s]+/).map((x) => x.trim()).filter(Boolean);
       guardar(cc);
