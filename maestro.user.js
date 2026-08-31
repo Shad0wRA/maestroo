@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.31.0142
+// @version      2026.08.31.0152
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -687,7 +687,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.31.0142';
+  const MAESTRO_VERSAO = '2026.08.31.0152';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -1637,12 +1637,45 @@
   /* ------------------------------ loop principal ------------------------- */
   let maestroTimer = null;
   let running = false;
+  /* Já avisámos que há um captcha? Para não repetir a cada passagem. */
+  let avisouCaptcha = false;
 
   async function tick() {
     if (running) return; // nunca sobrepor
 
     /* O servidor está a limitar? Não insistir — só piora e deixa tudo cego. */
     if (servidorTravado()) return;
+
+    /* HÁ UMA VERIFICAÇÃO DE BOT POR RESPONDER?
+     *
+     * Enquanto ela está no ecrã, o jogo recusa tudo em silêncio: visto em
+     * jogo, o maestro dizia ter recolhido 96 aldeias e zero recursos.
+     *
+     * Pára-se e avisa-se — uma vez, para não encher o registo. */
+    try {
+      if (haVerificacaoDeBot()) {
+        if (!avisouCaptcha) {
+          avisouCaptcha = true;
+          log('core', '🛑 Há uma verificação de bot por responder. Parei tudo — '
+            + 'resolve-a no jogo e eu retomo sozinho.');
+          try {
+            avisarDiscord('captcha', {
+              titulo: '🛑 Verificação de bot',
+              campos: [
+                { nome: '🌍 Mundo', valor: String(WORLD || '') },
+                { nome: '👤 Conta', valor: String(uw.Game.player_name || '') },
+              ],
+              descricao: 'O maestro parou. Resolve no jogo para retomar.',
+            });
+          } catch (e) {}
+        }
+        return;
+      }
+      if (avisouCaptcha) {
+        avisouCaptcha = false;
+        log('core', '✅ Verificação resolvida — retomo o trabalho.');
+      }
+    } catch (e) {}
 
     running = true;
     try {
@@ -1959,6 +1992,35 @@
    * O `delete_all` apaga TUDO, incluindo essa. Se ela lá estiver, não se
    * apaga nada — perder uma verificação de bot sem a ver custa a conta. */
   function haVerificacaoDeBot() {
+    /* PRIMEIRO NO ECRÃ.
+     *
+     * A verificação é uma JANELA, não uma notificação — procurava-se só na
+     * pilha das notificações e não se encontrava nada. Visto em jogo: o
+     * captcha no ecrã e o maestro a continuar a trabalhar, a dizer que tinha
+     * recolhido 96 aldeias e zero recursos.
+     *
+     * Enquanto ela estiver aberta, nada do que o maestro faz produz efeito. */
+    try {
+      const marcas = [
+        '[class*="captcha" i]', '[id*="captcha" i]',
+        '[class*="botcheck" i]', '[id*="botcheck" i]',
+        '[class*="bot_check" i]', '[id*="bot_check" i]',
+      ];
+      for (const sel of marcas) {
+        const els = document.querySelectorAll(sel);
+        for (const el of els) {
+          /* Só conta se estiver VISÍVEL: o jogo tem elementos escondidos com
+           * estes nomes que existem sempre. */
+          try {
+            if (!el.offsetParent && getComputedStyle(el).position !== 'fixed') continue;
+            const r = el.getBoundingClientRect();
+            if (r.width > 40 && r.height > 40) return true;
+          } catch (e) {}
+        }
+      }
+    } catch (e) {}
+
+    /* E também nas notificações, para o caso de aparecer por lá. */
     try {
       const st = uw.GrepoNotificationStack;
       if (!st || typeof st.loop !== 'function') return false;
