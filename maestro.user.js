@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.31.0257
+// @version      2026.08.31.0312
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -691,7 +691,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.31.0257';
+  const MAESTRO_VERSAO = '2026.08.31.0312';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -6537,6 +6537,49 @@ function makeRecrutamentoModule(opts) {
   }
 
   // Unidades ainda por produzir na fila, por cidade.
+  /* O QUE JÁ PEDI E O JOGO AINDA NÃO MOSTRA.
+   *
+   * A colecção `UnitOrder` não se actualiza logo depois de uma ordem: a
+   * passagem seguinte via a fila vazia e voltava a pedir o mesmo.
+   *
+   * Visto em jogo: uma cidade com o template de 57 espadachins ficou com 44
+   * em casa e 48 na fila, em TRÊS ordens separadas — três passagens, cada uma
+   * a pensar que não havia nada pedido.
+   *
+   * Guarda-se o que se pediu, com a hora. Vale 5 minutos: depois disso a
+   * ordem já está na colecção do jogo e contá-la duas vezes seria pior. */
+  const PEDIDOS_KEY = 'grepoRecruta_pedidos_v1';
+
+  function lerPedidos() {
+    try { return JSON.parse(armazem.getItem(PEDIDOS_KEY) || '{}'); } catch (e) { return {}; }
+  }
+  function gravarPedidos(p) {
+    try { armazem.setItem(PEDIDOS_KEY, JSON.stringify(p)); } catch (e) {}
+  }
+
+  function registarPedido(townId, unitId, quantas) {
+    const p = lerPedidos();
+    const k = `${townId}|${unitId}`;
+    p[k] = p[k] || [];
+    p[k].push({ q: Number(quantas) || 0, t: Date.now() });
+    gravarPedidos(p);
+  }
+
+  function pedidoRecente(townId, unitId) {
+    const p = lerPedidos();
+    const k = `${townId}|${unitId}`;
+    const lista = p[k];
+    if (!lista || !lista.length) return 0;
+
+    const limite = Date.now() - 5 * 60 * 1000;
+    const vivos = lista.filter((x) => Number(x.t) > limite);
+    if (vivos.length !== lista.length) {
+      if (vivos.length) p[k] = vivos; else delete p[k];
+      gravarPedidos(p);
+    }
+    return vivos.reduce((s2, x) => s2 + (Number(x.q) || 0), 0);
+  }
+
   function contarFilasPorCidade() {
     const out = {};
     try {
@@ -8108,7 +8151,11 @@ function makeRecrutamentoModule(opts) {
             const agoraTenho = contarUnidadesPorCidadeDeOrigem()[town.id] || {};
             const agoraFila = contarFilasPorCidade()[town.id] || {};
 
-            const jaCom = (Number(agoraTenho[a.unitId]) || 0) + (Number(agoraFila[a.unitId]) || 0);
+            /* O que tenho + o que está na fila + o que acabei de pedir e o
+             * jogo ainda não mostra. */
+            const jaCom = (Number(agoraTenho[a.unitId]) || 0)
+              + (Number(agoraFila[a.unitId]) || 0)
+              + pedidoRecente(town.id, a.unitId);
 
             if (jaCom >= alvoFinal) {
               log(`⛔ ${town.name}: NÃO recruto ${a.nome} — já tem ${jaCom} `
@@ -8130,6 +8177,9 @@ function makeRecrutamentoModule(opts) {
         const r = await recrutar(town.id, a.unitId, a.amount, a.isNaval);
         if (r.ok) {
           fezAlgo = true;
+          /* Guardar o que se pediu: a colecção do jogo demora a mostrá-lo e
+           * sem isto a passagem seguinte pedia outra vez. */
+          registarPedido(town.id, a.unitId, a.amount);
           log(`⚔️ ${town.name}: +${a.amount} ${a.nome}${a.isNaval ? ' (porto)' : ''}${a.mitica ? ` [${a.deus}, favor resta ~${favorLivre[a.deus]}]` : ''}.`);
           await ctx.sleep(ctx.rand(600, 1200));
         } else {
