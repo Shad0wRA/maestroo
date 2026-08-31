@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.31.0126
+// @version      2026.08.31.0142
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -687,7 +687,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.31.0126';
+  const MAESTRO_VERSAO = '2026.08.31.0142';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -15402,17 +15402,24 @@ function makeEsquivaModule(opts) {
       new Promise((res) => setTimeout(() => res(null), ms)),
     ]);
 
-    const pedidos = ['building_barracks', 'building_docks'].map((edificio) => {
-      try {
-        const url = mUw.location.origin + '/game/' + edificio + '?town_id=' + Number(townId)
-          + '&action=index&h=' + mUw.Game.csrfToken
-          + '&json=' + encodeURIComponent(JSON.stringify({ town_id: Number(townId), nl_init: true }))
-          + '&_=' + Date.now();
-        return mUw.fetch(url, {
-          headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
-        }).then(lerResposta).then((r) => { aplicarNotificacoes(r); }).catch(() => {});
-      } catch (e) { return Promise.resolve(); }
-    });
+    /* PELO `gpAjax`, NÃO PELO `fetch`.
+     *
+     * O `fetch` faz o mesmo pedido mas o jogo ignora a resposta — testado: o
+     * contador não mexia. O `gpAjax` é a função do próprio jogo e alimenta os
+     * modelos com o que recebe.
+     *
+     * Confirmado em jogo: uma cidade com 56 birremes no modelo passou a 65 no
+     * instante em que se usou o `gpAjax`. Era essa a tropa que ficava em casa
+     * a morrer. */
+    const pedidos = ['building_barracks', 'building_docks'].map((edificio) => (
+      new Promise((resolve) => {
+        try {
+          mUw.gpAjax.ajaxGet(edificio, 'index',
+            { town_id: Number(townId), nl_init: true }, true, () => resolve());
+        } catch (e) { resolve(); }
+        setTimeout(resolve, 2200);      // não prender a esquiva
+      })
+    ));
 
     // os dois em paralelo, no máximo 2,5 s ao todo
     await comLimite(Promise.all(pedidos), 2500);
@@ -20984,6 +20991,7 @@ function makeMissoesModule(opts) {
       };
     } catch (e) { return { wood: 0, stone: 0, iron: 0, storage: 0 }; }
   }
+
 
   function tropasDaCidade(townId) {
     try { return mUw.ITowns.getTown(Number(townId)).units() || {}; }
