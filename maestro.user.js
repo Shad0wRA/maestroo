@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.31.0530
+// @version      2026.08.31.0558
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -691,7 +691,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.31.0530';
+  const MAESTRO_VERSAO = '2026.08.31.0558';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -16098,8 +16098,43 @@ function makeEsquivaModule(opts) {
      * número verdadeiro. Aí o `units()` já traz tudo e não é preciso adivinhar.
      *
      * Envia-se apenas o que o jogo diz que está na cidade. */
+
+    /* NA BASE DA ROTAÇÃO, OS COLONIZADORES FICAM.
+     *
+     * A base junta os colonizadores de todo o grupo e a outra equipa vem
+     * atacá-la para os contar. Os que a própria cidade produziu fazem parte
+     * desse total — se saírem numa esquiva, a contagem desce e o trabalho
+     * perde-se.
+     *
+     * Só se aplica à CIDADE QUE É BASE. Em todas as outras os colonizadores
+     * saem como o resto da tropa: aí morrem se ficarem, e não há nada a
+     * contar. */
+    try {
+      if (ehBaseDaRotacao(townId) && out.colonize_ship) delete out.colonize_ship;
+    } catch (e) {}
+
     return out;
   }
+  /* ESTA CIDADE É A BASE DA ROTAÇÃO DE COLONIZADORES?
+   *
+   * A configuração dos colonos guarda o destino: em modo 'destino' é a cidade
+   * indicada; em 'rotacao' é a base da equipa desta conta. */
+  function ehBaseDaRotacao(townId) {
+    try {
+      for (const suf of ['__main', '__multi', '']) {
+        const raw = localStorage.getItem('grepoColonos_cfg_v1' + suf);
+        if (!raw) continue;
+        const c2 = JSON.parse(raw);
+        if (!c2 || !c2.ativo) continue;
+
+        if (Number(c2.destino) === Number(townId)) return true;
+        if (Number(c2.baseA) === Number(townId)) return true;
+        if (Number(c2.baseB) === Number(townId)) return true;
+      }
+    } catch (e) {}
+    return false;
+  }
+
   function temBeliche(townId) {
     /* As pesquisas estão em `researches().attributes`, não no objecto
      * directamente — `researches().berth` dá sempre indefinido.
@@ -23181,11 +23216,37 @@ function makeColonosModule(opts) {
       for (const id of Object.keys(mUw.ITowns.towns)) {
         const t = mUw.ITowns.getTown(Number(id));
         const u = t.units() || {};
+        /* O MÍNIMO DE NAVIOS, não a frota toda.
+         *
+         * Este ataque só serve para os colonizadores do depósito voltarem
+         * com ele — não é para vencer nada. Mandava-se tudo o que a cidade
+         * tinha, e se a esquiva do depósito falhar, perde-se a frota inteira
+         * contra a defesa dele.
+         *
+         * Manda-se a população mínima configurada (100 por omissão), do navio
+         * mais barato que houver. */
+        const gd = mUw.GameData.units || {};
+        const limitePop = Number(c.popAtaqueBase) > 0 ? Number(c.popAtaqueBase) : 100;
+
         const navios = {};
         let tem = 0;
-        for (const k of NAVIOS_ATAQUE) {
-          const n = Number(u[k]) || 0;
-          if (n > 0) { navios[k] = n; tem += n; }
+        let pop = 0;
+
+        /* Do mais barato em população para o mais caro: leva-se o menor
+         * valor possível. */
+        const ordem = NAVIOS_ATAQUE.slice().sort(
+          (a, b) => ((gd[a] || {}).population || 1) - ((gd[b] || {}).population || 1));
+
+        for (const k of ordem) {
+          if (pop >= limitePop) break;
+          const disp = Number(u[k]) || 0;
+          if (!disp) continue;
+          const porUnidade = (gd[k] || {}).population || 1;
+          const faltamPop = limitePop - pop;
+          const quantas = Math.min(disp, Math.max(1, Math.ceil(faltamPop / porUnidade)));
+          navios[k] = quantas;
+          pop += quantas * porUnidade;
+          tem += quantas;
         }
         if (!tem) continue;
 
@@ -23510,6 +23571,15 @@ function makeColonosModule(opts) {
         </div>
 
         Atacar a partir de <input type="number" min="1" id="col-min" value="${c.minParaAtacar}" style="width:56px"> colonizadores
+        <div style="margin-top:4px">
+          Atacar a base com
+          <input type="number" id="col-popatk" value="${c.popAtaqueBase || 100}" min="10" style="width:56px">
+          de população
+          <div style="opacity:.6;font-size:10px">
+            O ataque só serve para os colonizadores voltarem com ele. Manda-se o
+            mínimo: se a esquiva da base falhar, não se perde a frota.
+          </div>
+        </div>
         · pausa de <input type="number" min="0" id="col-pausa" value="${c.pausaAposAtaque}" style="width:48px">s depois<br>
         Enviar a cada <input type="number" min="1" id="col-ienv" value="${c.intervaloEnvioMin}" style="width:44px"> min
         · produzir a cada <input type="number" min="1" id="col-iprod" value="${c.intervaloProducaoMin}" style="width:44px"> min<br>
@@ -23583,6 +23653,8 @@ function makeColonosModule(opts) {
         baseA: container.querySelector('#col-baseA').value ? Number(container.querySelector('#col-baseA').value) : null,
         baseB: container.querySelector('#col-baseB').value ? Number(container.querySelector('#col-baseB').value) : null,
         minParaAtacar: Number(container.querySelector('#col-min').value) || 100,
+        popAtaqueBase: container.querySelector('#col-popatk')
+          ? (Number(container.querySelector('#col-popatk').value) || 100) : (c.popAtaqueBase || 100),
         pausaAposAtaque: Number(container.querySelector('#col-pausa').value) || 45,
         intervaloEnvioMin: Number(container.querySelector('#col-ienv').value) || 15,
         intervaloProducaoMin: Number(container.querySelector('#col-iprod').value) || 30,
@@ -23677,6 +23749,26 @@ function makeApoioModule(opts) {
     big_transporter: { sem: 26, com: 32 },
   };
   const TERRESTRES = ['sword', 'slinger', 'archer', 'hoplite', 'rider', 'chariot', 'catapult'];
+
+  /* ESTA CIDADE É A BASE DA ROTAÇÃO DE COLONIZADORES?
+   *
+   * A configuração dos colonos guarda o destino: em modo 'destino' é a cidade
+   * indicada; em 'rotacao' é a base da equipa desta conta. */
+  function ehBaseDaRotacao(townId) {
+    try {
+      for (const suf of ['__main', '__multi', '']) {
+        const raw = localStorage.getItem('grepoColonos_cfg_v1' + suf);
+        if (!raw) continue;
+        const c2 = JSON.parse(raw);
+        if (!c2 || !c2.ativo) continue;
+
+        if (Number(c2.destino) === Number(townId)) return true;
+        if (Number(c2.baseA) === Number(townId)) return true;
+        if (Number(c2.baseB) === Number(townId)) return true;
+      }
+    } catch (e) {}
+    return false;
+  }
 
   function temBeliche(townId) {
     /* As pesquisas estão em `researches().attributes`, não no objecto
