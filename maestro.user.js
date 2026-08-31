@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.31.0312
+// @version      2026.08.31.0325
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -691,7 +691,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.31.0312';
+  const MAESTRO_VERSAO = '2026.08.31.0325';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -8189,6 +8189,39 @@ function makeRecrutamentoModule(opts) {
       }
     }
     try { armazem.setItem('grepoRecruta_expandido_v1', JSON.stringify(expandido)); } catch (e) {}
+    /* AVISAR SE ALGUMA CIDADE PASSOU DO TEMPLATE.
+     *
+     * Hoje já vimos duas causas para isto: ordens repetidas por a colecção
+     * do jogo não actualizar, e uma chave de templates de outro perfil a ser
+     * lida por engano.
+     *
+     * Se voltar a acontecer por outra razão, o maestro diz — em vez de se
+     * descobrir por acaso ao olhar para o quartel. */
+    try {
+      for (const town of towns) {
+        const tplNome = mapa[town.id];
+        if (!tplNome) continue;
+        const alvosT = (templates[tplNome] || {}).unidades || {};
+        if (!Object.keys(alvosT).length) continue;
+
+        const tem = contarUnidadesPorCidadeDeOrigem()[town.id] || {};
+        const naFila = contarFilasPorCidade()[town.id] || {};
+
+        for (const u of Object.keys(alvosT)) {
+          const alvo = Number(alvosT[u]) || 0;
+          if (!alvo) continue;
+          const total = (Number(tem[u]) || 0) + (Number(naFila[u]) || 0);
+          /* 10% de tolerância: arredondamentos e tropa em viagem de outras
+           * cidades não são erro. */
+          if (total > alvo * 1.1) {
+            const nomeU = ((mUw.GameData.units || {})[u] || {}).name || u;
+            log(`⚠️ ${town.name}: tem ${total} ${nomeU} e o template pede ${alvo}. `
+              + 'Se isto se repetir, diz-me — pode ser um erro do maestro.');
+          }
+        }
+      }
+    } catch (e) {}
+
     if (!fezAlgo) {
       /* Dizer PORQUE não recrutou — sem isto, uma cidade com população livre
        * e favor parece estar avariada quando só lhe falta um recurso.
