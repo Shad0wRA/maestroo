@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.31.0428
+// @version      2026.08.31.0455
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -691,7 +691,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.31.0428';
+  const MAESTRO_VERSAO = '2026.08.31.0455';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -8145,6 +8145,35 @@ function makeRecrutamentoModule(opts) {
       // ordenado a seguir, por isso a ordem importa.
       await talvezAcelerar(ctx, town.id,
         acoes.map((a) => ({ unitId: a.unitId, quantidade: a.amount })), units, cfgFeiticos());
+
+      /* ACTUALIZAR OS CONTADORES ANTES DE RECRUTAR.
+       *
+       * O modelo `Units` mostra números velhos até se recarregar a página, e
+       * o travão acredita neles: uma cidade com 342 espadachins e o template
+       * a pedir 57 continuou a recrutar durante a noite.
+       *
+       * O `gpAjax` do próprio jogo actualiza os modelos — o `fetch` não,
+       * está testado. Confirmado: uma cidade com 56 birremes no modelo passou
+       * a 65 no instante em que se usou.
+       *
+       * Só se faz nas cidades onde HÁ algo a recrutar: com os templates
+       * cumpridos não custa nada, e evita o 429 que apanhámos ao fazer isto
+       * em todas as cidades de cada passagem. */
+      if (acoes.length) {
+        const precisaQuartel = acoes.some((a) => !a.isNaval);
+        const precisaPorto = acoes.some((a) => a.isNaval);
+        const pedidos = [];
+        if (precisaQuartel) pedidos.push('building_barracks');
+        if (precisaPorto) pedidos.push('building_docks');
+
+        await Promise.all(pedidos.map((ed) => new Promise((resolve) => {
+          try {
+            mUw.gpAjax.ajaxGet(ed, 'index',
+              { town_id: Number(town.id), nl_init: true }, true, () => resolve());
+          } catch (e) { resolve(); }
+          setTimeout(resolve, 2500);
+        })));
+      }
 
       for (const a of acoes) {
         /* TRAVÃO FINAL, imediatamente antes do pedido.
@@ -21038,46 +21067,6 @@ function makeEncaixeModule(opts) {
           if (el) el.innerHTML = `±${m}s · ${comoTxt} <span style="opacity:.6">(dos ${nome})</span>`;
         } catch (e) {}
       };
-      /* AS COMBINAÇÕES DE VELOCIDADE desta cidade, para agendar mais do que
-       * uma tentativa ao mesmo instante. */
-      const mostrarCombos = () => {
-        try {
-          const el = box.querySelector('#encj-combos');
-          if (!el) return;
-          if (cfg().mostrarCombos === false) { el.innerHTML = ''; return; }
-
-          const chegada = lerHora();
-          if (!chegada) { el.innerHTML = ''; return; }
-
-          const combos = combinacoesPossiveis();
-          if (combos.length < 2) { el.innerHTML = ''; return; }
-
-          const hh = (t) => new Date((t + desvioFuso()) * 1000).toISOString().substr(11, 8);
-
-          el.innerHTML = '<div style="font-size:10px;letter-spacing:.5px;opacity:.65;margin-bottom:3px">'
-            + 'TENTATIVAS PARA O MESMO SEGUNDO</div>'
-            + '<div style="opacity:.55;font-size:10px;margin-bottom:4px">'
-            + 'Cada composição tem uma velocidade diferente, portanto sai a uma hora '
-            + 'diferente para chegar ao mesmo instante. Se a primeira acertar, leva a '
-            + 'tropa e as outras falham sozinhas.</div>'
-            + combos.map((c2, i) => {
-              const sai = chegada - c2.dur;
-              const jaPassou = sai <= agora();
-              return `<label style="display:block;margin-bottom:2px;${jaPassou ? 'opacity:.4' : ''}">
-                <input type="checkbox" data-combo="${i}"${jaPassou ? ' disabled' : ''}>
-                sai <b>${hh(sai)}</b> · ${Math.round(c2.dur / 60)} min
-                <span style="opacity:.7">— ${c2.nome}</span>${jaPassou ? ' <i>(hora passada)</i>' : ''}
-              </label>`;
-            }).join('')
-            + '<button id="encj-combos-go" style="cursor:pointer;width:100%;margin-top:4px;'
-            + 'background:#3a6ea5;color:#fff;padding:4px;border:none;border-radius:4px;font-size:11px">'
-            + 'Agendar as marcadas</button>';
-
-          const bt = el.querySelector('#encj-combos-go');
-          if (bt) bt.onclick = () => agendarCombos(combos, chegada);
-        } catch (e) {}
-      };
-
       /* Agendar cada composição marcada como um plano próprio. */
       const agendarCombos = (combos, chegada) => {
         try {
@@ -21118,6 +21107,47 @@ function makeEncaixeModule(opts) {
         } catch (e) { diz('Não consegui agendar: ' + e.message); }
       };
 
+
+      /* AS COMBINAÇÕES DE VELOCIDADE desta cidade, para agendar mais do que
+       * uma tentativa ao mesmo instante. */
+      const mostrarCombos = () => {
+        try {
+          const el = box.querySelector('#encj-combos');
+          if (!el) return;
+          if (cfg().mostrarCombos === false) { el.innerHTML = ''; return; }
+
+          const chegada = lerHora();
+          if (!chegada) { el.innerHTML = ''; return; }
+
+          const combos = combinacoesPossiveis();
+          if (combos.length < 2) { el.innerHTML = ''; return; }
+
+          const hh = (t) => new Date((t + desvioFuso()) * 1000).toISOString().substr(11, 8);
+
+          el.innerHTML = '<div style="font-size:10px;letter-spacing:.5px;opacity:.65;margin-bottom:3px">'
+            + 'TENTATIVAS PARA O MESMO SEGUNDO</div>'
+            + '<div style="opacity:.55;font-size:10px;margin-bottom:4px">'
+            + 'Cada composição tem uma velocidade diferente, portanto sai a uma hora '
+            + 'diferente para chegar ao mesmo instante. Se a primeira acertar, leva a '
+            + 'tropa e as outras falham sozinhas.</div>'
+            + combos.map((c2, i) => {
+              const sai = chegada - c2.dur;
+              const jaPassou = sai <= agora();
+              return `<label style="display:block;margin-bottom:2px;${jaPassou ? 'opacity:.4' : ''}">
+                <input type="checkbox" data-combo="${i}"${jaPassou ? ' disabled' : ''}>
+                sai <b>${hh(sai)}</b> · ${Math.round(c2.dur / 60)} min
+                <span style="opacity:.7">— ${c2.nome}</span>${jaPassou ? ' <i>(hora passada)</i>' : ''}
+              </label>`;
+            }).join('')
+            + '<button id="encj-combos-go" style="cursor:pointer;width:100%;margin-top:4px;'
+            + 'background:#3a6ea5;color:#fff;padding:4px;border:none;border-radius:4px;font-size:11px">'
+            + 'Agendar as marcadas</button>';
+
+          const bt = el.querySelector('#encj-combos-go');
+          if (bt) bt.onclick = () => agendarCombos(combos, chegada);
+        } catch (e) {}
+      };
+
       mostrarTolerancia();
       mostrarCarga();
       mostrarCombos();
@@ -21132,11 +21162,35 @@ function makeEncaixeModule(opts) {
           el.addEventListener('change', mostrarCombos);
         });
       } catch (e) {}
+      /* ACOMPANHAR OS CAMPOS DAS UNIDADES.
+       *
+       * Os eventos não chegam: o jogo escreve nos campos por dentro (setas,
+       * "tudo", cliques nos ícones) sem disparar `input` nem `change`. A
+       * caixa ficava a dizer "sem transportes escolhidos" com eles lá.
+       *
+       * Por isso lê-se de meio em meio segundo e só se redesenha quando algo
+       * mudou de facto. */
       try {
         document.querySelectorAll('input.unit_input[name]').forEach((el) => {
           el.addEventListener('input', () => { mostrarTolerancia(); mostrarCarga(); });
           el.addEventListener('change', () => { mostrarTolerancia(); mostrarCarga(); });
         });
+
+        let ultimo = '';
+        const vigia = setInterval(() => {
+          /* A janela fechou? Parar. */
+          if (!document.getElementById('encaixe-box')) { clearInterval(vigia); return; }
+          try {
+            let agora2 = '';
+            document.querySelectorAll('input.unit_input[name]').forEach((el) => {
+              agora2 += el.name + '=' + (el.value || '0') + ';';
+            });
+            if (agora2 === ultimo) return;
+            ultimo = agora2;
+            mostrarTolerancia();
+            mostrarCarga();
+          } catch (e) {}
+        }, 500);
       } catch (e) {}
 
       box.querySelector('#encj-atk').onclick = () => programar('attack');
