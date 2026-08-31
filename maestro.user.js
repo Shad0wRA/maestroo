@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.31.0455
+// @version      2026.08.31.0530
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -691,7 +691,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.31.0455';
+  const MAESTRO_VERSAO = '2026.08.31.0530';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -1617,9 +1617,29 @@
 
     const escolhas = { perfil: nome, ativos: {} };
     for (const m of MODULES) {
-      escolhas.ativos[m.id] = guardadosDoPerfil
+      /* UM MÓDULO NOVO NÃO ESTÁ NOS GUARDADOS.
+       *
+       * Fazia-se `!!guardadosDoPerfil[m.id]`, que dá FALSO para uma chave que
+       * não existe — portanto cada módulo acrescentado ao maestro nascia
+       * desligado, sem o utilizador o ter feito, e sem nada o dizer.
+       *
+       * Visto em jogo: os bandidos correram uma vez ao arrancar e calaram-se
+       * a seguir, quando o perfil foi aplicado.
+       *
+       * Se a chave não existe, vale a sugestão do perfil — como se o módulo
+       * sempre lá tivesse estado. */
+      const temGuardado = guardadosDoPerfil
+        && Object.prototype.hasOwnProperty.call(guardadosDoPerfil, m.id);
+
+      /* Estes gastam tropa: nascem desligados até o utilizador os querer. */
+      const DESLIGADOS_DE_INICIO = ['bandidos', 'sentinelas'];
+
+      escolhas.ativos[m.id] = temGuardado
         ? !!guardadosDoPerfil[m.id]
-        : (p.sugestao === null ? true : p.sugestao.indexOf(m.id) >= 0);
+        : (DESLIGADOS_DE_INICIO.indexOf(m.id) >= 0
+            ? false
+            : (p.sugestao === null ? true : p.sugestao.indexOf(m.id) >= 0));
+
       if (modState[m.id]) modState[m.id].ativo = escolhas.ativos[m.id];
     }
     guardarEscolhas(escolhas);
@@ -22237,6 +22257,10 @@ function makeMissoesModule(opts) {
       if (String(m.state) !== 'satisfied') continue;
 
       const nome = (m.static_data || {}).name || m.progressable_id;
+
+      /* Dizer o que se vai fazer: sem isto, uma recolha que não acontece não
+       * deixa rasto nenhum e não há como investigar. */
+      rotina(`Missões: ${nome} está pronta — vou recolher.`);
       const conf = m.configuration || {};
       const cidade = cidadeNaIlha(conf.island_x, conf.island_y);
 
