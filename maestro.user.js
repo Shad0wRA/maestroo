@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.31.0152
+// @version      2026.08.31.0203
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -687,7 +687,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.31.0152';
+  const MAESTRO_VERSAO = '2026.08.31.0203';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -10474,7 +10474,8 @@ function makeBandidosModule(opts) {
 
     /* RECOLHER A RECOMPENSA primeiro: não custa nada e liberta o ponto. */
     if (p.reward_available) {
-      const r = await bridge('collectReward', {}, townId);
+      /* `useReward`, não `collectReward` — capturado do jogo. */
+      const r = await bridge('useReward', {}, townId);
       if (r.ok) {
         const rec = p.reward || {};
         const q = (rec.configuration || {});
