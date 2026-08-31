@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.31.0234
+// @version      2026.08.31.0248
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -687,7 +687,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.31.0234';
+  const MAESTRO_VERSAO = '2026.08.31.0248';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -3395,6 +3395,7 @@
             alertas: 'grepoAlertas_cfg_v1',
             trocacidades: 'grepoTrocaCid_cfg_v1',
             bandidos: 'grepoBandidos_cfg_v1',
+            sentinelas: 'grepoSentinelas_cfg_v1',
           };
           const nomeChave = CHAVE_DO_MODULO[m.id];
           if (!nomeChave) throw new Error('sem chave');
@@ -10631,6 +10632,336 @@ function makeBandidosModule(opts) {
   }
 
   return { id: 'bandidos', nome: 'Bandidos da ilha', run, painel };
+}
+
+/* =========================================================================
+ *  MÓDULO: SENTINELAS
+ *
+ *  Põe 3 espadachins em cada cidade aliada das ilhas onde tenho cidades.
+ *  Quando essa cidade é atacada, chega um relatório de defesa — é assim que
+ *  se sabe o que está a acontecer na ilha sem lá estar.
+ *
+ *  Com 19 cidades aliadas numa ilha, são 57 espadachins: o número que se põe
+ *  no template de recrutamento.
+ *
+ *  Aliado é quem está na minha aliança ou numa aliança com pacto de paz.
+ *  A colecção `AlliancePact` traz `relation: peace|war`.
+ *
+ *  Corre a cada 12 horas. Se as sentinelas morrerem, repõe-nas quando houver
+ *  tropa outra vez.
+ * ========================================================================= */
+function makeSentinelasModule(opts) {
+  let mUw = null;
+  let mWorld = '';
+
+  /* Ler a resposta do jogo. */
+  async function lerResposta(resposta) {
+    try {
+      if (resposta && Number(resposta.status) === 429) {
+        const t = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroTravar;
+        if (t) t(2);
+      }
+      const txt = await resposta.text();
+      if (!txt || !txt.trim()) {
+        return { json: { error: `o servidor não respondeu (HTTP ${resposta.status})` } };
+      }
+      try { return JSON.parse(txt); }
+      catch (e) { return { json: { error: `resposta ilegível (HTTP ${resposta.status})` } }; }
+    } catch (e) { return { json: { error: e.message } }; }
+  }
+
+  const CFG_KEY = 'grepoSentinelas_cfg_v1';
+  const REG_KEY = 'grepoSentinelas_enviadas_v1';
+
+  const DEFAULTS = {
+    ativo: false,
+    quantas: 3,             // espadachins por cidade aliada
+    unidade: 'sword',
+    incluirPactos: true,    // além da minha aliança
+    reservaPct: 20,         // não esvaziar a cidade que envia
+  };
+
+  const armazem = {
+    getItem: (k) => localStorage.getItem(chavePorPerfil(k)),
+    setItem: (k, v) => localStorage.setItem(chavePorPerfil(k), v),
+  };
+
+  function cfg() {
+    try { return Object.assign({}, DEFAULTS, JSON.parse(armazem.getItem(CFG_KEY) || '{}')); }
+    catch (e) { return Object.assign({}, DEFAULTS); }
+  }
+  function guardarCfg(c) {
+    try { armazem.setItem(CFG_KEY, JSON.stringify(c)); } catch (e) {}
+  }
+
+  /* O que já enviámos: { <cidadeAliada>: { quando, quantas } } */
+  function lerRegisto() {
+    try { return JSON.parse(armazem.getItem(REG_KEY) || '{}'); } catch (e) { return {}; }
+  }
+  function gravarRegisto(r) {
+    try { armazem.setItem(REG_KEY, JSON.stringify(r)); } catch (e) {}
+  }
+
+  /* AS ALIANÇAS AMIGAS: a minha, mais as que têm pacto de paz. */
+  function aliancasAmigas(c) {
+    const out = new Set();
+    try {
+      const minha = Number(mUw.Game.alliance_id) || 0;
+      if (!minha) return out;
+      out.add(minha);
+
+      if (c.incluirPactos) {
+        const col = mUw.MM.getCollections().AlliancePact;
+        const mods = (col && col[0] && col[0].models) || [];
+        for (const m of mods) {
+          const a = m.attributes || {};
+          if (String(a.relation) !== 'peace') continue;
+          if (a.invitation_pending) continue;
+          const a1 = Number(a.alliance_1_id);
+          const a2 = Number(a.alliance_2_id);
+          if (a1 === minha) out.add(a2);
+          if (a2 === minha) out.add(a1);
+        }
+      }
+    } catch (e) {}
+    return out;
+  }
+
+  /* AS CIDADES ALIADAS DE UMA ILHA.
+   *
+   * O `island_info` lista as cidades da ilha com o jogador e a aliança. */
+  async function aliadasNaIlha(islandId, base, amigas) {
+    try {
+      const url = mUw.location.origin + '/game/island_info?town_id=' + Number(base)
+        + '&action=index&h=' + mUw.Game.csrfToken
+        + '&json=' + encodeURIComponent(JSON.stringify({
+            island_id: Number(islandId), town_id: Number(base), nl_init: true }));
+      const r = await mUw.fetch(url, {
+        headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
+      }).then(lerResposta);
+
+      const d = (r && r.json && (r.json.json || r.json)) || {};
+      const eu = Number(mUw.Game.player_id);
+      const out = [];
+
+      for (const t of (d.town_list || [])) {
+        if (Number(t.pid) === eu) continue;                    // minha
+        const al = Number(t.player_alliance);
+        if (!al || !amigas.has(al)) continue;                  // não é aliado
+        out.push({ id: Number(t.id), nome: String(t.name || ''), jogador: String(t.player || '') });
+      }
+      return out;
+    } catch (e) { return []; }
+  }
+
+  /* Já lá tenho tropa? O modelo `Units` diz onde está a minha tropa. */
+  function tenhoTropaEm(townId) {
+    try {
+      const mods = mUw.MM.getModels().Units || {};
+      for (const k of Object.keys(mods)) {
+        const a = mods[k].attributes || {};
+        if (Number(a.current_town_id) !== Number(townId)) continue;
+        /* Alguma unidade com quantidade? */
+        for (const u of Object.keys(a)) {
+          if (/^(id|home_town|current_town|number_on|same_island|island_|origin_|target_)/.test(u)) continue;
+          if (Number(a[u]) > 0) return true;
+        }
+      }
+    } catch (e) {}
+    return false;
+  }
+
+  async function enviarSentinela(origem, alvoId, unidade, quantas) {
+    try {
+      const url = mUw.location.origin + '/game/town_info?town_id=' + Number(origem)
+        + '&action=send_units&h=' + mUw.Game.csrfToken;
+      const corpo = {};
+      corpo[unidade] = Number(quantas);
+      corpo.id = Number(alvoId);
+      corpo.type = 'support';
+      corpo.town_id = Number(origem);
+      corpo.nl_init = true;
+
+      const r = await mUw.fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                   'x-requested-with': 'XMLHttpRequest' },
+        credentials: 'include',
+        body: 'json=' + encodeURIComponent(JSON.stringify(corpo)),
+      }).then(lerResposta);
+
+      const j = r && r.json;
+      const erro = j && j.error;
+      return { ok: !erro, msg: erro || (j && j.success) || 'ok' };
+    } catch (e) { return { ok: false, msg: e.message }; }
+  }
+
+  async function run(ctx) {
+    mUw = ctx.uw; mWorld = ctx.WORLD;
+    const log = ctx.log;
+    const rotina = ctx.logRotina || ctx.log;
+    const c = cfg();
+
+    /* O visto do painel manda sobre o `ativo` do módulo. */
+    try {
+      const doPainel = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroLigado;
+      if (doPainel) {
+        const v = doPainel('sentinelas');
+        if (v === true) c.ativo = true;
+        if (v === false) c.ativo = false;
+      }
+    } catch (e) {}
+
+    if (!c.ativo) { rotina('Sentinelas: está desligado.'); return; }
+
+    const amigas = aliancasAmigas(c);
+    if (!amigas.size) {
+      rotina('Sentinelas: não estou em nenhuma aliança.');
+      return;
+    }
+
+    const minhas = ctx.getMyTowns() || [];
+    if (!minhas.length) { rotina('Sentinelas: sem cidades.'); return; }
+
+    /* AS ILHAS ONDE TENHO CIDADES, sem repetir.
+     *
+     * De cada ilha guarda-se UMA cidade minha — é ela que envia, porque o
+     * apoio dentro da mesma ilha é instantâneo. */
+    const porIlha = {};
+    for (const t of minhas) {
+      const k = `${t.ix}:${t.iy}`;
+      if (!porIlha[k]) porIlha[k] = t;
+    }
+
+    const registo = lerRegisto();
+    let enviadas = 0;
+    let jaLa = 0;
+
+    for (const k of Object.keys(porIlha)) {
+      const minhaCidade = porIlha[k];
+
+      /* O identificador da ilha, para o `island_info`. */
+      let islandId = 0;
+      try {
+        const CH = 20;
+        const cx = Math.floor(Number(minhaCidade.ix) / CH);
+        const cy = Math.floor(Number(minhaCidade.iy) / CH);
+        const u0 = mUw.location.origin + '/game/map_data?town_id=' + Number(minhaCidade.id)
+          + '&action=get_chunks&h=' + mUw.Game.csrfToken
+          + '&json=' + encodeURIComponent(JSON.stringify({
+              chunks: [{ x: cx, y: cy, timestamp: 0 }], town_id: Number(minhaCidade.id), nl_init: true }));
+        const r0 = await mUw.fetch(u0, {
+          headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
+        }).then(lerResposta);
+        const d0 = (r0 && r0.json && r0.json.data) || {};
+        const b0 = d0[0] || d0['0'];
+        const achada = ((b0 && b0.islands) || []).find(
+          (z) => Number(z.x) === Number(minhaCidade.ix) && Number(z.y) === Number(minhaCidade.iy));
+        if (achada) islandId = Number(achada.id);
+      } catch (e) {}
+
+      if (!islandId) continue;
+      await ctx.sleep(ctx.rand(700, 1300));
+
+      const aliadas = await aliadasNaIlha(islandId, minhaCidade.id, amigas);
+      if (!aliadas.length) continue;
+
+      await ctx.sleep(ctx.rand(500, 1000));
+
+      for (const al of aliadas) {
+        /* Já lá tenho tropa? Então a sentinela está viva. */
+        if (tenhoTropaEm(al.id)) { jaLa++; continue; }
+
+        /* Tenho tropa em casa para mandar? */
+        let disp = 0;
+        try {
+          const t = mUw.ITowns.getTown(minhaCidade.id);
+          const u = (t && t.units && t.units()) || {};
+          disp = Number(u[c.unidade]) || 0;
+        } catch (e) {}
+
+        const reserva = Math.ceil(disp * ((Number(c.reservaPct) || 0) / 100));
+        if (disp - reserva < c.quantas) {
+          rotina(`Sentinelas: ${minhaCidade.name} não tem ${c.unidade} que chegue `
+            + `(tem ${disp}, guardo ${reserva}).`);
+          break;   // não insistir nesta ilha
+        }
+
+        const r = await enviarSentinela(minhaCidade.id, al.id, c.unidade, c.quantas);
+        if (r.ok) {
+          enviadas++;
+          registo[al.id] = { quando: Math.floor(Date.now() / 1000), quantas: c.quantas };
+          log(`👁️ Sentinela em ${al.nome} (${al.jogador}) — ${c.quantas} de ${minhaCidade.name}.`);
+        } else {
+          rotina(`Sentinelas: falhou em ${al.nome} — ${r.msg}`);
+        }
+        await ctx.sleep(ctx.rand(900, 1800));
+      }
+    }
+
+    gravarRegisto(registo);
+
+    if (enviadas) {
+      log(`Sentinelas: ${enviadas} enviada(s)${jaLa ? `, ${jaLa} já no sítio` : ''}.`);
+    } else {
+      rotina(`Sentinelas: nada a fazer${jaLa ? ` — ${jaLa} já no sítio` : ''}.`);
+    }
+  }
+
+  function painel(container, ctx) {
+    mUw = ctx.uw; mWorld = ctx.WORLD;
+    const c = cfg();
+    const amigas = aliancasAmigas(c);
+    const registo = lerRegisto();
+
+    container.innerHTML = `
+      <label style="display:block;margin-bottom:4px">
+        <input type="checkbox" id="sen-on"${c.ativo ? ' checked' : ''}>
+        <b>Pôr sentinelas nas cidades aliadas</b>
+      </label>
+      <div style="opacity:.6;font-size:10px;margin:0 0 8px 18px">
+        Manda algumas unidades a cada cidade aliada das ilhas onde tens cidades.
+        Quando essa cidade é atacada, chega-te um relatório de defesa — é como
+        saberes o que se passa na ilha sem lá estares.
+      </div>
+
+      <div style="background:#0d141c;padding:6px 8px;border-radius:4px;margin-bottom:6px;font-size:11px">
+        <div>alianças amigas: <b>${amigas.size}</b>${
+          c.incluirPactos ? ' <span style="opacity:.6">(a minha + pactos de paz)</span>' : ''}</div>
+        <div style="opacity:.75">sentinelas registadas: ${Object.keys(registo).length}</div>
+      </div>
+
+      <div style="font-size:11px">
+        Quantas por cidade:
+        <input type="number" id="sen-quantas" value="${c.quantas}" min="1" max="20" style="width:52px">
+        <span style="opacity:.6;font-size:10px">— com 19 aliados na ilha, ${c.quantas} × 19 = ${c.quantas * 19}</span>
+      </div>
+
+      <label style="display:block;font-size:11px;margin-top:5px">
+        <input type="checkbox" id="sen-pactos"${c.incluirPactos ? ' checked' : ''}>
+        incluir alianças com pacto de paz
+      </label>
+
+      <div style="font-size:11px;margin-top:5px">
+        Guardar em casa:
+        <input type="number" id="sen-reserva" value="${c.reservaPct}" min="0" max="90" style="width:52px">%
+      </div>
+
+      <button id="sen-guardar" style="cursor:pointer;width:100%;margin-top:8px;background:#48d;color:#fff;padding:6px;border:none;border-radius:4px">Guardar</button>`;
+
+    container.querySelector('#sen-guardar').onclick = () => {
+      const cc = cfg();
+      cc.ativo = container.querySelector('#sen-on').checked;
+      cc.quantas = Math.max(1, Number(container.querySelector('#sen-quantas').value) || 3);
+      cc.incluirPactos = container.querySelector('#sen-pactos').checked;
+      cc.reservaPct = Math.min(90, Math.max(0, Number(container.querySelector('#sen-reserva').value) || 0));
+      guardarCfg(cc);
+      ctx.log('Sentinelas: definições guardadas.');
+      painel(container, ctx);
+    };
+  }
+
+  return { id: 'sentinelas', nome: 'Sentinelas', run, painel };
 }
 
 function makeAldeiasModule(opts) {
@@ -25679,6 +26010,8 @@ function makeRelatoriosModule(opts) {
   registerModule(makeApoioModule({ intervaloMin: 2, gistId: GIST_ID, gistToken: GIST_TOKEN }));
   /* 3 min: é o tempo de espera entre ataques ao ponto da ilha. */
   registerModule(makeBandidosModule({ intervaloMin: 3 }));
+  /* 12 horas: as sentinelas só se repõem quando morrem. */
+  registerModule(makeSentinelasModule({ intervaloMin: 720 }));
   registerModule(makeFundacaoModule({ intervaloMin: 30 }));
   registerModule(makeRelatoriosModule({ intervaloMin: 60 }));
 
