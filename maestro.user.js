@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.31.0642
+// @version      2026.08.31.0650
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -691,7 +691,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.31.0642';
+  const MAESTRO_VERSAO = '2026.08.31.0650';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -21302,6 +21302,26 @@ function makeEncaixeModule(opts) {
           if (!el) return;
           if (cfg().mostrarCombos === false) { el.innerHTML = ''; return; }
 
+          /* SÓ COM UMA HORA ESCRITA.
+           *
+           * A caixa era desenhada ao abrir a janela, com os campos vazios — o
+           * `lerHora()` devolvia meia-noite de hoje e todas as saídas
+           * apareciam como "hora passada", sem forma de as escolher.
+           *
+           * Enquanto não houver hora, diz-se o que falta fazer. */
+          const h = box.querySelector('#encj-h');
+          const m2 = box.querySelector('#encj-m');
+          const s2 = box.querySelector('#encj-s');
+          const escrita = [h, m2, s2].some((x) => x && String(x.value).trim() !== '');
+
+          if (!escrita) {
+            el.innerHTML = '<div style="font-size:10px;letter-spacing:.5px;opacity:.65;margin-bottom:3px">'
+              + 'TENTATIVAS PARA O MESMO SEGUNDO</div>'
+              + '<div style="opacity:.55;font-size:10px">Escreve a hora de chegada '
+              + 'para ver as composições possíveis desta cidade.</div>';
+            return;
+          }
+
           const chegada = lerHora();
           if (!chegada) { el.innerHTML = ''; return; }
 
@@ -21371,10 +21391,18 @@ function makeEncaixeModule(opts) {
             document.querySelectorAll('input.unit_input[name]').forEach((el) => {
               agora2 += el.name + '=' + (el.value || '0') + ';';
             });
+            /* A hora também: os campos mudam por teclado e por setas, e nem
+             * sempre disparam eventos. */
+            ['#encj-h', '#encj-m', '#encj-s', '#encj-dia'].forEach((sel) => {
+              const el = box.querySelector(sel);
+              agora2 += sel + '=' + (el ? el.value : '') + ';';
+            });
+
             if (agora2 === ultimo) return;
             ultimo = agora2;
             mostrarTolerancia();
             mostrarCarga();
+            mostrarCombos();
           } catch (e) {}
         }, 500);
       } catch (e) {}
