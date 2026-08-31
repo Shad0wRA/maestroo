@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.31.0405
+// @version      2026.08.31.0428
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -691,7 +691,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.31.0405';
+  const MAESTRO_VERSAO = '2026.08.31.0428';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -6548,6 +6548,17 @@ function makeRecrutamentoModule(opts) {
    *
    * Guarda-se o que se pediu, com a hora. Vale 5 minutos: depois disso a
    * ordem já está na colecção do jogo e contá-la duas vezes seria pior. */
+  /* O excesso conhecido de cada cidade e unidade, para só avisar quando
+   * cresce. */
+  const EXCESSOS_KEY = 'grepoRecruta_excessos_v1';
+
+  function lerExcessos() {
+    try { return JSON.parse(armazem.getItem(EXCESSOS_KEY) || '{}'); } catch (e) { return {}; }
+  }
+  function gravarExcessos(x) {
+    try { armazem.setItem(EXCESSOS_KEY, JSON.stringify(x)); } catch (e) {}
+  }
+
   const PEDIDOS_KEY = 'grepoRecruta_pedidos_v1';
 
   function lerPedidos() {
@@ -8198,6 +8209,8 @@ function makeRecrutamentoModule(opts) {
      * Se voltar a acontecer por outra razão, o maestro diz — em vez de se
      * descobrir por acaso ao olhar para o quartel. */
     try {
+      const excessos = lerExcessos();
+
       for (const town of towns) {
         const tplNome = mapa[town.id];
         if (!tplNome) continue;
@@ -8211,15 +8224,33 @@ function makeRecrutamentoModule(opts) {
           const alvo = Number(alvosT[u]) || 0;
           if (!alvo) continue;
           const total = (Number(tem[u]) || 0) + (Number(naFila[u]) || 0);
-          /* 10% de tolerância: arredondamentos e tropa em viagem de outras
-           * cidades não são erro. */
-          if (total > alvo * 1.1) {
+
+          /* 10% de tolerância. */
+          if (total <= alvo * 1.1) {
+            if (excessos[`${town.id}|${u}`]) delete excessos[`${town.id}|${u}`];
+            continue;
+          }
+
+          /* SÓ AVISAR SE O EXCESSO CRESCEU.
+           *
+           * Muita tropa a mais é histórica: recompensas de missões e do ponto
+           * da ilha dão unidades, e o maestro não desfaz tropa. Avisar sempre
+           * dava 40 linhas por passagem, para sempre.
+           *
+           * O que interessa é saber se ele está a recrutar A MAIS AGORA — ou
+           * seja, se o excesso aumentou desde a última vez. */
+          const k = `${town.id}|${u}`;
+          const antes = Number(excessos[k]) || 0;
+          excessos[k] = total;
+
+          if (antes && total > antes) {
             const nomeU = ((mUw.GameData.units || {})[u] || {}).name || u;
-            log(`⚠️ ${town.name}: tem ${total} ${nomeU} e o template pede ${alvo}. `
-              + 'Se isto se repetir, diz-me — pode ser um erro do maestro.');
+            log(`⚠️ ${town.name}: ${nomeU} passou de ${antes} para ${total} `
+              + `e o template pede ${alvo} — o maestro está a recrutar a mais.`);
           }
         }
       }
+      gravarExcessos(excessos);
     } catch (e) {}
 
     if (!fezAlgo) {
@@ -19292,6 +19323,11 @@ function makeEncaixeModule(opts) {
      *
      * Podem ser mudados no painel, e o envio individual pode continuar a
      * usar outros valores. */
+    /* As ajudas na janela do jogo. Desliga-as se preferires fazer as contas
+     * tu — o encaixe funciona na mesma. */
+    mostrarCarga: true,       // quanta tropa cabe nos barcos
+    mostrarCombos: true,      // composições com velocidades diferentes
+
     porTipo: {
       attack:  { margemSeg: 2, direcao: 'antes' },
       support: { margemSeg: 2, direcao: 'depois' },
@@ -20907,6 +20943,7 @@ function makeEncaixeModule(opts) {
         try {
           const el = box.querySelector('#encj-carga');
           if (!el) return;
+          if (cfg().mostrarCarga === false) { el.innerHTML = ''; return; }
 
           const { total, comPoroes } = capacidadeDosBarcos();
           if (!total) {
@@ -21007,6 +21044,7 @@ function makeEncaixeModule(opts) {
         try {
           const el = box.querySelector('#encj-combos');
           if (!el) return;
+          if (cfg().mostrarCombos === false) { el.innerHTML = ''; return; }
 
           const chegada = lerHora();
           if (!chegada) { el.innerHTML = ''; return; }
@@ -21129,7 +21167,22 @@ function makeEncaixeModule(opts) {
       return (d.toISOString().substr(0, 10) === hoje.toISOString().substr(0, 10)) ? '' : ' (amanhã)';
     };
 
-    const lista = planos.map((p) => {
+    /* ORDENAR POR HORA DE SAÍDA.
+     *
+     * A lista vinha pela ordem em que foram criados. Com várias tentativas
+     * para a mesma chegada, o que interessa é ver por que ordem vão sair. */
+    const horaDeSaida = (p) => {
+      const d = Number(p.duracaoSeg) || Number(p.duracao) || 0;
+      if (d) return Number(p.chegada) - d;
+      /* Sem duração guardada, calcula-se. */
+      try {
+        const dd = duracaoPrevista(p.origemId, p.alvoCoords, p.unidades, c);
+        if (dd) return Number(p.chegada) - dd;
+      } catch (e) {}
+      return Number(p.chegada) || 0;
+    };
+
+    const lista = planos.slice().sort((a, b) => horaDeSaida(a) - horaDeSaida(b)).map((p) => {
       /* O nome da unidade em português, como o jogo lhe chama. `attack_ship`
        * não diz nada a quem está a ler. */
       const nomeUn = (id) => {
@@ -21212,9 +21265,9 @@ function makeEncaixeModule(opts) {
           <b>${icone} ${lim(origem)} → ${lim(alvoTxt)}</b>
           <a href="#" data-cancelar="${p.id}" style="color:#f88;text-decoration:none" title="cancelar este agendamento">✕ cancelar</a>
         </div>
-        <div>chega <b>${hh(p.chegada)}</b>${dia(p.chegada)} · ${quando}</div>
+        <div>sai <b>${envio}</b> · chega ${hh(p.chegada)}${dia(p.chegada)} <span style="opacity:.7">(${quando})</span></div>
         <div style="opacity:.9">${tropas || '<span style="opacity:.5">sem unidades</span>'}</div>
-        <div style="opacity:.6;font-size:10px">sai ${envio} · ±${margUsada}s ${
+        <div style="opacity:.6;font-size:10px">±${margUsada}s ${
           dirUsada === 'antes' ? 'só antes' : dirUsada === 'depois' ? 'só depois' : 'antes e depois'
         } <span style="opacity:.8">(${nomeTipo})</span></div>
         ${p.duracaoJogo ? '' : '<div style="color:#fc8">⚠ duração estimada — o alvo não tinha coordenadas</div>'}
@@ -21240,6 +21293,21 @@ function makeEncaixeModule(opts) {
       ${(() => { const e = estatisticaDesvios(); return e ? `<div style="background:#0d141c;padding:5px;border-radius:4px;margin-top:5px;font-size:11px">
         <b>Variação observada</b> (${e.n} tentativas): de ${e.min >= 0 ? '+' : ''}${e.min}s a ${e.max >= 0 ? '+' : ''}${e.max}s · mediana ${e.mediana >= 0 ? '+' : ''}${e.mediana}s
       </div>` : ''; })()}
+      <div style="background:#0d141c;padding:6px 8px;border-radius:4px;margin-top:5px">
+        <b style="font-size:11px">Ajudas na janela do jogo</b>
+        <label style="display:block;font-size:11px;margin-top:3px">
+          <input type="checkbox" id="enc-carga"${c.mostrarCarga !== false ? ' checked' : ''}>
+          quanta tropa cabe nos barcos
+        </label>
+        <label style="display:block;font-size:11px">
+          <input type="checkbox" id="enc-combos"${c.mostrarCombos !== false ? ' checked' : ''}>
+          composições com velocidades diferentes
+        </label>
+        <div style="opacity:.55;font-size:10px;margin-top:2px">
+          Desliga se preferires fazer as contas tu — o encaixe funciona na mesma.
+        </div>
+      </div>
+
       <div style="background:#0d141c;padding:6px 8px;border-radius:4px;margin-top:5px">
         <b style="font-size:11px">Desvios por tipo</b>
         <div style="opacity:.6;font-size:10px;margin-bottom:4px">
@@ -21295,6 +21363,18 @@ function makeEncaixeModule(opts) {
     };
     container.querySelectorAll('[data-tipomarg],[data-tipodir]').forEach((el) => {
       el.onchange = guardarTipos;
+    });
+
+    /* As ajudas na janela — gravam ao clicar. */
+    ['enc-carga', 'enc-combos'].forEach((id) => {
+      const el = container.querySelector('#' + id);
+      if (!el) return;
+      el.onchange = () => {
+        const cc = cfg();
+        if (id === 'enc-carga') cc.mostrarCarga = el.checked;
+        else cc.mostrarCombos = el.checked;
+        guardarCfg(cc);
+      };
     });
 
     container.querySelectorAll('[data-cancelar]').forEach((el) => {
