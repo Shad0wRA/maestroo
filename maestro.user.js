@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.31.0325
+// @version      2026.08.31.0405
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -691,7 +691,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.31.0325';
+  const MAESTRO_VERSAO = '2026.08.31.0405';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -20470,6 +20470,8 @@ function makeEncaixeModule(opts) {
           <div style="border:1px solid #2c3e50;border-radius:5px;padding:6px;margin-bottom:8px;font-size:11px">
             <div style="font-size:10px;letter-spacing:.5px;opacity:.65;margin-bottom:3px">TOLERÂNCIA</div>
             <div id="encj-tolerancia" style="opacity:.8">a ver...</div>
+          <div id="encj-carga" style="margin-top:5px;padding-top:5px;border-top:1px solid #2c3e50;font-size:11px"></div>
+          <div id="encj-combos" style="margin-top:5px;padding-top:5px;border-top:1px solid #2c3e50;font-size:11px"></div>
             <div style="font-size:10px;opacity:.5;margin-top:2px">
               Muda-se no painel do Maestro, em Encaixe. Se puseres um colonizador
               nas unidades, usa a tolerância dos colonizadores.
@@ -20652,6 +20654,74 @@ function makeEncaixeModule(opts) {
         return ts;
       };
 
+      /* ============ COMBINAÇÕES DE VELOCIDADE ============================
+       * A velocidade de um envio é a da unidade MAIS LENTA. Tirar o navio
+       * mais lento acelera tudo — e um envio mais rápido tem de sair mais
+       * tarde para chegar ao mesmo instante.
+       *
+       * Isso dá várias oportunidades de acertar o mesmo segundo: programa-se
+       * a mais lenta e, se ela falhar, a seguinte ainda vai a tempo.
+       *
+       * Numa cidade de birremes com transporte e farol (pt126: 45, 24, 39):
+       *   birremes + transporte → 24  · sai primeiro
+       *   birremes + farol      → 39
+       *   birremes sozinhas     → 45  · sai por último
+       *
+       * Não é preciso cancelar nada: se a primeira acertar, leva a tropa e as
+       * seguintes falham sozinhas por não haver unidades.
+       *
+       * As combinações são só entre NAVIOS: a tropa de terra viaja nos
+       * transportes e não muda a velocidade.
+       * ================================================================== */
+      const combinacoesPossiveis = () => {
+        try {
+          const gd = mUw.GameData.units || {};
+          const alvo = alvoDaJanela();
+          if (!alvo) return [];
+
+          const origemId = Number(mUw.Game.townId);
+          const t = mUw.ITowns.getTown(origemId);
+          const tenho = (t && t.units && t.units()) || {};
+
+          /* Os navios que a cidade tem, do mais lento ao mais rápido. */
+          const navios = Object.keys(tenho)
+            .filter((u) => (gd[u] || {}).is_naval && Number(tenho[u]) > 0)
+            .sort((a, b) => (Number(gd[a].speed) || 0) - (Number(gd[b].speed) || 0));
+
+          if (!navios.length) return [];
+
+          /* Uma combinação por cada "navio mais lento" possível: começa-se
+           * pelo conjunto todo e vai-se tirando o mais lento. */
+          const conf = cfg();
+          const out = [];
+          const vistos = new Set();
+
+          for (let i = 0; i < navios.length; i++) {
+            const usar = navios.slice(i);             // sem os i mais lentos
+            const carga = {};
+            for (const u of usar) carga[u] = Number(tenho[u]) || 0;
+
+            const dur = duracaoPrevista(origemId, alvo, carga, conf);
+            if (!dur) continue;
+
+            /* Duas composições com a mesma duração não interessam. */
+            const chave = Math.round(dur / 5);
+            if (vistos.has(chave)) continue;
+            vistos.add(chave);
+
+            out.push({
+              unidades: carga,
+              dur,
+              maisLento: usar[0],
+              nome: usar.map((u) => `${carga[u]} ${(gd[u] || {}).name || u}`).join(' + '),
+            });
+          }
+
+          /* Do mais lento (sai primeiro) para o mais rápido. */
+          return out.sort((a, b) => b.dur - a.dur);
+        } catch (e) { return []; }
+      };
+
       const programar = (tipoBotao) => {
         if (agora() == null) { diz('Sem relógio do servidor — não programo às cegas.'); return; }
 
@@ -20782,6 +20852,134 @@ function makeEncaixeModule(opts) {
       });
       avaliarMargem();
 
+      /* ============ QUANTA TROPA CABE NOS BARCOS ==========================
+       * Os transportes levam 10 (rápido) e 26 (grande), ou 16 e 32 com a
+       * pesquisa de porões (`berth`).
+       *
+       * Com 854 fundeiros, 127 cavaleiros e 20 catapultas para 100
+       * transportes, a tropa não cabe toda — e o jogo só o diz depois de
+       * tentares. Aqui vê-se antes.
+       *
+       * Se nada estiver escolhido, sugere-se uma carga PROPORCIONAL ao que a
+       * cidade tem. Se já escolheste alguma coisa, diz quanto ainda cabe.
+       * ================================================================== */
+      const capacidadeDosBarcos = () => {
+        try {
+          const t = mUw.ITowns.getTown(Number(mUw.Game.townId));
+          const r = (t.researches && t.researches()) || {};
+          const pesq = r.attributes || r;
+          const comPoroes = !!pesq.berth;
+
+          const gd = mUw.GameData.units || {};
+          const capBase = (u) => Number((gd[u] || {}).capacity) || 0;
+          const extra = comPoroes ? 6 : 0;
+
+          let total = 0;
+          for (const u of ['small_transporter', 'big_transporter']) {
+            const el = document.querySelector(`input.unit_input[name="${u}"]`);
+            const n = el ? (Number(el.value) || 0) : 0;
+            total += n * (capBase(u) + extra);
+          }
+          return { total, comPoroes };
+        } catch (e) { return { total: 0, comPoroes: false }; }
+      };
+
+      /* Quanto ocupa o que já está escolhido (sem contar os barcos). */
+      const cargaEscolhida = () => {
+        let usado = 0;
+        const escolhidas = {};
+        try {
+          const gd = mUw.GameData.units || {};
+          document.querySelectorAll('input.unit_input[name]').forEach((el) => {
+            const u = el.name;
+            const g = gd[u];
+            if (!g || g.is_naval) return;              // barcos não ocupam carga
+            const n = Number(el.value) || 0;
+            if (!n) return;
+            escolhidas[u] = n;
+            usado += n * (Number(g.population) || 1);
+          });
+        } catch (e) {}
+        return { usado, escolhidas };
+      };
+
+      const mostrarCarga = () => {
+        try {
+          const el = box.querySelector('#encj-carga');
+          if (!el) return;
+
+          const { total, comPoroes } = capacidadeDosBarcos();
+          if (!total) {
+            el.innerHTML = '<span style="opacity:.6">sem transportes escolhidos</span>';
+            return;
+          }
+
+          const { usado, escolhidas } = cargaEscolhida();
+          const livre = total - usado;
+
+          if (!Object.keys(escolhidas).length) {
+            /* Nada escolhido: sugerir uma carga proporcional ao que a cidade
+             * tem — com 854 fundeiros e 127 cavaleiros, os fundeiros levam a
+             * parte de leão, que é o que faz sentido. */
+            const t = mUw.ITowns.getTown(Number(mUw.Game.townId));
+            const tenho = (t && t.units && t.units()) || {};
+            const gd = mUw.GameData.units || {};
+
+            let popTotal = 0;
+            const terra = {};
+            for (const u of Object.keys(tenho)) {
+              const g = gd[u];
+              if (!g || g.is_naval) continue;
+              const n = Number(tenho[u]) || 0;
+              if (!n) continue;
+              terra[u] = n;
+              popTotal += n * (Number(g.population) || 1);
+            }
+
+            if (!popTotal) {
+              el.innerHTML = `<b>${total}</b> de carga · a cidade não tem tropa de terra`;
+              return;
+            }
+
+            const fatia = Math.min(1, total / popTotal);
+            const sug = Object.keys(terra).map((u) => {
+              const n = Math.floor(terra[u] * fatia);
+              return n > 0 ? `${n} ${(gd[u] || {}).name || u}` : '';
+            }).filter(Boolean).join(', ');
+
+            el.innerHTML = `<b>${total}</b> de carga${comPoroes ? ' (com porões)' : ''} · `
+              + `cabe <b>${Math.round(fatia * 100)}%</b> da tropa`
+              + `<div style="opacity:.7;margin-top:2px">${sug}</div>`
+              + '<div style="opacity:.5;font-size:10px">proporcional ao que tens — escolhe unidades para ver quanto falta</div>';
+            return;
+          }
+
+          /* Já há coisas escolhidas: dizer quanto ainda cabe, e de quê. */
+          if (livre < 0) {
+            el.innerHTML = `<b style="color:#f88">${usado}</b> de ${total} — passa em ${-livre}. `
+              + 'Tira tropa ou acrescenta transportes.';
+            return;
+          }
+
+          const gd = mUw.GameData.units || {};
+          const t = mUw.ITowns.getTown(Number(mUw.Game.townId));
+          const tenho = (t && t.units && t.units()) || {};
+          const podeMais = Object.keys(tenho).map((u) => {
+            const g = gd[u];
+            if (!g || g.is_naval) return '';
+            const jaEsta = Number(escolhidas[u]) || 0;
+            const sobra = (Number(tenho[u]) || 0) - jaEsta;
+            if (sobra <= 0) return '';
+            const cabem = Math.min(sobra, Math.floor(livre / (Number(g.population) || 1)));
+            return cabem > 0 ? `+${cabem} ${g.name || u}` : '';
+          }).filter(Boolean).join(' · ');
+
+          el.innerHTML = `<b>${usado}</b> de ${total} de carga${comPoroes ? ' (com porões)' : ''} · `
+            + `<b>${livre}</b> livre`
+            + (podeMais ? `<div style="opacity:.7;margin-top:2px">ainda cabem: ${podeMais}</div>` : '');
+        } catch (e) {}
+      };
+
       /* A TOLERÂNCIA MOSTRADA acompanha o que puseres nas unidades: mete um
        * colonizador e ela passa a mostrar a dos colonizadores. */
       const mostrarTolerancia = () => {
@@ -20803,11 +21001,103 @@ function makeEncaixeModule(opts) {
           if (el) el.innerHTML = `±${m}s · ${comoTxt} <span style="opacity:.6">(dos ${nome})</span>`;
         } catch (e) {}
       };
+      /* AS COMBINAÇÕES DE VELOCIDADE desta cidade, para agendar mais do que
+       * uma tentativa ao mesmo instante. */
+      const mostrarCombos = () => {
+        try {
+          const el = box.querySelector('#encj-combos');
+          if (!el) return;
+
+          const chegada = lerHora();
+          if (!chegada) { el.innerHTML = ''; return; }
+
+          const combos = combinacoesPossiveis();
+          if (combos.length < 2) { el.innerHTML = ''; return; }
+
+          const hh = (t) => new Date((t + desvioFuso()) * 1000).toISOString().substr(11, 8);
+
+          el.innerHTML = '<div style="font-size:10px;letter-spacing:.5px;opacity:.65;margin-bottom:3px">'
+            + 'TENTATIVAS PARA O MESMO SEGUNDO</div>'
+            + '<div style="opacity:.55;font-size:10px;margin-bottom:4px">'
+            + 'Cada composição tem uma velocidade diferente, portanto sai a uma hora '
+            + 'diferente para chegar ao mesmo instante. Se a primeira acertar, leva a '
+            + 'tropa e as outras falham sozinhas.</div>'
+            + combos.map((c2, i) => {
+              const sai = chegada - c2.dur;
+              const jaPassou = sai <= agora();
+              return `<label style="display:block;margin-bottom:2px;${jaPassou ? 'opacity:.4' : ''}">
+                <input type="checkbox" data-combo="${i}"${jaPassou ? ' disabled' : ''}>
+                sai <b>${hh(sai)}</b> · ${Math.round(c2.dur / 60)} min
+                <span style="opacity:.7">— ${c2.nome}</span>${jaPassou ? ' <i>(hora passada)</i>' : ''}
+              </label>`;
+            }).join('')
+            + '<button id="encj-combos-go" style="cursor:pointer;width:100%;margin-top:4px;'
+            + 'background:#3a6ea5;color:#fff;padding:4px;border:none;border-radius:4px;font-size:11px">'
+            + 'Agendar as marcadas</button>';
+
+          const bt = el.querySelector('#encj-combos-go');
+          if (bt) bt.onclick = () => agendarCombos(combos, chegada);
+        } catch (e) {}
+      };
+
+      /* Agendar cada composição marcada como um plano próprio. */
+      const agendarCombos = (combos, chegada) => {
+        try {
+          const marcadas = [];
+          box.querySelectorAll('[data-combo]').forEach((el) => {
+            if (el.checked) marcadas.push(combos[Number(el.getAttribute('data-combo'))]);
+          });
+          if (!marcadas.length) { diz('Marca pelo menos uma composição.'); return; }
+
+          const alvo = alvoDaJanela();
+          if (!alvo) { diz('Sem alvo — abre a janela de uma cidade.'); return; }
+
+          const origemId = Number(mUw.Game.townId);
+          const conf = cfg();
+          let n = 0;
+
+          for (const c2 of marcadas) {
+            const envio = chegada - c2.dur;
+            if (envio <= agora()) continue;      // já passou
+
+            adicionarPlano({
+              origemId, alvoId: alvo.id, alvoCoords: alvo,
+              unidades: c2.unidades,
+              tipo: c2.unidades.colonize_ship > 0 ? 'colonize' : 'attack',
+              chegada,
+              alvoNome: alvoNomeDetetado || undefined,
+              atrasosSeguidosParaParar: conf.atrasosSeguidosParaParar,
+              limiteAposEnvioSeg: conf.limiteAposEnvioSeg,
+              comecarAntes: conf.comecarAntes,
+              duracaoJogo: false,
+            });
+            n++;
+          }
+
+          diz(n ? `${n} tentativa(s) agendada(s) para a mesma chegada.`
+                : 'Nenhuma cabia — as horas de saída já passaram.');
+          mostrarAgendados();
+        } catch (e) { diz('Não consegui agendar: ' + e.message); }
+      };
+
       mostrarTolerancia();
+      mostrarCarga();
+      mostrarCombos();
+
+      /* As combinações dependem da hora de chegada: recalcular quando ela
+       * muda. */
+      try {
+        ['#encj-h', '#encj-m', '#encj-s', '#encj-dia'].forEach((sel) => {
+          const el = box.querySelector(sel);
+          if (!el) return;
+          el.addEventListener('input', mostrarCombos);
+          el.addEventListener('change', mostrarCombos);
+        });
+      } catch (e) {}
       try {
         document.querySelectorAll('input.unit_input[name]').forEach((el) => {
-          el.addEventListener('input', mostrarTolerancia);
-          el.addEventListener('change', mostrarTolerancia);
+          el.addEventListener('input', () => { mostrarTolerancia(); mostrarCarga(); });
+          el.addEventListener('change', () => { mostrarTolerancia(); mostrarCarga(); });
         });
       } catch (e) {}
 
