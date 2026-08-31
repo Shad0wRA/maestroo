@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.31.0203
+// @version      2026.08.31.0215
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -687,7 +687,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.31.0203';
+  const MAESTRO_VERSAO = '2026.08.31.0215';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -10382,6 +10382,49 @@ function makeBandidosModule(opts) {
     try { armazem.setItem(CFG_KEY, JSON.stringify(c)); } catch (e) {}
   }
 
+
+  /* A MINHA CIDADE NA ILHA DO PONTO.
+   *
+   * Uma conta com uma cidade só não precisa de perguntar nada. Com várias,
+   * usa-se o `island_info`: ele lista as cidades da ilha e vê-se qual é
+   * minha. */
+  async function cidadeNaIlhaDoPonto(p, ctx) {
+    try {
+      const minhas = Object.keys(mUw.ITowns.towns).map(Number);
+      if (!minhas.length) return null;
+      if (minhas.length === 1) return minhas[0];
+
+      const base = minhas[0];
+      const url = mUw.location.origin + '/game/island_info?town_id=' + base
+        + '&action=index&h=' + mUw.Game.csrfToken
+        + '&json=' + encodeURIComponent(JSON.stringify({
+            island_id: Number(p.island_id), town_id: base, nl_init: true }));
+      const r = await mUw.fetch(url, {
+        headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
+      }).then(lerResposta);
+
+      const d = (r && r.json && (r.json.json || r.json)) || {};
+      const naIlha = (d.town_list || []).map((x) => Number(x.id));
+
+      const gd = mUw.GameData.units || {};
+      let melhor = null; let mais = -1;
+      for (const id of naIlha) {
+        if (minhas.indexOf(id) < 0) continue;
+        let pop = 0;
+        try {
+          const u = mUw.ITowns.getTown(id).units() || {};
+          for (const k of Object.keys(u)) {
+            const g = gd[k];
+            if (!g || g.is_naval || k === 'godsent') continue;
+            pop += Number(u[k]) || 0;
+          }
+        } catch (e) {}
+        if (pop > mais) { mais = pop; melhor = id; }
+      }
+      return melhor;
+    } catch (e) { return null; }
+  }
+
   function pontoDeAtaque() {
     try {
       const m = mUw.MM.getModels().PlayerAttackSpot || {};
@@ -10469,8 +10512,23 @@ function makeBandidosModule(opts) {
     const p = pontoDeAtaque();
     if (!p) { rotina('Bandidos: não há ponto de ataque nesta conta.'); return; }
 
-    const townId = Number(p.town_id);
-    if (!townId) { rotina('Bandidos: o ponto não diz de que cidade se ataca.'); return; }
+    /* DE QUE CIDADE SE ATACA.
+     *
+     * O `town_id` do modelo é a cidade DO PONTO, não uma cidade minha — usei-o
+     * por engano e o módulo dizia que ela não tinha tropa, porque nem sequer é
+     * minha.
+     *
+     * O ponto está sempre na ilha da cidade inicial. Como o modelo traz o
+     * `island_id`, procura-se a minha cidade dessa ilha: pergunta-se ao
+     * `island_info` quais são as cidades da ilha e vê-se qual é minha.
+     *
+     * Com uma cidade só na conta, é essa e não há nada a decidir. */
+    const townId = await cidadeNaIlhaDoPonto(p, ctx);
+
+    if (!townId) {
+      rotina('Bandidos: não encontrei nenhuma cidade minha na ilha do ponto.');
+      return;
+    }
 
     /* RECOLHER A RECOMPENSA primeiro: não custa nada e liberta o ponto. */
     if (p.reward_available) {
