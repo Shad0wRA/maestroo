@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.31.0215
+// @version      2026.08.31.0227
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -687,7 +687,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.31.0215';
+  const MAESTRO_VERSAO = '2026.08.31.0227';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -14252,11 +14252,28 @@ function makeDeusesModule(opts) {
         quantos = temEnviados;
       }
 
-      /* Cada travão diz porquê: sem isto, o registo mostrava "vão esses" e
-       * nada acontecia, sem explicação. */
-      if (await ataqueEmCurso(t.id)) {
-        log(`— ${t.name}: já vai um ataque a caminho — espero que chegue.`);
-        continue;
+      /* VÁRIOS ATAQUES EM CURSO SÃO PERMITIDOS.
+       *
+       * Esperava-se que a tropa voltasse antes de mandar outro ataque. Mas o
+       * favor continua a ser gasto enquanto os enviados voam: se a cidade tem
+       * 200 no template e mandou 52, ainda sobram 148 para os ataques
+       * seguintes — esperar é deitar favor fora.
+       *
+       * A regra existia porque o módulo mandava ataques com tropa que já
+       * estava fora. O que a substitui é melhor: conta-se o que está EM CASA
+       * (o `units()` já exclui o que voa) e só se ataca se sobrar.
+       *
+       * Guarda-se uma reserva para a cidade não ficar sem nada. */
+      const emCasa = temEnviados;
+      const reservaEnviados = Number(c.reservaEnviados) || 0;
+      if (emCasa - quantos < reservaEnviados) {
+        const podeIr = Math.max(0, emCasa - reservaEnviados);
+        if (podeIr <= 0) {
+          log(`— ${t.name}: só tem ${emCasa} enviados em casa e guardo ${reservaEnviados}.`);
+          continue;
+        }
+        log(`— ${t.name}: mando ${podeIr} em vez de ${quantos} (guardo ${reservaEnviados} em casa).`);
+        quantos = podeIr;
       }
 
       const il = ilhaDa(t.id);
@@ -14470,6 +14487,15 @@ function makeDeusesModule(opts) {
                quando "calcular enviados" está desligado. Estava lá dentro por
                engano e nunca se via. -->
           Com <input type="number" min="0" id="deu-escudo" value="${Number(c.escudoEspadachins) || 0}" style="width:48px">
+        <div style="margin-top:4px">
+          Guardar em casa:
+          <input type="number" id="deu-reserva" value="${c.reservaEnviados || 0}" min="0"
+            style="width:56px"> enviados
+          <div style="opacity:.6;font-size:10px">
+            Podem ir vários ataques ao mesmo tempo — o favor continua a ser gasto
+            enquanto eles voam. Isto é o que fica sempre na cidade.
+          </div>
+        </div>
           espadachins de escudo<br>
           <div style="opacity:.6;font-size:10px;margin:0 0 4px 4px">
             A muralha mata-os a eles em vez dos enviados. Vão os que houver na cidade;
@@ -14921,6 +14947,9 @@ function makeDeusesModule(opts) {
           ? (Number(container.querySelector('#deu-env').value) || 5) : c.enviadosPorAtaque,
         escudoEspadachins: container.querySelector('#deu-escudo')
           ? (Number(container.querySelector('#deu-escudo').value) || 0) : (c.escudoEspadachins || 0),
+        reservaEnviados: container.querySelector('#deu-reserva')
+          ? Math.max(0, Number(container.querySelector('#deu-reserva').value) || 0)
+          : (c.reservaEnviados || 0),
         calcularEnviados: container.querySelector('#deu-calc') ? container.querySelector('#deu-calc').checked : true,
         favorMaximo: container.querySelector('#deu-tecto') ? (Number(container.querySelector('#deu-tecto').value) || 500) : (c.favorMaximo || 500),
         favorPorEnviado: container.querySelector('#deu-porenv') ? (Number(container.querySelector('#deu-porenv').value) || 5) : (c.favorPorEnviado || 5),
