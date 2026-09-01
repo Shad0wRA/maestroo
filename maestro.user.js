@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.02.0140
+// @version      2026.09.02.0155
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1059,7 +1059,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.02.0140';
+  const MAESTRO_VERSAO = '2026.09.02.0155';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -22278,6 +22278,16 @@ function makeEncaixeModule(opts) {
 
   function injetarNaJanela(ctx) {
     try {
+      /* O `mUw` é definido no run() e no painel(), mas a vigia da janela corre
+       * antes de qualquer um deles — abres a janela de envio sem nunca ter
+       * aberto o painel do encaixe e ele está nulo.
+       *
+       * Visto em jogo: "Cannot read properties of null (reading 'ITowns')". */
+      if (!mUw) {
+        if (ctx && ctx.uw) { mUw = ctx.uw; mWorld = ctx.WORLD; }
+        else { mUw = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window); }
+      }
+
       if (document.getElementById('encaixe-box')) return;
       const cont = document.querySelector('.gpwindow_content');
       if (!cont) return;
