@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.31.1520
+// @version      2026.08.31.1535
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -721,7 +721,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.31.1520';
+  const MAESTRO_VERSAO = '2026.08.31.1535';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -20719,7 +20719,10 @@ function makeEncaixeModule(opts) {
       // Folga aprendida em rajadas anteriores: assim não se repete o mesmo
       // tropeço todas as vezes (40% das tentativas chegaram a ser perdidas).
       let folgaExtra = 0;
-      try { folgaExtra = Math.min(900, Number(armazem.getItem('grepoEncaixe_folga_v1')) || 0); } catch (e) {}
+      /* Tecto de 400 ms: com 900 os ciclos passavam de 350 para 1100 e a rajada
+     * fazia seis tentativas em vez de trinta. Mais vale perder uma tentativa
+     * por tropa em viagem do que perder metade delas à espera. */
+    try { folgaExtra = Math.min(400, Number(armazem.getItem('grepoEncaixe_folga_v1')) || 0); } catch (e) {}
       // Atenção ao 0: `x || 10` trocaria um limite de 0 s por 10 s, tornando
       // impossível pedir "parar assim que passar da hora". Mesmo erro que já
       // nos mordeu na margem de segundos.
@@ -20735,6 +20738,21 @@ function makeEncaixeModule(opts) {
         }
         const tEnvio = Date.now();
         const r = await enviarComando(plano.origemId, plano.alvoId, plano.unidades, plano.tipo);
+
+        /* A FOLGA ENCOLHE QUANDO NÃO É PRECISA.
+         *
+         * Ela cresce 150 ms de cada vez que um envio falha por falta de
+         * unidades, e ficava guardada para sempre. Visto em jogo: 650 ms
+         * acumulados, ciclos de 1100 ms em vez de 350, e seis tentativas em
+         * onze segundos — poucas demais para acertar.
+         *
+         * Cada envio que passa desconta 50 ms. Assim ela sobe quando é
+         * precisa e volta a descer quando o problema passa. */
+        if (r.ok && folgaExtra > 0) {
+          folgaExtra = Math.max(0, folgaExtra - 50);
+          try { armazem.setItem('grepoEncaixe_folga_v1', String(folgaExtra)); } catch (e) {}
+        }
+
         if (!r.ok) {
           // "Não há unidades suficientes" logo a seguir a um cancelamento
           // costuma significar que as tropas ainda vêm a caminho de casa:
@@ -20742,7 +20760,7 @@ function makeEncaixeModule(opts) {
           if (/unidades|units/i.test(String(r.msg)) && tentativa < c.maxTentativas) {
             // Se isto acontece, a folga está curta: aumentamo-la para as
             // tentativas seguintes, para não desperdiçar mais nenhuma.
-            folgaExtra = Math.min(900, folgaExtra + 150);
+            folgaExtra = Math.min(400, folgaExtra + 150);
             try { armazem.setItem('grepoEncaixe_folga_v1', String(folgaExtra)); } catch (e) {}
             /* Mostrar a mensagem EXACTA do servidor: "tropas ainda a regressar"
              * é a minha interpretação, e pode estar errada. Sem o texto real
