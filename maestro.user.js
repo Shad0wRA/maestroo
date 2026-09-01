@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.02.0030
+// @version      2026.09.02.0100
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1059,7 +1059,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.02.0030';
+  const MAESTRO_VERSAO = '2026.09.02.0100';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -22449,6 +22449,24 @@ function makeEncaixeModule(opts) {
            * lenta. */
           const durJogo = duracaoDaJanela();
           const naJanela = unidadesDaJanela();
+
+          /* SEM UNIDADES ESCOLHIDAS NÃO HÁ TEMPO DE VIAGEM.
+           *
+           * O jogo só mostra a duração quando há tropa nos campos. Sem ela,
+           * o cálculo cai nas coordenadas — que não servem para cidades de
+           * outros jogadores, e davam viagens de 3575 minutos com horas de
+           * saída no passado.
+           *
+           * Mais vale dizer o que falta fazer do que mostrar horários
+           * inventados. */
+          if (!durJogo) {
+            el.innerHTML = '<div style="font-size:10px;letter-spacing:.5px;opacity:.65;margin-bottom:3px">'
+              + 'TENTATIVAS PARA O MESMO SEGUNDO</div>'
+              + '<div style="opacity:.55;font-size:10px">Escolhe as unidades primeiro — '
+              + 'preciso do tempo de viagem que o jogo mostra para calcular as '
+              + 'composições mais lentas.</div>';
+            return;
+          }
           let velJanela = 0;
           try {
             for (const u of Object.keys(naJanela)) {
@@ -22794,9 +22812,11 @@ function makeEncaixeModule(opts) {
           const conf = cfg();
           let n = 0;
 
+          let passadas = 0;
+
           for (const c2 of marcadas) {
             const envio = chegada - c2.dur;
-            if (envio <= agora()) continue;      // já passou
+            if (envio <= agora()) { passadas++; continue; }   // já passou
 
             adicionarPlano({
               origemId, alvoId: alvo.id, alvoCoords: alvo,
@@ -22812,8 +22832,10 @@ function makeEncaixeModule(opts) {
             n++;
           }
 
-          diz(n ? `${n} tentativa(s) agendada(s) para a mesma chegada.`
-                : 'Nenhuma cabia — as horas de saída já passaram.');
+          diz(n
+            ? `${n} tentativa(s) agendada(s) para a mesma chegada.`
+              + (passadas ? ` ${passadas} não coube(ram): hora de saída já passou.` : '')
+            : 'Nenhuma cabia — as horas de saída já passaram.');
           mostrarAgendados();
         } catch (e) { diz('Não consegui agendar: ' + e.message); }
       };
@@ -22938,9 +22960,20 @@ function makeEncaixeModule(opts) {
   }
 
   /* ---------------------- API para o painel ----------------------------- */
+  /* IDENTIFICADOR ÚNICO POR PLANO.
+   *
+   * Era `'p' + Date.now()`. Ao agendar várias composições de uma vez — o
+   * botão "Agendar as marcadas" — todas nasciam no mesmo milissegundo, ficavam
+   * com o mesmo identificador, e só uma sobrevivia.
+   *
+   * Visto em jogo: marcadas duas, agendada uma. */
+  let contadorPlanos = 0;
+
   function adicionarPlano(p) {
     const planos = lerPlanos();
-    planos.push(Object.assign({ id: 'p' + Date.now() }, p));
+    contadorPlanos += 1;
+    const id = 'p' + Date.now() + '-' + contadorPlanos;
+    planos.push(Object.assign({ id }, p));
     gravarPlanos(planos);
   }
 
