@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.31.1535
+// @version      2026.08.31.1705
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -183,6 +183,11 @@
     const line = `[${agoraJogo || new Date().toLocaleTimeString()}] [${modId}] ${msg}`;
     logLines.push(line);
     if (logLines.length > 300) logLines = logLines.slice(-300);
+
+    /* Guardar na caixa negra — camada à parte, só escreve. O que aparece no
+     * ecrã não muda. */
+    try { guardarNaCaixa(modId, String(msg)); } catch (e) {}
+
     const box = document.getElementById('maestro-log');
     if (box) { box.textContent = logLines.slice(-50).join('\n'); box.scrollTop = box.scrollHeight; }
     console.log('[MAESTRO]', line);
@@ -444,6 +449,212 @@
   }
   try { uw.__maestroLigado = moduloLigadoNoPainel; } catch (e) {}
 
+  /* ============ CAIXA NEGRA ============================================
+   *
+   * O registo do ecrã perde-se ao recarregar a página, e a VPS recarrega de
+   * hora a hora. Quando algo corre mal de noite, não há prova nenhuma.
+   *
+   * Guardam-se aqui os acontecimentos que interessam — avisos, erros, envios,
+   * decisões — com hora, no navegador. Sobrevive a recarregamentos.
+   *
+   * Vê-se com:
+   *   __maestroCaixaNegra()        → as últimas 40 linhas
+   *   __maestroCaixaNegra(200)     → as últimas 200
+   *   __maestroCaixaNegra(0, 'esquiva')  → só de um módulo
+   *
+   * NÃO substitui o registo do ecrã: é uma camada à parte que só escreve.
+   * ==================================================================== */
+  const CAIXA_NEGRA_KEY = 'grepoMaestro_caixaNegra_v1';
+  const CAIXA_NEGRA_MAX = 800;
+
+  function guardarNaCaixa(modulo, texto) {
+    try {
+      const linha = {
+        t: Math.floor(Date.now() / 1000),
+        m: String(modulo || 'core'),
+        x: String(texto || '').slice(0, 300),
+      };
+      let lista = [];
+      try { lista = JSON.parse(localStorage.getItem(CAIXA_NEGRA_KEY) || '[]'); } catch (e) {}
+      lista.push(linha);
+
+      /* Cortar pelo mais antigo. 800 linhas são uns 200 KB no pior caso — o
+       * navegador aguenta bem, e dá para uma noite inteira. */
+      while (lista.length > CAIXA_NEGRA_MAX) lista.shift();
+
+      localStorage.setItem(CAIXA_NEGRA_KEY, JSON.stringify(lista));
+    } catch (e) {
+      /* Sem espaço? Deitar fora metade e tentar outra vez — mais vale perder
+       * o antigo do que deixar de guardar. */
+      try {
+        const lista = JSON.parse(localStorage.getItem(CAIXA_NEGRA_KEY) || '[]');
+        localStorage.setItem(CAIXA_NEGRA_KEY,
+          JSON.stringify(lista.slice(Math.floor(lista.length / 2))));
+      } catch (e2) {}
+    }
+  }
+
+  try {
+    uw.__maestroCaixaNegra = (quantas, modulo) => {
+      try {
+        let lista = JSON.parse(localStorage.getItem(CAIXA_NEGRA_KEY) || '[]');
+        if (modulo) lista = lista.filter((l) => l.m === String(modulo));
+        const n = Number(quantas) || 40;
+        const fim = lista.slice(-n);
+
+        if (!fim.length) { console.log('Caixa negra vazia.'); return; }
+
+        console.log(`Caixa negra — ${fim.length} de ${lista.length} linha(s)`
+          + (modulo ? ` (só ${modulo})` : '') + ':');
+        for (const l of fim) {
+          const h = new Date(l.t * 1000).toLocaleString();
+          console.log(`  ${h} [${l.m}] ${l.x}`);
+        }
+      } catch (e) { console.log('erro a ler a caixa negra:', e.message); }
+    };
+    uw.__maestroCaixaNegraLimpar = () => {
+      try { localStorage.removeItem(CAIXA_NEGRA_KEY); console.log('Caixa negra limpa.'); }
+      catch (e) {}
+    };
+  } catch (e) {}
+
+  /* ============ DIAGNÓSTICO DE UMA CIDADE ==============================
+   *
+   * Despeja tudo o que o maestro sabe sobre uma cidade: templates que lhe
+   * aplicam, o que tem, o que falta, o que está na fila, e o estado de cada
+   * módulo em relação a ela.
+   *
+   * Existe porque diagnosticar um problema exigia dez comandos escritos à
+   * mão na consola. Isto dá o mesmo de uma vez.
+   *
+   *   __maestroDiagnostico()        → a cidade activa
+   *   __maestroDiagnostico(5142)    → uma cidade pelo identificador
+   *   __maestroDiagnostico('55.9')  → ou pelo nome
+   * ==================================================================== */
+  try {
+    uw.__maestroDiagnostico = (qual) => {
+      try {
+        /* Encontrar a cidade. */
+        let id = Number(qual) || 0;
+        if (!id && qual) {
+          for (const k of Object.keys(uw.ITowns.towns)) {
+            try {
+              if (uw.ITowns.getTown(k).getName() === String(qual)) { id = Number(k); break; }
+            } catch (e) {}
+          }
+        }
+        if (!id) id = Number(uw.Game.townId);
+
+        const t = uw.ITowns.getTown(id);
+        if (!t) { console.log('Não encontrei essa cidade.'); return; }
+
+        const perfil = (() => {
+          try {
+            return String((JSON.parse(localStorage.getItem('grepoMaestro_modulos_v1') || '{}')).perfil || '');
+          } catch (e) { return ''; }
+        })();
+        const suf = perfil ? `__${perfil}` : '';
+        const ler = (k) => {
+          try { return JSON.parse(localStorage.getItem(k + suf) || localStorage.getItem(k) || 'null'); }
+          catch (e) { return null; }
+        };
+
+        console.log(`=== ${t.getName()} (${id}) · perfil ${perfil || '?'} ===`);
+
+        /* ---- que grupos e templates ---- */
+        const grupos = [];
+        try {
+          const gs = uw.MM.getCollections().TownGroup;
+          const nomes = {};
+          for (const m of ((gs && gs[0] && gs[0].models) || [])) {
+            const a = m.attributes || {};
+            nomes[a.id] = a.name;
+          }
+          const gts = uw.MM.getCollections().TownGroupTown;
+          for (const m of ((gts && gts[0] && gts[0].models) || [])) {
+            const a = m.attributes || {};
+            if (Number(a.town_id) === id && nomes[a.group_id]) grupos.push(nomes[a.group_id]);
+          }
+        } catch (e) {}
+        console.log('grupos:', grupos.join(', ') || '(nenhum)');
+
+        /* ---- recursos e população ---- */
+        const r = (t.resources && t.resources()) || {};
+        console.log(`recursos: ${r.wood || 0} madeira · ${r.stone || 0} pedra · `
+          + `${r.iron || 0} prata (armazém ${r.storage || 0}) · população livre ${r.population || 0}`);
+
+        /* ---- tropa ---- */
+        const u = (t.units && t.units()) || {};
+        const gd = uw.GameData.units || {};
+        const emCasa = Object.keys(u).filter((k) => u[k] > 0)
+          .map((k) => `${u[k]} ${(gd[k] || {}).name || k}`).join(', ');
+        console.log('em casa:', emCasa || '(nada)');
+
+        /* ---- alvos do recrutamento ---- */
+        const exp = ler('grepoRecruta_expandido_v1') || {};
+        const alvos = exp[id];
+        if (alvos) {
+          const falta = Object.keys(alvos).map((k) => {
+            const f = (Number(alvos[k]) || 0) - (Number(u[k]) || 0);
+            return f > 0 ? `${f} ${(gd[k] || {}).name || k}` : '';
+          }).filter(Boolean).join(', ');
+          console.log('alvo de tropa:', Object.keys(alvos)
+            .map((k) => `${alvos[k]} ${(gd[k] || {}).name || k}`).join(', '));
+          console.log('  falta:', falta || 'nada ✓');
+        } else {
+          console.log('alvo de tropa: (sem template aplicável)');
+        }
+
+        /* ---- filas ---- */
+        try {
+          const bo = uw.MM.getCollections().BuildingOrder;
+          const nObras = ((bo && bo[0] && bo[0].models) || [])
+            .filter((m) => Number((m.attributes || {}).town_id) === id).length;
+          const uo = uw.MM.getCollections().UnitOrder;
+          const naFila = ((uo && uo[0] && uo[0].models) || [])
+            .filter((m) => Number((m.attributes || {}).town_id) === id)
+            .map((m) => {
+              const a = m.attributes || {};
+              return `${a.count} ${(gd[a.unit_type] || {}).name || a.unit_type}`;
+            });
+          console.log(`fila de construção: ${nObras}/7${nObras >= 7 ? ' (CHEIA)' : ''}`);
+          console.log('fila de tropa:', naFila.join(', ') || '(vazia)');
+        } catch (e) {}
+
+        /* ---- construção: está marcada como cumprida? ---- */
+        const estC = ler('grepoConstrucao_estado_v1') || {};
+        console.log('construção:', (estC.cumpridas || {})[id]
+          ? 'template cumprido (não é visitada)' : 'por completar');
+
+        /* ---- herói ---- */
+        try {
+          const hs = uw.MM.getCollections().PlayerHero;
+          const meu = ((hs && hs[0] && hs[0].models) || [])
+            .map((m) => m.attributes || {})
+            .find((a) => Number(a.home_town_id) === id);
+          console.log('herói:', meu ? meu.type : '(nenhum)');
+        } catch (e) {}
+
+        /* ---- deus ---- */
+        try { console.log('deus:', (t.god && t.god()) || '(nenhum)'); } catch (e) {}
+
+        /* ---- ataques a chegar ---- */
+        try {
+          const mv = uw.MM.getModels().MovementsUnits || {};
+          const vem = Object.keys(mv).map((k) => mv[k].attributes || {})
+            .filter((a) => Number(a.target_town_id) === id && /attack/i.test(String(a.type || '')));
+          if (vem.length) {
+            console.log(`⚠️ ${vem.length} ataque(s) a chegar:`);
+            for (const a of vem) {
+              const falta = Number(a.arrival_at) - Math.floor(Date.now() / 1000);
+              console.log(`   chega em ${Math.round(falta / 60)} min`);
+            }
+          }
+        } catch (e) {}
+      } catch (e) { console.log('erro no diagnóstico:', e.message); }
+    };
+  } catch (e) {}
+
   const WEBHOOKS_KEY = 'grepoMaestro_webhooks_v1';
   const WEBHOOKS_OMISSAO = { captcha: '', ataque: '', ataqueNC: '' };
 
@@ -635,6 +846,46 @@
   }
   try { uw.__maestroEncaixeAberto = aPrepararEncaixe; } catch (e) {}
 
+  /* ============ PÔR OS NÚMEROS DO JOGO EM DIA ==========================
+   *
+   * Os modelos do jogo (tropa por cidade, ordens na fila) ficam PARADOS até
+   * algo os forçar a actualizar. Uma cidade com 65 birremes aparece com 56
+   * até se recarregar a página.
+   *
+   * Isto mordeu-nos três vezes no mesmo dia:
+   *   • a esquiva mandava sair menos tropa do que havia, e o resto morria
+   *   • o recrutamento pedia outra vez o que já tinha pedido
+   *   • o travão do template deixava passar ordens a mais
+   *
+   * O `fetch` faz o pedido mas o jogo IGNORA a resposta — testado. O que
+   * funciona é o `gpAjax`, que é a função do próprio jogo e alimenta os
+   * modelos com o que recebe. Confirmado: 56 → 65 no mesmo instante.
+   *
+   * Usa-se ANTES DE DECIDIR, e só na cidade em causa — nunca em todas de uma
+   * vez, que foi o que nos valeu um 429 a cortar tudo.
+   *
+   *   await actualizarNumeros(townId)              → quartel e porto
+   *   await actualizarNumeros(townId, ['terra'])   → só o quartel
+   *   await actualizarNumeros(townId, ['mar'])     → só o porto
+   * ==================================================================== */
+  function actualizarNumeros(townId, quais) {
+    const edificios = [];
+    const q = quais || ['terra', 'mar'];
+    if (q.indexOf('terra') >= 0) edificios.push('building_barracks');
+    if (q.indexOf('mar') >= 0) edificios.push('building_docks');
+    if (!edificios.length) return Promise.resolve();
+
+    return Promise.all(edificios.map((ed) => new Promise((resolve) => {
+      try {
+        uw.gpAjax.ajaxGet(ed, 'index',
+          { town_id: Number(townId), nl_init: true }, true, () => resolve());
+      } catch (e) { resolve(); }
+      /* Não prender quem chamou se o jogo não responder. */
+      setTimeout(resolve, 2500);
+    })));
+  }
+  try { uw.__maestroActualizarNumeros = actualizarNumeros; } catch (e) {}
+
   function switchToTown(townId) {
     lockRenew(); // mantém o semáforo vivo durante trabalho longo
     return new Promise((resolve) => {
@@ -697,7 +948,7 @@
       uw, WORLD, sleep: sleepDoModulo, rand,
       log: (msg) => log(modId, msg),
       logRotina: rotina,
-      getMyTowns, switchToTown,
+      getMyTowns, switchToTown, actualizarNumeros,
       lockRenew,
       avisarDiscord,
       // para os módulos que queiram verificar de propósito
@@ -721,7 +972,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.31.1535';
+  const MAESTRO_VERSAO = '2026.08.31.1705';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -1557,6 +1808,35 @@
         else if (!/^grepoMaestro_/.test(bruta)) continue;   // sem sufixo e não é do núcleo
 
         if (fora.has(limpa)) continue;
+
+        /* NUNCA EXPORTAR: cache do código e estado de funcionamento.
+         *
+         * A exportação chegou a 1,7 MB — dos quais 1,2 MB eram a cache do
+         * próprio maestro e 284 KB as configurações de TODOS os perfis.
+         * Colar isso numa caixa de texto falha, e os templates perdiam-se no
+         * meio.
+         *
+         * Vai só o que faz sentido copiar de um mundo para outro. */
+        const NUNCA = [
+          'grepoMaestro_codigo_v1',        // a cache do próprio script
+          'grepoMaestro_codigoVersao_v1',
+          'grepoMaestro_cfgPerfis_v1',     // configurações de todos os perfis
+          'grepoMaestro_caixaNegra_v1',    // registo, não configuração
+          'grepoColonos_ultimaPartilha_v1',
+          'grepoRecruta_expandido_v1',     // calculado, refaz-se sozinho
+          'grepoRecruta_pedidos_v1',
+          'grepoRecruta_excessos_v1',
+          'grepoGruta_conteudo_v1',
+          'grepoEncaixe_falhas_v1',
+          'grepoEsquiva_historico_v1',
+          'grepoEsquiva_desmentidas_v1',
+        ];
+        if (NUNCA.indexOf(limpa) >= 0) continue;
+
+        /* O estado da construção é por MUNDO (`..._pt125`) e não serve
+         * noutro. */
+        if (/_pt\d+$/.test(limpa)) continue;
+
         try { dados.chaves[limpa] = localStorage.getItem(bruta); } catch (e) {}
       }
     } catch (e) {}
@@ -8295,17 +8575,13 @@ function makeRecrutamentoModule(opts) {
       if (acoes.length) {
         const precisaQuartel = acoes.some((a) => !a.isNaval);
         const precisaPorto = acoes.some((a) => a.isNaval);
-        const pedidos = [];
-        if (precisaQuartel) pedidos.push('building_barracks');
-        if (precisaPorto) pedidos.push('building_docks');
+        const quais = [];
+        if (precisaQuartel) quais.push('terra');
+        if (precisaPorto) quais.push('mar');
 
-        await Promise.all(pedidos.map((ed) => new Promise((resolve) => {
-          try {
-            mUw.gpAjax.ajaxGet(ed, 'index',
-              { town_id: Number(town.id), nl_init: true }, true, () => resolve());
-          } catch (e) { resolve(); }
-          setTimeout(resolve, 2500);
-        })));
+        try {
+          if (ctx.actualizarNumeros) await ctx.actualizarNumeros(town.id, quais);
+        } catch (e) {}
       }
 
       for (const a of acoes) {
@@ -12848,15 +13124,37 @@ function makeAlertasModule(opts) {
     if (!id) return null;
     try {
       const l = JSON.parse(armazem.getItem(VISTOS_ALERTAS) || '{}');
-      if (l[id]) return { quando: Number(l[id]), novo: false };
+      if (l[id]) {
+        /* Compatível com o formato antigo (só o número). */
+        const v = l[id];
+        if (typeof v === 'object') {
+          return { quando: Number(v.t), novo: false, duvidosa: !!v.duvidosa };
+        }
+        return { quando: Number(v), novo: false };
+      }
 
       const t = agoraJogo();
       if (t == null) return null;
-      l[id] = t;
+
+      /* MARCAR SE A HORA NÃO É DE CONFIANÇA.
+       *
+       * Se o comando é visto logo a seguir a a página abrir, não se sabe há
+       * quanto tempo já vinha — a hora guardada é a do arranque, não a da
+       * partida.
+       *
+       * Sem esta marca, a hora errada ficava guardada para sempre e um
+       * colonizador de 7 horas visto a meio aparecia como navio incendiário
+       * em todas as passagens seguintes. */
+      const duvidosa = vistoAoArrancar(t);
+      l[id] = duvidosa ? { t, duvidosa: true } : t;
 
       // limpar os antigos, para não crescer sem fim
       const limite = t - 12 * 3600;
-      for (const k of Object.keys(l)) if (Number(l[k]) < limite) delete l[k];
+      for (const k of Object.keys(l)) {
+        const v = l[k];
+        const quando = (typeof v === 'object') ? Number(v.t) : Number(v);
+        if (quando < limite) delete l[k];
+      }
 
       armazem.setItem(VISTOS_ALERTAS, JSON.stringify(l));
       return { quando: t, novo: true };
@@ -13538,8 +13836,39 @@ function makeAlertasModule(opts) {
        * erro é de 30 s no máximo — irrelevante numa viagem de 45 min. */
       if (dist === 0) {
         cls = { cat: 'mesma ilha — tropa terrestre a pé', grave: false };
-      } else if (!a.started_at && r && r.novo && vistoAoArrancar(visto)) {
-        cls = { cat: 'sem estimativa (já vinha a caminho quando abri o jogo)', grave: false };
+      } else if (!a.started_at && r && (r.duvidosa || (r.novo && vistoAoArrancar(visto)))) {
+        /* SEM ESTIMATIVA É PARA AVISAR, NÃO PARA IGNORAR.
+         *
+         * A página recarrega de hora a hora na VPS. Qualquer ataque que já
+         * viesse a caminho nesse instante caía aqui e ficava `grave: false` —
+         * nunca era avaliado e nunca gerava aviso.
+         *
+         * Um colonizador assim chega sem ninguém dar por ele, e perde-se a
+         * cidade. Mais vale um aviso a dizer "não sei o que é" do que
+         * silêncio. */
+        /* SEM ESTIMATIVA: usa-se o que FALTA como limite inferior.
+         *
+         * Não se sabe quando partiu, mas sabe-se quanto falta. Se o que falta
+         * já é mais lento do que um colonizador consegue ser, então só pode
+         * ser um colonizador — a viagem real é ainda maior.
+         *
+         * Isto apanha o caso que nos escapou: a página recarrega de hora a
+         * hora, e um colonizador a caminho nesse instante ficava sem
+         * classificação nenhuma e sem aviso. */
+        const velMax = (dist > 0 && falta > 0) ? (c.K * dist) / falta : null;
+
+        if (velMax != null && velMax <= 12.5) {
+          cls = { cat: '🚨 NAVIO COLONIZADOR', grave: true, nc: true, certo: true };
+        } else {
+          cls = {
+            cat: 'não consegui estimar (já vinha a caminho quando abri o jogo)'
+               + (velMax != null ? ` — no máximo velocidade ${Math.round(velMax)}` : ''),
+            grave: true,
+            /* Sem saber o que é, trata-se como suspeito: mais vale um aviso a
+             * mais do que perder uma cidade. */
+            nc: velMax == null || velMax <= 32,
+          };
+        }
       } else if (dist > 0 && viagem > 0) {
         vel = (c.K * dist) / viagem;
         cls = classificar(vel, false);
@@ -16673,15 +17002,16 @@ function makeEsquivaModule(opts) {
      * Confirmado em jogo: uma cidade com 56 birremes no modelo passou a 65 no
      * instante em que se usou o `gpAjax`. Era essa a tropa que ficava em casa
      * a morrer. */
-    const pedidos = ['building_barracks', 'building_docks'].map((edificio) => (
-      new Promise((resolve) => {
-        try {
-          mUw.gpAjax.ajaxGet(edificio, 'index',
-            { town_id: Number(townId), nl_init: true }, true, () => resolve());
-        } catch (e) { resolve(); }
-        setTimeout(resolve, 2200);      // não prender a esquiva
-      })
-    ));
+    /* Usa-se a função do núcleo: assim há um sítio só a saber COMO se
+     * actualizam os números, e se descobrirmos algo melhor muda-se lá. */
+    const pedidos = [(() => {
+      try {
+        const f = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window)
+          .__maestroActualizarNumeros;
+        if (f) return f(townId);
+      } catch (e) {}
+      return Promise.resolve();
+    })()];
 
     // os dois em paralelo, no máximo 2,5 s ao todo
     await comLimite(Promise.all(pedidos), 2500);
@@ -22602,6 +22932,39 @@ function makeMissoesModule(opts) {
 
   /* ---------------------- pedidos --------------------------------------- */
 
+  /* Fechar uma missão do GUIA INICIAL.
+   *
+   * Capturado do jogo: aceitar a recompensa é fechar a missão.
+   *   Progressable/<id> · progressTo · { progressable_id, state: 'closed' }
+   *
+   * É um modelo diferente do das missões de ilha (`IslandQuests`), por isso
+   * tem a sua própria função. */
+  async function bridgeProgressable(id, progressableId) {
+    try {
+      const t = Number(mUw.Game.townId);
+      const url = mUw.location.origin + '/game/frontend_bridge?town_id=' + t
+        + '&action=execute&h=' + mUw.Game.csrfToken;
+      const r = await mUw.fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                   'x-requested-with': 'XMLHttpRequest' },
+        credentials: 'include',
+        body: 'json=' + encodeURIComponent(JSON.stringify({
+          model_url: `Progressable/${Number(id)}`,
+          action_name: 'progressTo',
+          captcha: null,
+          arguments: { progressable_id: String(progressableId), state: 'closed' },
+          town_id: t,
+          nl_init: true,
+        })),
+      }).then(lerResposta);
+      aplicarNotificacoes(r);
+      const j = r && r.json;
+      const erro = j && j.error;
+      return { ok: !erro, msg: erro || (j && j.success) || 'ok' };
+    } catch (e) { return { ok: false, msg: e.message }; }
+  }
+
   async function bridge(townId, acao, args) {
     const url = mUw.location.origin + '/game/frontend_bridge?town_id=' + Number(townId)
       + '&action=execute&h=' + mUw.Game.csrfToken;
@@ -23143,6 +23506,39 @@ function makeMissoesModule(opts) {
       }
     }
 
+    /* 2c. AS MISSÕES DO GUIA INICIAL.
+     *
+     * São as do painel lateral — "expandir a serração para 25", "vencer 25
+     * combates". Ficam na colecção `Progressable`, não na `IslandQuest`.
+     *
+     * Não há "recolher recompensa": fecha-se a missão e o jogo dá-a.
+     * Capturado do jogo:
+     *   Progressable/<id> · progressTo · { progressable_id, state: 'closed' }
+     *
+     * Só se fecham as que estão `satisfied` — objectivos cumpridos, à espera
+     * de serem fechadas. */
+    if (c.guiaInicial !== false) {
+      try {
+        const col = mUw.MM.getCollections().Progressable;
+        const mods = (col && col[0] && col[0].models) || [];
+
+        for (const m2 of mods) {
+          const a2 = m2.attributes || {};
+          if (String(a2.state) !== 'satisfied') continue;
+
+          const nome2 = (a2.static_data || {}).name || a2.progressable_id;
+          const r2 = await bridgeProgressable(a2.id, a2.progressable_id);
+
+          if (r2.ok) {
+            log(`🎓 Guia: "${nome2}" concluída — recompensa recebida.`);
+          } else {
+            rotina(`Guia: não consegui fechar "${nome2}" — ${r2.msg}`);
+          }
+          await ctx.sleep(ctx.rand(800, 1600));
+        }
+      } catch (e) {}
+    }
+
     /* 3. CUMPRIR as que estão a decorrer */
     for (const m of todas) {
       if (String(m.state) !== 'running') continue;
@@ -23433,6 +23829,14 @@ function makeMissoesModule(opts) {
     container.innerHTML = `
       <div style="font-size:11px;line-height:1.7">
         <label><input type="checkbox" id="mis-on"${c.ativo ? ' checked' : ''}> <b>Fazer missões de ilha</b></label><br>
+      <label style="display:block;font-size:11px;margin-top:3px">
+        <input type="checkbox" id="mis-guia"${c.guiaInicial !== false ? ' checked' : ''}>
+        fechar as missões do guia inicial
+      </label>
+      <div style="opacity:.55;font-size:10px;margin:0 0 4px 18px">
+        As do painel lateral — construir, recrutar, vencer combates. Fechá-las
+        é o que dá a recompensa.
+      </div>
         <label><input type="checkbox" id="mis-sab"${c.preferirSabedoria ? ' checked' : ''}> preferir moedas de sabedoria</label>
         <span style="opacity:.6;font-size:10px">(nas de ameaça, é também a de defender)</span><br>
         <label><input type="checkbox" id="mis-res"${c.darRecursos ? ' checked' : ''}> entregar recursos</label>
@@ -23479,6 +23883,8 @@ function makeMissoesModule(opts) {
     if (g) g.onclick = () => {
       guardar({
         ativo: container.querySelector('#mis-on').checked,
+        guiaInicial: container.querySelector('#mis-guia')
+          ? container.querySelector('#mis-guia').checked : true,
         preferirSabedoria: container.querySelector('#mis-sab').checked,
         darRecursos: container.querySelector('#mis-res').checked,
         maxRecursosPorMissao: Number(container.querySelector('#mis-max').value) || 5000,
