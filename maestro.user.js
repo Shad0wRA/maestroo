@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.01.1730
+// @version      2026.09.01.1750
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -972,7 +972,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.01.1730';
+  const MAESTRO_VERSAO = '2026.09.01.1750';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -8477,13 +8477,20 @@ function makeRecrutamentoModule(opts) {
           alvos[unidadeVoadora] = alvoVoadores;
         }
       }
-      if (!Object.keys(alvos).length) continue;
+      if (!Object.keys(alvos).length) {
+        rotina(`${town.name}: saltada — o template ${tplNome} não pede nada.`);
+        continue;
+      }
       expandido[town.id] = alvos;
 
       // Requisitos de arranque: a cidade só começa a recrutar quando os
       // edifícios definidos no template atingirem os níveis mínimos.
       const req = cumpreRequisitos(niveis[town.id], tpl.requisitos);
-      if (!req.ok) continue;   // ainda não está pronta
+      if (!req.ok) {
+        rotina(`${town.name}: saltada — requisitos por cumprir `
+          + `(${(req.falta || []).join(', ') || 'edifícios'}).`);
+        continue;
+      }
 
       /* SEM RESERVA DE RECURSOS.
        *
@@ -8606,6 +8613,13 @@ function makeRecrutamentoModule(opts) {
        * população e favor. */
       if (!acoes.length) {
         try {
+          /* Ficar com registo de que a cidade FOI avaliada.
+           *
+           * Sem isto não se distingue "avaliei e não havia nada a fazer" de
+           * "nem cheguei a olhar para ela" — e foi exactamente essa dúvida
+           * que nos custou meia hora com a 55.17. */
+          rotina(`${town.name}: avaliada, sem ordens (template ${tplNome}).`);
+
           const linhas = [];
           for (const uid of Object.keys(alvos)) {
             const querem = Number(alvos[uid]) || 0;
