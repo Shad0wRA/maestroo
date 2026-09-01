@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.31.1218
+// @version      2026.08.31.1225
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -691,7 +691,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.31.1218';
+  const MAESTRO_VERSAO = '2026.08.31.1225';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -23725,7 +23725,7 @@ function makeColonosModule(opts) {
 
   /* Cidade de onde parte o ataque: a mais próxima do depósito que tenha navios
    * de combate. Transportes não servem — não combatem. */
-  function cidadeParaAtacar(ilhaAlvo) {
+  function cidadeParaAtacar(ilhaAlvo, c) {
     let melhor = null;
     try {
       for (const id of Object.keys(mUw.ITowns.towns)) {
@@ -23741,7 +23741,11 @@ function makeColonosModule(opts) {
          * Manda-se a população mínima configurada (100 por omissão), do navio
          * mais barato que houver. */
         const gd = mUw.GameData.units || {};
-        const limitePop = Number(c.popAtaqueBase) > 0 ? Number(c.popAtaqueBase) : 100;
+        /* A configuração vem por parâmetro: dentro desta função o `c` do
+         * módulo não existe, e usá-lo rebentava em silêncio — o `catch`
+         * engolia o erro e o maestro dizia "não tenho navios de combate em
+         * nenhuma cidade" com oito cidades cheias de birremes. */
+        const limitePop = (c && Number(c.popAtaqueBase) > 0) ? Number(c.popAtaqueBase) : 100;
 
         const navios = {};
         let tem = 0;
@@ -23797,7 +23801,7 @@ function makeColonosModule(opts) {
       return false;
     }
 
-    const origem = cidadeParaAtacar(alvo.ilha);
+    const origem = cidadeParaAtacar(alvo.ilha, c);
     if (!origem) {
       log('Colonos: não tenho navios de combate em nenhuma cidade (transportes não servem).');
       return false;
