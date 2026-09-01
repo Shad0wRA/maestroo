@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.31.1455
+// @version      2026.08.31.1505
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -721,7 +721,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.31.1455';
+  const MAESTRO_VERSAO = '2026.08.31.1505';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -1691,8 +1691,9 @@
   /* ------------------------------ loop principal ------------------------- */
   let maestroTimer = null;
   let running = false;
-  /* Já avisámos que a janela do encaixe está aberta? */
+  /* Já avisámos que a janela do encaixe está aberta, e desde quando. */
   let avisouEncaixeAberto = false;
+  let encaixeAbertoDesde = 0;
 
   async function tick() {
     if (running) return; // nunca sobrepor
@@ -1713,14 +1714,34 @@
     if (aPrepararEncaixe()) {
       if (!avisouEncaixeAberto) {
         avisouEncaixeAberto = true;
+        encaixeAbertoDesde = Date.now();
         log('core', '⏸️ Tens a janela de envio aberta — não troco de cidade para não '
           + 'te interromper. Fecha-a quando acabares.');
       }
-      return;
-    }
-    if (avisouEncaixeAberto) {
+
+      /* E SE TE ESQUECERES DELA ABERTA?
+       *
+       * Com as contas a correr numa VPS, uma janela esquecida deixava o
+       * maestro parado até alguém reparar. Ao fim de 10 minutos, fecha-se e
+       * retoma-se. */
+      if (Date.now() - encaixeAbertoDesde > 10 * 60 * 1000) {
+        let fechou = false;
+        try {
+          const x = document.querySelector('.gpwindow_frame .btn_wnd.close, '
+            + '.gpwindow_frame .ui-dialog-titlebar-close, .gpwindow_frame .close');
+          if (x) { x.click(); fechou = true; }
+        } catch (e) {}
+
+        avisouEncaixeAberto = false;
+        log('core', fechou
+          ? '⏰ A janela ficou 10 min aberta sem uso — fechei-a e retomo.'
+          : '⏰ A janela ficou 10 min aberta sem uso — retomo (não a consegui fechar).');
+      } else {
+        return;
+      }
+    } else if (avisouEncaixeAberto) {
       avisouEncaixeAberto = false;
-      log('core', '▶️ Janela do encaixe fechada — retomo.');
+      log('core', '▶️ Janela fechada — retomo o trabalho.');
     }
     running = true;
     try {
