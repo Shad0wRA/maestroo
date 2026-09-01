@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.31.1225
+// @version      2026.08.31.1245
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -691,7 +691,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.31.1225';
+  const MAESTRO_VERSAO = '2026.08.31.1245';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -3141,7 +3141,31 @@
           + `de ${String(r.de).toUpperCase()} → para o perfil "${perfilParaChaves()}" de ${WORLD.toUpperCase()}.`);
         log('core', 'Falta configurar à mão o que depende de cidades: bases dos colonos, '
           + 'alvos do apoio, cidade de encaixe e ilhas da fundação.');
-        setTimeout(() => { try { location.reload(); } catch (e) {} }, 2500);
+
+        /* PUBLICAR ANTES DE RECARREGAR.
+         *
+         * Cada mundo tem os seus ficheiros no Gist. Sem publicar, o arranque
+         * traz os do mundo de destino e escreve por cima do que se acabou de
+         * importar — visto em jogo: os templates do pt125 chegaram ao pt127 e
+         * desapareceram no recarregamento.
+         *
+         * Publica-se já, para o que fica no Gist ser o que importaste. */
+        try {
+          bI.disabled = true;
+          bI.textContent = 'a publicar...';
+          const perfil = perfilParaChaves();
+          const rp = await publicarPerfil(perfil);
+          if (rp && rp.ok) {
+            log('core', 'Definições publicadas — o recarregamento não as vai perder.');
+          } else {
+            log('core', '⚠️ Não consegui publicar as definições importadas'
+              + (rp && rp.msg ? ` (${rp.msg})` : '')
+              + '. Carrega em Publicar no painel antes de recarregar, '
+              + 'senão o arranque traz as antigas.');
+          }
+        } catch (e) {}
+
+        setTimeout(() => { try { location.reload(); } catch (e) {} }, 3500);
       };
 
       const det = document.getElementById('maestro-copiar-cfg');
