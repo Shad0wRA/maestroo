@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.02.0100
+// @version      2026.09.02.0140
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1059,7 +1059,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.02.0100';
+  const MAESTRO_VERSAO = '2026.09.02.0140';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -8511,6 +8511,22 @@ function makeRecrutamentoModule(opts) {
          * do seu deus. Não faz sentido um número fixo. */
         alvoVoadores = -1;
       }
+      /* SEREIAS NAS CIDADES DE AFRODITE.
+       *
+       * As sereias andam a 66 — mais depressa do que qualquer navio — e por
+       * isso servem para as combinações de velocidade do encaixe: dão uma
+       * hora de saída muito mais tarde para a mesma chegada.
+       *
+       * Bastam três por cidade. Não são para combater, são para dar opção
+       * quando se está a acertar um instante.
+       *
+       * Junta-se ao alvo do template, sem substituir nada. */
+      try {
+        if (deusDaCidade(town.id) === 'aphrodite' && units.siren) {
+          if (!alvos.siren) alvos.siren = 3;
+        }
+      } catch (e) { seErroDeCodigo(e, 'Recrutamento'); }
+
       let unidadeVoadora = null;
       if (alvoVoadores !== 0) {
         const deus = deusDaCidade(town.id);
@@ -14821,6 +14837,9 @@ function makeDeusesModule(opts) {
   }
 
   const DEFAULTS = {
+    /* Grupos onde a Afrodite pode entrar. Vazio = sem regra especial.
+     * Uma cidade por grupo antes de qualquer grupo ter a segunda. */
+    gruposAfrodite: [],
     perfil: PERFIS.MULTI,
     // Simulação: decide tudo mas NÃO muda nada. Mudar de deus perde o favor
     // acumulado e é irreversível — convém ver as decisões antes de arriscar.
@@ -15599,6 +15618,73 @@ function makeDeusesModule(opts) {
    * distribuição bater com os pesos. Escolhe a cidade de menor favor no deus
    * excedentário, para desperdiçar o mínimo — mudar de deus perde o favor.
    * ==================================================================== */
+  /* ============ AFRODITE: UMA POR GRUPO ANTES DE DUPLICAR ==============
+   *
+   * A Afrodite dá sereias, que são rápidas e servem para as combinações do
+   * encaixe. Interessa tê-las ESPALHADAS — uma cidade por grupo — e não
+   * várias no mesmo sítio.
+   *
+   * A distribuição continua a seguir os pesos como sempre; o que muda é a
+   * escolha de QUAL cidade recebe Afrodite:
+   *   • enquanto houver um grupo escolhido sem nenhuma, vai para lá
+   *   • só quando todos tiverem uma é que um grupo pode ter a segunda
+   *   • nunca mais de duas por grupo
+   * ==================================================================== */
+  const AFRODITE = 'aphrodite';
+  const MAX_AFRODITE_POR_GRUPO = 2;
+
+  function gruposDaAfrodite(c) {
+    try { return new Set(((c && c.gruposAfrodite) || []).map((x) => String(x))); }
+    catch (e) { return new Set(); }
+  }
+
+  function gruposDaCidade(townId) {
+    const out = [];
+    try {
+      const gs = mUw.MM.getCollections().TownGroup;
+      const nomes = {};
+      for (const m of ((gs && gs[0] && gs[0].models) || [])) {
+        const a = m.attributes || {};
+        nomes[a.id] = a.name;
+      }
+      const gts = mUw.MM.getCollections().TownGroupTown;
+      for (const m of ((gts && gts[0] && gts[0].models) || [])) {
+        const a = m.attributes || {};
+        if (Number(a.town_id) === Number(townId) && nomes[a.group_id]) out.push(nomes[a.group_id]);
+      }
+    } catch (e) {}
+    return out;
+  }
+
+  function afroditePorGrupo(towns, escolhidos) {
+    const cont = {};
+    for (const g of escolhidos) cont[g] = 0;
+    try {
+      for (const t of towns) {
+        if (deusDa(t.id) !== AFRODITE) continue;
+        for (const g of gruposDaCidade(t.id)) if (cont[g] != null) cont[g]++;
+      }
+    } catch (e) {}
+    return cont;
+  }
+
+  function podeReceberAfrodite(townId, towns, c) {
+    const escolhidos = gruposDaAfrodite(c);
+    if (!escolhidos.size) return true;      // sem grupos definidos: sem regra
+
+    const meus = gruposDaCidade(townId).filter((g) => escolhidos.has(g));
+    if (!meus.length) return false;         // não está em nenhum grupo escolhido
+
+    const cont = afroditePorGrupo(towns, escolhidos);
+
+    /* Há algum grupo escolhido ainda sem nenhuma? Só esses recebem. */
+    const semNenhuma = [...escolhidos].filter((g) => (cont[g] || 0) === 0);
+    if (semNenhuma.length) return meus.some((g) => semNenhuma.indexOf(g) >= 0);
+
+    /* Todos já têm uma: pode ir para um que ainda não chegou ao máximo. */
+    return meus.some((g) => (cont[g] || 0) < MAX_AFRODITE_POR_GRUPO);
+  }
+
   async function equilibrarPorPesos(ctx, c, towns) {
     const log = ctx.log;
     const favores = favorPorDeus();
@@ -15729,12 +15815,16 @@ function makeDeusesModule(opts) {
         // o deus com maior défice face aos pesos
         let escolhido = null, maiorFalta = -Infinity;
         for (const d of DEUSES) {
+          /* A Afrodite só entra onde a regra dos grupos deixa. */
+          if (d === AFRODITE && !podeReceberAfrodite(t.id, towns, c)) continue;
           const falta = (querem[d] || 0) - jaTem[d];
           if (falta > maiorFalta) { maiorFalta = falta; escolhido = d; }
         }
         if (!escolhido || maiorFalta <= 0) {
           // nenhum em défice: escolhe o que tiver menos cidades
-          escolhido = DEUSES.slice().sort((a, b) => jaTem[a] - jaTem[b])[0];
+          escolhido = DEUSES
+            .filter((d) => d !== AFRODITE || podeReceberAfrodite(t.id, towns, c))
+            .slice().sort((a, b) => jaTem[a] - jaTem[b])[0];
         }
         if (c.simular) {
           log(`🔎 [simulação] ${t.name}: cidade SEM deus — poria ${NOMES[escolhido]}.`);
@@ -16630,7 +16720,39 @@ function makeDeusesModule(opts) {
         <label><input type="checkbox" id="deu-mit"${c.protegerMiticas ? ' checked' : ''}> não mudar o deus de cidades que tenham míticas dele</label>
       </div>` : '';
 
-    const htmlComuns = `
+    /* AFRODITE: onde pode entrar.
+     *
+     * Uma cidade por grupo antes de qualquer grupo ter a segunda — as sereias
+     * servem para as combinações do encaixe e interessam espalhadas. */
+    const gruposTodos = (() => {
+      try {
+        const gs = mUw.MM.getCollections().TownGroup;
+        return ((gs && gs[0] && gs[0].models) || [])
+          .map((m) => (m.attributes || {}).name)
+          .filter((n) => n && n !== 'Sem grupos');
+      } catch (e) { return []; }
+    })();
+
+    const escolhidosAfro = new Set((c.gruposAfrodite || []).map(String));
+
+    const blocoAfrodite = gruposTodos.length ? `
+      <div style="background:#0d141c;padding:5px;border-radius:4px;margin-top:5px;font-size:11px">
+        <b>Afrodite — onde pode entrar</b>
+        <div style="opacity:.6;font-size:10px;margin:2px 0 4px">
+          Uma cidade por grupo antes de qualquer grupo ter a segunda. Máximo
+          duas por grupo. As sereias servem para as combinações do encaixe.
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px">
+          ${gruposTodos.map((g) => `<label style="font-size:11px">
+            <input type="checkbox" class="deu-afro" value="${esc(g)}"${escolhidosAfro.has(g) ? ' checked' : ''}> ${esc(g)}
+          </label>`).join('')}
+        </div>
+        <div style="opacity:.55;font-size:10px;margin-top:3px">
+          Nenhum marcado = sem regra especial para a Afrodite.
+        </div>
+      </div>` : '';
+
+    const htmlComuns = blocoAfrodite + `
       <div style="background:#0d141c;padding:5px;border-radius:4px;margin-top:5px;font-size:11px">
         <b>Favores:</b> ${linhaFavores}<br>
         <span style="opacity:.75">Cidades: ${towns.length} · deuses distintos: ${distintos}</span>
@@ -16881,6 +17003,14 @@ function makeDeusesModule(opts) {
         limiteFavor: container.querySelector('#deu-lim') ? (Number(container.querySelector('#deu-lim').value) || 30) : c.limiteFavor,
         minCidades: container.querySelector('#deu-min') ? (Number(container.querySelector('#deu-min').value) || 9) : c.minCidades,
         protegerMiticas: container.querySelector('#deu-mit').checked,
+        /* Grupos onde a Afrodite pode entrar. */
+        gruposAfrodite: (() => {
+          const out = [];
+          container.querySelectorAll('.deu-afro').forEach((el) => {
+            if (el.checked) out.push(el.value);
+          });
+          return out;
+        })(),
         perfil: (container.querySelector('input[name="deu-perfil"]:checked') || {}).value || PERFIS.MULTI,
         distribuirPorPesos: !!(container.querySelector('#deu-pesos-on') || {}).checked,
         simular: container.querySelector('#deu-simular').checked,
@@ -22573,11 +22703,20 @@ function makeEncaixeModule(opts) {
         // Avisar se já houver um agendamento da mesma cidade com horas
         // próximas: as rajadas usam as mesmas tropas e vão ter de esperar
         // uma pela outra, o que pode fazer a segunda perder a janela.
+        /* O aviso de agendamentos próximos é RUÍDO no sininho: o plano é
+         * criado à mesma, e nas combinações de velocidade eles são próximos
+         * DE PROPÓSITO — são alternativas para o mesmo instante, e quando uma
+         * acerta as outras falham sozinhas por falta de tropa.
+         *
+         * Fica na caixa negra, onde serve para diagnóstico. */
         try {
           const conflito = lerPlanos().find((x) => Number(x.origemId) === Number(origemId)
             && Math.abs(Number(x.chegada) - chegada) < 120);
           if (conflito) {
-            diz('⚠️ Já há um agendamento desta cidade a menos de 2 min — as rajadas competem pelas mesmas tropas.');
+            /* O `diz` escreve na própria janela, que é onde isto interessa —
+             * e não no sininho dos erros. */
+            diz('Nota: já há um agendamento desta cidade a menos de 2 min. '
+              + 'Se for de propósito (composições alternativas), ignora.');
           }
         } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
 
