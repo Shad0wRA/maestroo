@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.31.1428
+// @version      2026.08.31.1455
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -605,6 +605,36 @@
       });
     } catch (e) { return []; }
   }
+  /* ESTOU A PREPARAR UM ENCAIXE?
+   *
+   * Com a janela do encaixe aberta, uma troca de cidade feita por outro
+   * módulo tira-te dali e perdes o envio. Enquanto ela estiver aberta,
+   * ninguém troca de cidade.
+   *
+   * Não é preciso desligar nada: fecha-se a janela e o maestro retoma. */
+  function aPrepararEncaixe() {
+    try {
+      /* 1) A caixa do maestro dentro da janela de envio. */
+      const box = document.getElementById('encaixe-box');
+      if (box && (box.offsetParent || getComputedStyle(box).position === 'fixed')) return true;
+
+      /* 2) A JANELA DE ATAQUE OU APOIO DO JOGO, mesmo sem a caixa.
+       *
+       * Estás a escolher unidades para programar um envio: uma troca de
+       * cidade feita por outro módulo tira-te dali e perde-se o trabalho.
+       *
+       * Reconhece-se pelos campos das unidades, que só existem nessa janela. */
+      const campos = document.querySelectorAll('input.unit_input[name]');
+      if (campos.length) {
+        for (const el of campos) {
+          if (el.offsetParent) return true;      // visível: a janela está aberta
+        }
+      }
+    } catch (e) {}
+    return false;
+  }
+  try { uw.__maestroEncaixeAberto = aPrepararEncaixe; } catch (e) {}
+
   function switchToTown(townId) {
     lockRenew(); // mantém o semáforo vivo durante trabalho longo
     return new Promise((resolve) => {
@@ -691,7 +721,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.31.1428';
+  const MAESTRO_VERSAO = '2026.08.31.1455';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -1661,12 +1691,37 @@
   /* ------------------------------ loop principal ------------------------- */
   let maestroTimer = null;
   let running = false;
+  /* Já avisámos que a janela do encaixe está aberta? */
+  let avisouEncaixeAberto = false;
 
   async function tick() {
     if (running) return; // nunca sobrepor
 
     /* O servidor está a limitar? Não insistir — só piora e deixa tudo cego. */
     if (servidorTravado()) return;
+
+    /* A JANELA DO ENCAIXE ESTÁ ABERTA?
+     *
+     * Enquanto preparas um encaixe, qualquer módulo que troque de cidade
+     * tira-te dali e perdes o envio. A construção e as aldeias fazem isso
+     * dezenas de vezes por passagem.
+     *
+     * Pára-se tudo — menos o encaixe e a esquiva, que continuam pelos seus
+     * temporizadores próprios e não dependem deste ciclo.
+     *
+     * Fecha a janela e o maestro retoma sozinho. */
+    if (aPrepararEncaixe()) {
+      if (!avisouEncaixeAberto) {
+        avisouEncaixeAberto = true;
+        log('core', '⏸️ Tens a janela de envio aberta — não troco de cidade para não '
+          + 'te interromper. Fecha-a quando acabares.');
+      }
+      return;
+    }
+    if (avisouEncaixeAberto) {
+      avisouEncaixeAberto = false;
+      log('core', '▶️ Janela do encaixe fechada — retomo.');
+    }
     running = true;
     try {
       const agora = Date.now();
@@ -11025,26 +11080,47 @@ function makeSentinelasModule(opts) {
   }
 
   /* AS ALIANÇAS AMIGAS: a minha, mais as que têm pacto de paz. */
+  /* AS ALIANÇAS AMIGAS, PELO NOME.
+   *
+   * O `island_info` traz o `player_alliance` como NOME ("No Cousins PLZ"),
+   * não como identificador. Comparava-se com números e nunca batia — cinco
+   * aliados na mesma ilha e o módulo não via nenhum.
+   *
+   * Guardam-se os nomes em minúsculas, para a comparação não falhar por
+   * causa de maiúsculas. */
   function aliancasAmigas(c) {
     const out = new Set();
     try {
-      const minha = Number(mUw.Game.alliance_id) || 0;
-      if (!minha) return out;
-      out.add(minha);
+      const minhaId = Number(mUw.Game.alliance_id) || 0;
+      if (!minhaId) return out;
+
+      const col = mUw.MM.getCollections().AlliancePact;
+      const mods = (col && col[0] && col[0].models) || [];
+
+      /* O nome da minha aliança vem nos próprios pactos. */
+      let minhaNome = '';
+      for (const m of mods) {
+        const a = m.attributes || {};
+        if (Number(a.alliance_1_id) === minhaId) { minhaNome = String(a.alliance_1_name || ''); break; }
+        if (Number(a.alliance_2_id) === minhaId) { minhaNome = String(a.alliance_2_name || ''); break; }
+      }
+      if (minhaNome) out.add(minhaNome.trim().toLowerCase());
 
       if (c.incluirPactos) {
-        const col = mUw.MM.getCollections().AlliancePact;
-        const mods = (col && col[0] && col[0].models) || [];
         for (const m of mods) {
           const a = m.attributes || {};
           if (String(a.relation) !== 'peace') continue;
           if (a.invitation_pending) continue;
-          const a1 = Number(a.alliance_1_id);
-          const a2 = Number(a.alliance_2_id);
-          if (a1 === minha) out.add(a2);
-          if (a2 === minha) out.add(a1);
+
+          if (Number(a.alliance_1_id) === minhaId) {
+            out.add(String(a.alliance_2_name || '').trim().toLowerCase());
+          }
+          if (Number(a.alliance_2_id) === minhaId) {
+            out.add(String(a.alliance_1_name || '').trim().toLowerCase());
+          }
         }
       }
+      out.delete('');
     } catch (e) {}
     return out;
   }
@@ -11068,7 +11144,8 @@ function makeSentinelasModule(opts) {
 
       for (const t of (d.town_list || [])) {
         if (Number(t.pid) === eu) continue;                    // minha
-        const al = Number(t.player_alliance);
+        /* O `player_alliance` é o NOME da aliança. */
+        const al = String(t.player_alliance || '').trim().toLowerCase();
         if (!al || !amigas.has(al)) continue;                  // não é aliado
         out.push({ id: Number(t.id), nome: String(t.name || ''), jogador: String(t.player || '') });
       }
