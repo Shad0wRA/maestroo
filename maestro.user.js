@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.31.1230
+// @version      2026.08.31.1218
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -691,7 +691,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.31.1230';
+  const MAESTRO_VERSAO = '2026.08.31.1218';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -23389,6 +23389,27 @@ function makeColonosModule(opts) {
     return t;
   }
 
+  /* QUANTOS COLONIZADORES ESTÃO NUMA CIDADE, contando o apoio.
+   *
+   * Numa base da rotação, quase todos vêm de outras contas do grupo — o
+   * `units()` só mostra os próprios, e por isso a base aparecia com zero
+   * quando tinha 95.
+   *
+   * O modelo `Units` tem um registo por cidade de origem: soma-se o que está
+   * NESTA cidade, venha de onde vier. */
+  function colonizadoresNaCidade(townId) {
+    let t = 0;
+    try {
+      const mods = mUw.MM.getModels().Units || {};
+      for (const k of Object.keys(mods)) {
+        const a = mods[k].attributes || {};
+        if (Number(a.current_town_id) !== Number(townId)) continue;
+        t += Number(a[NC]) || 0;
+      }
+    } catch (e) {}
+    return t;
+  }
+
   function ilhaDe(townId) {
     try {
       const t = mUw.ITowns.getTown(Number(townId));
@@ -23853,8 +23874,14 @@ function makeColonosModule(opts) {
     if (!agiu) {
       const meu = depositoDaMinhaEquipa(c, partilha);
       const op = depositoDaEquipaOposta(c, partilha);
+      /* Quantos estão na nossa base: quase todos vêm de outras contas, por
+       * isso conta-se o apoio e não só os próprios. */
+      const naNossa = meu && meu.townId ? colonizadoresNaCidade(meu.townId) : null;
+
       log(`Colonos: equipa ${c.equipa} · ${totalColonizadores()} colonizadores meus`
-        + (meu ? ` · depósito nosso: ${meu.dono}` : ' · sem depósito nosso')
+        + (meu
+            ? ` · depósito nosso: ${meu.dono}${naNossa != null ? ` (${naNossa})` : ''}`
+            : ' · sem depósito nosso')
         + (op ? ` · deles: ${op.dono} (${op.colonizadores})` : ' · sem depósito deles')
         + '.');
     }
