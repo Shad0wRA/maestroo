@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.01.1905
+// @version      2026.09.01.1920
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1026,7 +1026,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.01.1905';
+  const MAESTRO_VERSAO = '2026.09.01.1920';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -8738,7 +8738,11 @@ function makeRecrutamentoModule(opts) {
              * que aparecia "passou tudo mas não foi pedido". */
             const popU = Number(gd.population) || 1;
             const popBruta = Number(recursos.population) || 0;
-            const reservaPop = Math.max(30, Number(popReservada) || 0);
+            /* Nesta função a reserva chama-se `popParaConstruir` — o
+             * `popReservada` é o nome do parâmetro dentro do
+             * `decidirRecrutamento`, e usá-lo aqui rebentava o diagnóstico
+             * inteiro em silêncio. */
+            const reservaPop = Math.max(30, Number(popParaConstruir) || 0);
             const popOrcamento = Math.max(0, popBruta - reservaPop);
             if (popU > popOrcamento) {
               linhas.push(`${nome}: população ${popBruta} − ${reservaPop} reservados `
