@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.31.1505
+// @version      2026.08.31.1520
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -721,7 +721,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.31.1505';
+  const MAESTRO_VERSAO = '2026.08.31.1520';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -7432,7 +7432,13 @@ function makeRecrutamentoModule(opts) {
           ctx.log(`✨ ${f.nome}: ${edificio} acelerado (${f.favor} de favor de ${f.deus}; ${pop} de população a recrutar).`);
           await ctx.sleep(ctx.rand(600, 1200));
         } else {
-          ctx.log(`⚠️ ${f.nome} falhou: ${r.msg}`);
+          /* "O efeito já está activo" não é erro: o feitiço está lá e a
+           * acelerar, que é o que se queria. */
+          if (/j[áa] est[áa] ativ|already active/i.test(String(r.msg))) {
+            (ctx.logRotina || ctx.log)(`${f.nome}: o efeito já estava activo.`);
+          } else {
+            ctx.log(`⚠️ ${f.nome} falhou: ${r.msg}`);
+          }
         }
         break;   // um feitiço por edifício chega
       }
@@ -8405,8 +8411,19 @@ function makeRecrutamentoModule(opts) {
 
           if (antes && total > antes) {
             const nomeU = ((mUw.GameData.units || {})[u] || {}).name || u;
+
+            /* Separar o que está EM CASA do que está fora: numa cidade de
+             * farm os espadachins vão como escudo e morrem, portanto a
+             * contagem sobe e desce sozinha. Sem esta distinção não se sabe
+             * se o maestro recrutou a mais ou se a tropa apenas voltou. */
+            let emCasa = 0;
+            try { emCasa = Number((mUw.ITowns.getTown(town.id).units() || {})[u]) || 0; }
+            catch (e2) {}
+            const fora = Math.max(0, (Number(tem[u]) || 0) - emCasa);
+
             log(`⚠️ ${town.name}: ${nomeU} passou de ${antes} para ${total} `
-              + `e o template pede ${alvo} — o maestro está a recrutar a mais.`);
+              + `(${emCasa} em casa, ${fora} fora, ${Number(naFila[u]) || 0} na fila) `
+              + `e o template pede ${alvo}.`);
           }
         }
       }
