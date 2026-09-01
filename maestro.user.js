@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.31.1200
+// @version      2026.08.31.1230
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -691,7 +691,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.31.1200';
+  const MAESTRO_VERSAO = '2026.08.31.1230';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -3386,6 +3386,7 @@
             trocacidades: 'grepoTrocaCid_cfg_v1',
             bandidos: 'grepoBandidos_cfg_v1',
             sentinelas: 'grepoSentinelas_cfg_v1',
+            diaria: 'grepoDiaria_cfg_v1',
           };
           const nomeChave = CHAVE_DO_MODULO[m.id];
           if (!nomeChave) throw new Error('sem chave');
@@ -10677,6 +10678,29 @@ function makeBandidosModule(opts) {
         const q = (rec.configuration || {});
         log(`🎁 Bandidos: recompensa recolhida`
           + (q.amount ? ` (${q.amount} ${q.type || rec.subtype || ''})` : '') + '.');
+      } else if (/j[áa] est[áa] ativ|already active/i.test(String(r.msg))) {
+        /* O feitiço já está activo aqui: noutra cidade passa. */
+        let usou = false;
+        const minhas = Object.keys(mUw.ITowns.towns).map(Number);
+
+        for (const id of minhas) {
+          if (id === Number(townId)) continue;
+          try {
+            const mudou = await ctx.switchToTown(id);
+            if (mudou === false) continue;
+          } catch (e) { continue; }
+          await ctx.sleep(ctx.rand(500, 1000));
+
+          const r3 = await bridge('useReward', {}, id);
+          if (r3.ok) {
+            log('🎁 Bandidos: o efeito já estava activo — usei-o noutra cidade.');
+            usou = true;
+            break;
+          }
+          if (!/j[áa] est[áa] ativ|already active/i.test(String(r3.msg))) break;
+        }
+
+        if (!usou) rotina('Bandidos: o efeito já está activo em todas as cidades.');
       } else {
         rotina(`Bandidos: não consegui recolher a recompensa — ${r.msg}`);
       }
@@ -11099,6 +11123,234 @@ function makeSentinelasModule(opts) {
   }
 
   return { id: 'sentinelas', nome: 'Sentinelas', run, painel };
+}
+
+/* =========================================================================
+ *  MÓDULO: RECOMPENSA DIÁRIA
+ *
+ *  A caixa que o jogo dá por entrar. São dois passos, capturados do jogo:
+ *    DailyLoginBonus/<id> · openBox      {}   → abre e revela o que saiu
+ *    DailyLoginBonus/<id> · stashReward  {}   → guardar no inventário
+ *                         · trashReward  {}   → descartar
+ *
+ *  O modelo diz `open` (já foi aberta) e `accepted_at` (já foi decidida).
+ *
+ *  As recompensas de tropas descartam-se por omissão: ocupam população e
+ *  raramente são o que se quer.
+ * ========================================================================= */
+function makeDiariaModule(opts) {
+  let mUw = null;
+  let mWorld = '';
+
+  const CFG_KEY = 'grepoDiaria_cfg_v1';
+
+  const DEFAULTS = {
+    ativo: true,
+    descartarTropas: true,     // tropas ocupam população
+  };
+
+  /* Poderes que dão unidades — os mesmos que o módulo das missões usa. */
+  const PODERES_DE_TROPAS = ['instant_unit_package', 'unit_package', 'instant_units'];
+
+  const armazem = {
+    getItem: (k) => localStorage.getItem(chavePorPerfil(k)),
+    setItem: (k, v) => localStorage.setItem(chavePorPerfil(k), v),
+  };
+
+  async function lerResposta(resposta) {
+    try {
+      const txt = await resposta.text();
+      if (!txt || !txt.trim()) {
+        return { json: { error: `o servidor não respondeu (HTTP ${resposta.status})` } };
+      }
+      try { return JSON.parse(txt); }
+      catch (e) { return { json: { error: `resposta ilegível (HTTP ${resposta.status})` } }; }
+    } catch (e) { return { json: { error: e.message } }; }
+  }
+
+  function cfg() {
+    try { return Object.assign({}, DEFAULTS, JSON.parse(armazem.getItem(CFG_KEY) || '{}')); }
+    catch (e) { return Object.assign({}, DEFAULTS); }
+  }
+  function guardarCfg(c) {
+    try { armazem.setItem(CFG_KEY, JSON.stringify(c)); } catch (e) {}
+  }
+
+  function caixa() {
+    try {
+      const m = mUw.MM.getModels().DailyLoginBonus || {};
+      const k = Object.keys(m)[0];
+      if (!k) return null;
+      return Object.assign({ __id: k }, m[k].attributes || {});
+    } catch (e) { return null; }
+  }
+
+  async function bridge(id, acao) {
+    try {
+      const t = Number(mUw.Game.townId);
+      const url = mUw.location.origin + '/game/frontend_bridge?town_id=' + t
+        + '&action=execute&h=' + mUw.Game.csrfToken;
+      const r = await mUw.fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                   'x-requested-with': 'XMLHttpRequest' },
+        credentials: 'include',
+        body: 'json=' + encodeURIComponent(JSON.stringify({
+          model_url: `DailyLoginBonus/${Number(id)}`,
+          action_name: acao,
+          captcha: null,
+          arguments: {},
+          town_id: t,
+          nl_init: true,
+        })),
+      }).then(lerResposta);
+
+      const j = r && r.json;
+      const erro = j && j.error;
+      return { ok: !erro, msg: erro || (j && j.success) || 'ok' };
+    } catch (e) { return { ok: false, msg: e.message }; }
+  }
+
+  /* O que saiu na caixa é tropa? */
+  function ehTropa(rec) {
+    try {
+      const pid = String((rec || {}).power_id || '');
+      return PODERES_DE_TROPAS.indexOf(pid) >= 0;
+    } catch (e) { return false; }
+  }
+
+  async function run(ctx) {
+    mUw = ctx.uw; mWorld = ctx.WORLD;
+    const log = ctx.log;
+    const rotina = ctx.logRotina || ctx.log;
+    const c = cfg();
+
+    try {
+      const doPainel = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroLigado;
+      if (doPainel) {
+        const v = doPainel('diaria');
+        if (v === true) c.ativo = true;
+        if (v === false) c.ativo = false;
+      }
+    } catch (e) {}
+
+    if (!c.ativo) { rotina('Diária: está desligado.'); return; }
+
+    const cx = caixa();
+    if (!cx) { rotina('Diária: não há caixa nesta conta.'); return; }
+
+    /* JÁ FOI DECIDIDA? */
+    if (cx.accepted_at) {
+      rotina('Diária: a de hoje já foi recolhida.');
+      return;
+    }
+
+    /* ABRIR, se ainda estiver fechada. */
+    if (!cx.open) {
+      const r = await bridge(cx.id, 'openBox');
+      if (!r.ok) {
+        rotina(`Diária: não consegui abrir a caixa — ${r.msg}`);
+        return;
+      }
+      log(`🎁 Diária: caixa do nível ${cx.level} aberta.`);
+      await ctx.sleep(ctx.rand(900, 1800));
+    }
+
+    /* O que saiu? O modelo actualiza-se com a resposta do `openBox`. */
+    const depois = caixa() || cx;
+    const rec = depois.reward || {};
+    const tropa = ehTropa(rec);
+
+    /* `useReward` para usar, `trashReward` para descartar — ambos
+     * confirmados em jogo. */
+    const acao = (tropa && c.descartarTropas) ? 'trashReward' : 'useReward';
+
+    let r2 = await bridge(depois.id, acao);
+
+    /* O FEITIÇO JÁ ESTÁ ACTIVO NESTA CIDADE?
+     *
+     * O jogo não deixa acumular o mesmo efeito. Mas noutra cidade passa —
+     * troca-se e tenta-se outra vez, em vez de perder a recompensa.
+     *
+     * Foi o que se viu nas missões de ilha: "O efeito já está ativo nesta
+     * cidade" e ficava por lá. */
+    if (!r2.ok && /j[áa] est[áa] ativ|already active/i.test(String(r2.msg))) {
+      const minhas = Object.keys(mUw.ITowns.towns).map(Number);
+      const atual = Number(mUw.Game.townId);
+
+      for (const id of minhas) {
+        if (id === atual) continue;
+        try {
+          const mudou = await ctx.switchToTown(id);
+          if (mudou === false) continue;
+        } catch (e) { continue; }
+        await ctx.sleep(ctx.rand(500, 1000));
+
+        r2 = await bridge(depois.id, acao);
+        if (r2.ok) {
+          log(`🎁 Diária: o efeito já estava activo — usei-o noutra cidade.`);
+          break;
+        }
+        if (!/j[áa] est[áa] ativ|already active/i.test(String(r2.msg))) break;
+      }
+    }
+
+    if (r2.ok) {
+      const q = rec.configuration || {};
+      const oQue = q.amount ? `${q.amount} ${q.type || rec.subtype || ''}` : (rec.power_id || 'recompensa');
+      log(`🎁 Diária: ${oQue} — ${acao === 'trashReward' ? 'descartada' : 'guardada no inventário'}.`);
+    } else {
+      rotina(`Diária: não consegui ${acao === 'trashReward' ? 'descartar' : 'guardar'} — ${r2.msg}`);
+    }
+  }
+
+  function painel(container, ctx) {
+    mUw = ctx.uw; mWorld = ctx.WORLD;
+    const c = cfg();
+    const cx = caixa();
+
+    let estado = 'sem caixa nesta conta';
+    if (cx) {
+      if (cx.accepted_at) estado = 'a de hoje já foi recolhida';
+      else if (cx.open) estado = 'aberta, à espera de decisão';
+      else estado = `por abrir (nível ${cx.level})`;
+    }
+
+    container.innerHTML = `
+      <label style="display:block;margin-bottom:4px">
+        <input type="checkbox" id="dia-on"${c.ativo ? ' checked' : ''}>
+        <b>Recolher a recompensa diária</b>
+      </label>
+      <div style="opacity:.6;font-size:10px;margin:0 0 8px 18px">
+        A caixa que o jogo dá por entrares. Abre-a e guarda o que sair no
+        inventário.
+      </div>
+
+      <div style="background:#0d141c;padding:6px 8px;border-radius:4px;margin-bottom:6px;font-size:11px">
+        ${estado}
+      </div>
+
+      <label style="display:block;font-size:11px">
+        <input type="checkbox" id="dia-tropas"${c.descartarTropas ? ' checked' : ''}>
+        descartar quando sai tropa
+      </label>
+      <div style="opacity:.55;font-size:10px;margin:0 0 6px 18px">
+        A tropa das caixas ocupa população e raramente é a que queres.
+      </div>
+
+      <button id="dia-guardar" style="cursor:pointer;width:100%;margin-top:4px;background:#48d;color:#fff;padding:6px;border:none;border-radius:4px">Guardar</button>`;
+
+    container.querySelector('#dia-guardar').onclick = () => {
+      const cc = cfg();
+      cc.ativo = container.querySelector('#dia-on').checked;
+      cc.descartarTropas = container.querySelector('#dia-tropas').checked;
+      guardarCfg(cc);
+      ctx.log('Diária: definições guardadas.');
+      painel(container, ctx);
+    };
+  }
+
+  return { id: 'diaria', nome: 'Recompensa diária', run, painel };
 }
 
 function makeAldeiasModule(opts) {
@@ -22524,12 +22776,41 @@ function makeMissoesModule(opts) {
         log(`🎁 ${nome}: recompensa recolhida (${acao === 'trash' ? 'descartada' : acao === 'use' ? 'usada' : 'guardada'}).`);
         agiu++;
         await ctx.sleep(ctx.rand(800, 1500));
+      } else if (/j[áa] est[áa] ativ|already active/i.test(String(r.msg))) {
+        /* O FEITIÇO JÁ ESTÁ ACTIVO NESTA CIDADE.
+         *
+         * O jogo não deixa acumular o mesmo efeito, mas noutra cidade passa.
+         * Troca-se e tenta-se, em vez de deixar a recompensa por usar. */
+        let usou = false;
+
+        const minhas = Object.keys(mUw.ITowns.towns).map(Number);
+        const atual = Number(mUw.Game.townId);
+
+        for (const id of minhas) {
+          if (id === atual) continue;
+          try {
+            const mudou = await ctx.switchToTown(id);
+            if (mudou === false) continue;
+          } catch (e) { continue; }
+          await ctx.sleep(ctx.rand(500, 1000));
+
+          const r3 = await recolher(id, m.progressable_id, acao);
+          if (r3.ok) {
+            const nomeCidade = (() => {
+              try { return mUw.ITowns.getTown(id).getName(); } catch (e) { return id; }
+            })();
+            log(`🎁 ${nome}: o efeito já estava activo — usei-o em ${nomeCidade}.`);
+            usou = true;
+            break;
+          }
+          if (!/j[áa] est[áa] ativ|already active/i.test(String(r3.msg))) break;
+        }
+
+        if (!usou) {
+          rotina(`${nome}: o efeito já está activo em todas as cidades; fica para depois.`);
+        }
       } else {
-        /* "O efeito já está activo" não é erro: a recompensa foi usada e o
-         * jogo não deixa acumular o mesmo efeito. */
-        const jaAtivo = /j[áa] est[áa] ativ|already active/i.test(String(r.msg));
-        if (jaAtivo) rotina(`${nome}: o efeito já estava activo, nada a fazer.`);
-        else log(`⚠️ ${nome}: não consegui recolher a recompensa (${r.msg}).`);
+        log(`⚠️ ${nome}: não consegui recolher a recompensa (${r.msg}).`);
       }
     }
 
@@ -26953,6 +27234,8 @@ function makeRelatoriosModule(opts) {
   registerModule(makeBandidosModule({ intervaloMin: 3 }));
   /* 12 horas: as sentinelas só se repõem quando morrem. */
   registerModule(makeSentinelasModule({ intervaloMin: 720 }));
+  /* 60 min: a caixa aparece uma vez por dia, não é preciso mais. */
+  registerModule(makeDiariaModule({ intervaloMin: 60 }));
   registerModule(makeFundacaoModule({ intervaloMin: 30 }));
   registerModule(makeRelatoriosModule({ intervaloMin: 60 }));
 
