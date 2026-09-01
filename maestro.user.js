@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.01.1710
+// @version      2026.09.01.1730
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -972,7 +972,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.01.1710';
+  const MAESTRO_VERSAO = '2026.09.01.1730';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -7053,6 +7053,91 @@ function makeRecrutamentoModule(opts) {
     return vivos.reduce((s2, x) => s2 + (Number(x.q) || 0), 0);
   }
 
+  /* Cancelar uma ordem de recrutamento.
+   *
+   * Capturado do jogo:
+   *   UnitOrder/<id> · cancelOrder · { unit_type: 'naval' | 'land' }
+   *
+   * O `unit_type` do pedido é o TIPO DE FILA (naval ou terrestre), não a
+   * unidade — o campo `kind` da ordem já traz isso. */
+  async function bridgeUnitOrder(orderId, kind, townId) {
+    try {
+      const url = mUw.location.origin + '/game/frontend_bridge?town_id=' + Number(townId)
+        + '&action=execute&h=' + mUw.Game.csrfToken;
+      const r = await mUw.fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                   'x-requested-with': 'XMLHttpRequest' },
+        credentials: 'include',
+        body: 'json=' + encodeURIComponent(JSON.stringify({
+          model_url: `UnitOrder/${Number(orderId)}`,
+          action_name: 'cancelOrder',
+          captcha: null,
+          arguments: { unit_type: String(kind || 'land') },
+          town_id: Number(townId),
+          nl_init: true,
+        })),
+      }).then(lerResposta);
+      aplicarNotificacoes(r);
+      const j = r && r.json;
+      const erro = j && j.error;
+      return { ok: !erro, msg: erro || (j && j.success) || 'ok' };
+    } catch (e) { return { ok: false, msg: e.message }; }
+  }
+
+  /* CANCELAR UMA ORDEM DE RECRUTAMENTO.
+   *
+   * Capturado do jogo:
+   *   UnitOrder/<id> · cancelOrder · { unit_type: 'naval' | 'land' }
+   *
+   * O jogo devolve parte dos recursos — não tudo. Por isso só se cancela
+   * quando há mesmo excesso, e refaz-se logo com o número certo. */
+  async function cancelarOrdem(ordemId, tipo, townId) {
+    try {
+      const url = mUw.location.origin + '/game/frontend_bridge?town_id=' + Number(townId)
+        + '&action=execute&h=' + mUw.Game.csrfToken;
+      const r = await mUw.fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                   'x-requested-with': 'XMLHttpRequest' },
+        credentials: 'include',
+        body: 'json=' + encodeURIComponent(JSON.stringify({
+          model_url: `UnitOrder/${Number(ordemId)}`,
+          action_name: 'cancelOrder',
+          captcha: null,
+          arguments: { unit_type: tipo },
+          town_id: Number(townId),
+          nl_init: true,
+        })),
+      }).then(lerResposta);
+      aplicarNotificacoes(r);
+      const j = r && r.json;
+      const erro = j && j.error;
+      return { ok: !erro, msg: erro || (j && j.success) || 'ok' };
+    } catch (e) { return { ok: false, msg: e.message }; }
+  }
+
+  /* AS ORDENS EM CURSO DE UMA CIDADE, por unidade. */
+  function ordensDaCidade(townId, unitId) {
+    const out = [];
+    try {
+      const col = mUw.MM.getCollections().UnitOrder;
+      for (const m of ((col && col[0] && col[0].models) || [])) {
+        const a = m.attributes || {};
+        if (Number(a.town_id) !== Number(townId)) continue;
+        if (unitId && a.unit_type !== unitId) continue;
+        out.push({
+          id: a.id,
+          unitId: a.unit_type,
+          kind: a.kind,                       // 'naval' ou 'land'
+          falta: Number(a.units_left) || 0,
+          total: Number(a.count) || 0,
+        });
+      }
+    } catch (e) {}
+    return out;
+  }
+
   function contarFilasPorCidade() {
     const out = {};
     try {
@@ -8719,6 +8804,141 @@ function makeRecrutamentoModule(opts) {
       }
     }
     try { armazem.setItem('grepoRecruta_expandido_v1', JSON.stringify(expandido)); } catch (e) {}
+    /* CANCELAR AS ORDENS QUE PASSAM DO TEMPLATE.
+     *
+     * Rede de segurança: se o travão falhar por alguma razão, isto desfaz o
+     * excesso antes de ele ficar feito.
+     *
+     * Cancela-se do MAIS RECENTE para o mais antigo, e só ordens que caibam
+     * INTEIRAS no excesso. Uma ordem de 19 quando só sobram 5 fica de pé — o
+     * jogo cancela a ordem toda e perder-se-iam 14 que queres.
+     *
+     * O cancelamento devolve parte dos recursos, não tudo. Por isso só se
+     * cancela o que é mesmo excesso.
+     *
+     * Pedido capturado do jogo:
+     *   UnitOrder/<id> · cancelOrder · { unit_type: 'naval' | 'land' }
+     */
+    try {
+      const filasAgora = contarFilasPorCidade();
+      const temAgora = contarUnidadesPorCidadeDeOrigem();
+
+      const col = mUw.MM.getCollections().UnitOrder;
+      const ordens = ((col && col[0] && col[0].models) || []).map((m) => m.attributes || {});
+
+      for (const town of towns) {
+        const tplNome = mapa[town.id];
+        if (!tplNome) continue;
+        const alvosT = (templates[tplNome] || {}).unidades || {};
+        if (!Object.keys(alvosT).length) continue;
+
+        const tem = temAgora[town.id] || {};
+        const naFila = filasAgora[town.id] || {};
+
+        for (const u of Object.keys(alvosT)) {
+          const alvo = Number(alvosT[u]) || 0;
+          if (!alvo) continue;
+
+          let excesso = ((Number(tem[u]) || 0) + (Number(naFila[u]) || 0)) - alvo;
+          if (excesso <= 0) continue;
+
+          /* As ordens desta unidade, da mais recente para a mais antiga: a
+           * última a entrar é a primeira a sair. */
+          const minhas = ordens
+            .filter((a) => Number(a.town_id) === Number(town.id) && a.unit_type === u)
+            .sort((a, b) => Number(b.id) - Number(a.id));
+
+          for (const o of minhas) {
+            const porFazer = Number(o.units_left) || 0;
+            if (porFazer <= 0) continue;
+            if (porFazer > excesso) continue;   // não cabe inteira: deixa estar
+
+            const r = await bridgeUnitOrder(o.id, o.kind || 'land', town.id);
+            if (r.ok) {
+              excesso -= porFazer;
+              log(`🚫 ${town.name}: cancelei ${porFazer} ${(mUw.GameData.units[u] || {}).name || u} `
+                + `— passava do template (${alvo}).`);
+              await ctx.sleep(ctx.rand(600, 1200));
+            } else {
+              rotina(`${town.name}: não consegui cancelar a ordem — ${r.msg}`);
+              break;
+            }
+            if (excesso <= 0) break;
+          }
+        }
+      }
+    } catch (e) {}
+
+    /* ============ CORRIGIR AS ORDENS QUE PASSAM DO TEMPLATE ============
+     *
+     * Rede de segurança: se o travão deixou passar, isto apanha.
+     *
+     * Cancela a ordem que faz passar e refaz com o número certo. Com 109
+     * espadachins, template de 120 e uma ordem de 12: cancela os 12 e pede
+     * 11.
+     *
+     * Serve o quartel e o porto — o `kind` da ordem diz qual, e o pedido
+     * leva 'land' ou 'naval'.
+     *
+     * O jogo devolve parte dos recursos ao cancelar, por isso só se mexe
+     * quando há mesmo excesso. */
+    try {
+      for (const town of towns) {
+        const tplNome = mapa[town.id];
+        if (!tplNome) continue;
+        const alvosT = (templates[tplNome] || {}).unidades || {};
+        if (!Object.keys(alvosT).length) continue;
+
+        const tem = contarUnidadesPorCidadeDeOrigem()[town.id] || {};
+
+        for (const u of Object.keys(alvosT)) {
+          const alvo = Number(alvosT[u]) || 0;
+          if (!alvo) continue;
+
+          const ordens = ordensDaCidade(town.id, u);
+          if (!ordens.length) continue;
+
+          const naFila = ordens.reduce((s2, o) => s2 + o.falta, 0);
+          const total = (Number(tem[u]) || 0) + naFila;
+          const excesso = total - alvo;
+          if (excesso <= 0) continue;
+
+          /* Da ordem MAIS RECENTE para a mais antiga: são as que ainda não
+           * começaram, e cancelá-las custa menos. */
+          for (let i = ordens.length - 1; i >= 0 && excesso > 0; i--) {
+            const o = ordens[i];
+            if (!o.falta) continue;
+
+            const r = await cancelarOrdem(o.id, o.kind, town.id);
+            if (!r.ok) {
+              rotina(`${town.name}: não consegui cancelar a ordem de ${o.falta} `
+                + `${(mUw.GameData.units[u] || {}).name || u} — ${r.msg}`);
+              break;
+            }
+
+            /* Quanto desta ordem era legítimo? Refaz-se essa parte. */
+            const aRepor = Math.max(0, o.falta - excesso);
+            log(`✂️ ${town.name}: cancelei ${o.falta} `
+              + `${(mUw.GameData.units[u] || {}).name || u} (tinha ${total}, alvo ${alvo})`
+              + (aRepor ? ` e reponho ${aRepor}.` : '.'));
+
+            await ctx.sleep(ctx.rand(600, 1200));
+
+            if (aRepor > 0) {
+              const rr = await recrutar(town.id, u, aRepor, o.kind === 'naval');
+              if (rr.ok) {
+                registarPedido(town.id, u, aRepor);
+              } else {
+                rotina(`${town.name}: cancelei mas não consegui repor ${aRepor} — ${rr.msg}`);
+              }
+              await ctx.sleep(ctx.rand(600, 1200));
+            }
+            break;   // uma correcção por unidade e passagem chega
+          }
+        }
+      }
+    } catch (e) {}
+
     /* AVISAR SE ALGUMA CIDADE PASSOU DO TEMPLATE.
      *
      * Hoje já vimos duas causas para isto: ordens repetidas por a colecção
