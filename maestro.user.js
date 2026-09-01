@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.31.1705
+// @version      2026.08.31.1720
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -972,7 +972,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.31.1705';
+  const MAESTRO_VERSAO = '2026.08.31.1720';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -25232,13 +25232,29 @@ function makeApoioModule(opts) {
     try {
       if (typeof fbLerM === 'function' && fbUrlM && fbUrlM()) {
         const d = await fbLerM(fbCaminhoApoio());
+
+        /* DEPOIS DE MIGRAR, O FIREBASE MANDA — mesmo vazio.
+         *
+         * O Firebase não guarda listas vazias: ao retirar o último alvo, o
+         * caminho fica a `null` ou sem a chave `alvos`. A condição anterior
+         * exigia `d === null` exactamente, e um objecto sem `alvos` escapava —
+         * caía-se para o Gist, que ainda tinha a lista antiga, e os alvos
+         * retirados voltavam todos.
+         *
+         * Visto em jogo: Firebase vazio, lista local com 13, e os 13 a
+         * reaparecerem a cada actualização do painel.
+         *
+         * Uma vez migrado, o Gist deixa de contar. Se o Firebase não responder
+         * de todo — erro de rede — o `catch` leva-nos ao Gist na mesma. */
+        if (migrouParaFirebase()) {
+          const r0 = { alvos: (d && Array.isArray(d.alvos)) ? d.alvos : [] };
+          guardarEmCache(r0);
+          return r0;
+        }
+
         if (d && Array.isArray(d.alvos)) {
           guardarEmCache(d);
           return d;
-        }
-        /* Migrado mas sem alvos: o caminho existe e está vazio. */
-        if (d === null && migrouParaFirebase()) {
-          return { alvos: [] };
         }
       }
     } catch (e) {}
