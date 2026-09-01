@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.01.1845
+// @version      2026.09.01.1855
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1026,7 +1026,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.01.1845';
+  const MAESTRO_VERSAO = '2026.09.01.1855';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -8762,6 +8762,22 @@ function makeRecrutamentoModule(opts) {
           }
           if (linhas.length) {
             rotina(`${town.name} [porque não recruta]: ${linhas.slice(0, 4).join(' · ')}`);
+          } else {
+            /* NEM UMA RAZÃO?
+             *
+             * Então o ciclo saltou tudo no `querem <= ja`, e os números que
+             * ele usou não são os que se vê no jogo. Mostram-se em cru, para
+             * se poder comparar.
+             *
+             * Foi este o caso da 55.17: 14 trirremes de 176, e nem avaliada
+             * nem explicada. */
+            const cru = Object.keys(alvos).map((uid) => {
+              const nomeU = (units[uid] || {}).name || uid;
+              return `${nomeU} ${(tenho[uid] || 0)}+${(emFila[uid] || 0)}/${alvos[uid]}`;
+            }).join(' · ');
+            rotina(`${town.name} [sem razão aparente]: ${cru} `
+              + `· população livre ${Number((recursos || {}).population) || 0}, `
+              + `reservada ${popParaConstruir}`);
           }
         } catch (e) {}
 
