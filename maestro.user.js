@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.01.1750
+// @version      2026.09.01.1825
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -972,7 +972,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.01.1750';
+  const MAESTRO_VERSAO = '2026.09.01.1825';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -8487,8 +8487,10 @@ function makeRecrutamentoModule(opts) {
       // edifícios definidos no template atingirem os níveis mínimos.
       const req = cumpreRequisitos(niveis[town.id], tpl.requisitos);
       if (!req.ok) {
-        rotina(`${town.name}: saltada — requisitos por cumprir `
-          + `(${(req.falta || []).join(', ') || 'edifícios'}).`);
+        /* O `falta` é TEXTO ("farm nv12/20"), não uma lista. Chamar-lhe
+         * `.join` rebentava e parava o módulo inteiro — foi por isso que
+         * nenhuma cidade recrutou. */
+        rotina(`${town.name}: saltada — requisitos por cumprir (${req.falta || 'edifícios'}).`);
         continue;
       }
 
@@ -16094,7 +16096,10 @@ function makeDeusesModule(opts) {
          * não ter enviados que cheguem para o mínimo que o jogo exige. */
         const poucaTropa = /pelo menos|habitantes|minimum|too few/i.test(String(r.msg));
         if (poucaTropa) {
-          rotina(`${t.name}: não tenho tropa que chegue para o mínimo do jogo (${r.msg}).`);
+          /* O `rotina` desta função vem do ctx: o do topo do módulo está
+           * noutro âmbito e não chega aqui. */
+          (ctx.logRotina || ctx.log)(
+            `${t.name}: não tenho tropa que chegue para o mínimo do jogo (${r.msg}).`);
         } else {
           log(`⚠️ ${t.name}: ataque falhou (${r.msg}).`);
         }
