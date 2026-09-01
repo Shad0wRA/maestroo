@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.31.1720
+// @version      2026.08.31.1730
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -972,7 +972,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.31.1720';
+  const MAESTRO_VERSAO = '2026.08.31.1730';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -10297,6 +10297,17 @@ function makeHeroisModule(opts) {
       if (tipo === 'argus') {
         const doColono = melhorCidadeDeColonos();
         if (doColono && doColono.townId !== est.cidade) {
+          /* RETIRAR PRIMEIRO.
+           *
+           * O jogo recusa atribuir um herói que já está numa cidade — "já foi
+           * atribuído a uma cidade ou um ataque". O código do módulo já sabia
+           * disso e tem o `retirarDaCidade`, mas eu não o usei neste caminho
+           * quando escrevi a rotação do Argus. */
+          if (est.cidade) {
+            await retirarDaCidade(h.id, tipo, est.cidade);
+            await ctx.sleep(ctx.rand(600, 1200));
+          }
+
           const r = await atribuirACidade(h.id, tipo, doColono.townId);
           if (r.ok) {
             if (est.cidade) ocupadas.delete(est.cidade);
