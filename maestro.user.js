@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.01.1650
+// @version      2026.09.01.1710
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -972,7 +972,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.01.1650';
+  const MAESTRO_VERSAO = '2026.09.01.1710';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -7063,20 +7063,20 @@ function makeRecrutamentoModule(opts) {
         const tid = Number(a.town_id);
         const acc = out[tid] = out[tid] || {};
 
-        /* CONTAR A ORDEM INTEIRA, não só o que falta.
+        /* CONTAR O QUE FALTA PRODUZIR, não a ordem inteira.
          *
-         * O `units_left` desce à medida que as unidades ficam prontas, mas
-         * elas só aparecem no modelo `Units` quando a ORDEM ACABA. Entre uma
-         * coisa e outra ficam fora das duas contagens — e o módulo recruta
-         * para preencher um buraco que não existe.
+         * O `count` é o tamanho original da ordem; o `units_left` é quanto
+         * falta. As unidades já prontas ENTRAM NO MODELO à medida que saem,
+         * não só no fim — verificado em jogo: uma cidade com 152 no modelo
+         * mostrava 153 no porto, com uma ordem de 19 a meio (3 por fazer).
          *
-         * Visto em jogo: uma cidade com o template de 500 hoplitas cumprido
-         * recrutou mais 55.
+         * Contar o `count` conta as prontas duas vezes: uma no modelo, outra
+         * na fila. Numa cidade com três ordens a meio, isso eram 16 unidades
+         * fantasma — e o travão do template decidia com números inflacionados.
          *
-         * Contando o `count` (o total pedido), nada se perde: as já prontas
-         * continuam contadas até a ordem fechar. */
-        const total = (a.count != null) ? Number(a.count)
-          : (a.units_left != null ? Number(a.units_left) : 0);
+         * O comentário anterior dizia o contrário e estava errado. */
+        const total = (a.units_left != null) ? Number(a.units_left)
+          : (a.count != null ? Number(a.count) : 0);
         acc[a.unit_type] = (acc[a.unit_type] || 0) + (total || 0);
       }
     } catch (e) {}
@@ -8690,6 +8690,22 @@ function makeRecrutamentoModule(opts) {
           /* Guardar o que se pediu: a colecção do jogo demora a mostrá-lo e
            * sem isto a passagem seguinte pedia outra vez. */
           registarPedido(town.id, a.unitId, a.amount);
+
+          /* GUARDAR O QUE SE VIU AO DECIDIR.
+           *
+           * Quando uma cidade passa do template, é isto que diz porquê: com
+           * que números o travão deixou passar. Sem isto ficamos a comparar
+           * o resultado com o alvo sem saber o que ele viu.
+           *
+           * Vê-se com `__maestroCaixaNegra(0, 'recrutamento')`. */
+          try {
+            const alvoU = Number(alvos[a.unitId]) || 0;
+            const tinha = Number((tenho || {})[a.unitId]) || 0;
+            const naFilaU = Number((emFila || {})[a.unitId]) || 0;
+            (ctx.logRotina || ctx.log)(
+              `${town.name}: pedi ${a.amount} ${a.nome} — tinha ${tinha}, `
+              + `fila ${naFilaU}, alvo ${alvoU}.`);
+          } catch (e) {}
           log(`⚔️ ${town.name}: +${a.amount} ${a.nome}${a.isNaval ? ' (porto)' : ''}${a.mitica ? ` [${a.deus}, favor resta ~${favorLivre[a.deus]}]` : ''}.`);
           await ctx.sleep(ctx.rand(600, 1200));
         } else {
