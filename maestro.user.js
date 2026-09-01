@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.01.1920
+// @version      2026.09.01.2000
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -700,6 +700,39 @@
     };
   } catch (e) {}
 
+  /* ============ ERROS DE PROGRAMAÇÃO ESCONDIDOS =========================
+   *
+   * O ficheiro tem centenas de `try { ... } catch (e) {}` — e são precisos:
+   * o jogo devolve modelos vazios, a rede falha, um campo não existe. Essas
+   * falhas são normais e não se quer barulho por causa delas.
+   *
+   * Mas o mesmo `catch` também engole ERROS MEUS. O `popReservada is not
+   * defined` viveu escondido várias versões: o diagnóstico do recrutamento
+   * rebentava em silêncio e as cidades apareciam como "avaliada, sem ordens"
+   * sem explicação nenhuma.
+   *
+   * Esta função separa as duas coisas. Uma variável que não existe ou uma
+   * função que não é função é sempre erro de código — nunca uma falha
+   * prevista. Essas são gritadas; o resto continua em silêncio.
+   * ==================================================================== */
+  const errosJaVistos = new Set();
+
+  function seErroDeCodigo(e, onde) {
+    try {
+      const msg = String((e && e.message) || e || '');
+      if (!/is not defined|is not a function|Cannot read propert|of undefined|of null/i.test(msg)) {
+        return;   // falha prevista: silêncio, como antes
+      }
+      /* Uma vez por mensagem: senão enche tudo numa passagem. */
+      const chave = onde + '|' + msg;
+      if (errosJaVistos.has(chave)) return;
+      errosJaVistos.add(chave);
+
+      log('core', `🐞 Erro de código em ${onde}: ${msg}`);
+    } catch (e2) {}
+  }
+  try { uw.__maestroErrosDeCodigo = () => [...errosJaVistos]; } catch (e) {}
+
   const WEBHOOKS_KEY = 'grepoMaestro_webhooks_v1';
   const WEBHOOKS_OMISSAO = { captcha: '', ataque: '', ataqueNC: '' };
 
@@ -1026,7 +1059,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.01.1920';
+  const MAESTRO_VERSAO = '2026.09.01.2000';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -4984,7 +5017,7 @@ function makeConstrucaoModule(opts) {
           }
           break;
         }
-      } catch (e) {}
+      } catch (e) { seErroDeCodigo(e, 'Construcao'); }
 
       /* DEMOLIR primeiro: uma cidade conquistada pode vir com edifícios acima
        * do template. Demolir liberta população e alinha-a com o resto. */
@@ -5162,7 +5195,7 @@ function makeConstrucaoModule(opts) {
     /* Gravar SEMPRE as marcas de cumprida: se só se gravasse quando algo
      * acontece, a marca perdia-se nas passagens em que não há nada a fazer —
      * que são justamente aquelas em que ela é útil. */
-    try { saveEstado(estado); } catch (e) {}
+    try { saveEstado(estado); } catch (e) { seErroDeCodigo(e, 'Construcao'); }
 
     if (saltadas) {
       rotina(`Construção: ${saltadas} cidade(s) com o template cumprido — não as visitei.`);
@@ -5243,12 +5276,12 @@ function makeConstrucaoModule(opts) {
         tentativas++;
         if (getTownGroups().length) {
           clearInterval(t);
-          try { renderPainel(container); } catch (e) {}
+          try { renderPainel(container); } catch (e) { seErroDeCodigo(e, 'Construcao'); }
         } else if (tentativas > 40) {                  // ~20 s e desiste
           clearInterval(t);
         }
       }, 500);
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Construcao'); }
   }
 
   /* Guardar e repor a posição do rolamento à volta de cada redesenho.
@@ -5300,7 +5333,7 @@ function makeConstrucaoModule(opts) {
           if (el.scrollTop > 0) guardados.push({ caminho: caminhoDe(el), y: el.scrollTop, el });
         });
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Construcao'); }
 
     fn();
 
@@ -5311,7 +5344,7 @@ function makeConstrucaoModule(opts) {
           if (el && el.isConnected) { el.scrollTop = y; return; }
           const novo2 = porCaminho(caminho);
           if (novo2) novo2.scrollTop = y;
-        } catch (e) {}
+        } catch (e) { seErroDeCodigo(e, 'Construcao'); }
       });
     };
     repor();
@@ -6493,12 +6526,12 @@ function makePesquisaModule(opts) {
         tentativas++;
         if (pronto()) {
           clearInterval(t);
-          try { renderPainel(container); } catch (e) {}
+          try { renderPainel(container); } catch (e) { seErroDeCodigo(e, 'Pesquisa'); }
         } else if (tentativas > 40) {                  // ~20 s e desiste
           clearInterval(t);
         }
       }, 500);
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Pesquisa'); }
   }
 
 
@@ -6804,14 +6837,14 @@ function makePesquisaModule(opts) {
           if (el.scrollTop > 0) guardados.push({ caminho: caminhoDe(el), y: el.scrollTop, el });
         });
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Pesquisa'); }
     fn();
     const repor = () => guardados.forEach(({ caminho, y, el }) => {
       try {
         if (el && el.isConnected) { el.scrollTop = y; return; }
         const n2 = porCaminho(caminho);
         if (n2) n2.scrollTop = y;
-      } catch (e) {}
+      } catch (e) { seErroDeCodigo(e, 'Pesquisa'); }
     });
     repor();
     try { requestAnimationFrame(repor); } catch (e) { setTimeout(repor, 0); }
@@ -7995,12 +8028,24 @@ function makeRecrutamentoModule(opts) {
   /* A pesquisa desta unidade já está feita na cidade activa?
    * Devolve false quando não há dados — mais vale tentar do que bloquear por
    * engano. */
-  function pesquisaEmFaltaAqui(unitId) {
+  /* A PESQUISA É DA CIDADE QUE SE ESTÁ A PROCESSAR.
+   *
+   * Isto lia `mUw.Game.townId` — a cidade ACTIVA no jogo. Mas o módulo
+   * percorre as 43 cidades sem trocar de cidade, portanto lia sempre as
+   * pesquisas daquela onde o jogador está.
+   *
+   * Resultado: se a cidade activa não tivesse a trirreme investigada, TODAS
+   * as outras eram saltadas em silêncio — e o diagnóstico, que usava outra
+   * função, dizia "passou tudo mas não foi pedido".
+   *
+   * Foi isto que impediu a 55.17, a 55.11 e a 55.9 de recrutar. */
+  function pesquisaEmFaltaAqui(unitId, townId) {
     try {
       const u = (mUw.GameData.units || {})[unitId] || {};
       const precisa = u.research_dependencies || [];
       if (!precisa.length) return false;
-      const tid = mUw.Game && mUw.Game.townId;
+
+      const tid = Number(townId) || (mUw.Game && mUw.Game.townId);
       const mods = mUw.MM.getModels().Researches || {};
       const feitas = (mods[tid] && mods[tid].attributes) || {};
       if (!Object.keys(feitas).length) return false;   // sem dados: não bloquear
@@ -8028,7 +8073,7 @@ function makeRecrutamentoModule(opts) {
     catch (e) { return null; }
   }
 
-  function decidirRecrutamento(alvos, tenho, emFila, recursos, reservaPct, units, adiadas, favorLivre, desconto, armazemOk, descontoUnidade, armazemPorUnidade, popReservada, deusDestaCidade) {
+  function decidirRecrutamento(alvos, tenho, emFila, recursos, reservaPct, units, adiadas, favorLivre, desconto, armazemOk, descontoUnidade, armazemPorUnidade, popReservada, deusDestaCidade, townDestaDecisao) {
     favorLivre = favorLivre || {};
     desconto = desconto || 0;
     if (armazemOk === undefined) armazemOk = true;
@@ -8081,7 +8126,7 @@ function makeRecrutamentoModule(opts) {
        * Não é um erro — é uma situação transitória. Sem isto, o módulo tentava
        * recrutar, o servidor recusava e enchia o log de avisos até a pesquisa
        * ficar pronta. */
-      if (pesquisaEmFaltaAqui(unitId)) continue;
+      if (pesquisaEmFaltaAqui(unitId, townDestaDecisao)) continue;
       const alvo = Number(alvos[unitId]) || 0;
       if (alvo <= 0) continue;
       const gd = units[unitId];
@@ -8661,7 +8706,7 @@ function makeRecrutamentoModule(opts) {
 
           return popDaOrdemPossivel(recursos, gd.resources || {}, gd.population, 0) >= minimo;
         },
-        popParaConstruir, deusDaCidade(town.id));
+        popParaConstruir, deusDaCidade(town.id), town.id);
 
       /* Quantas acções saíram? Se for zero com unidades em falta, algo há a
        * explicar — e o diagnóstico abaixo trata disso. */
@@ -8815,7 +8860,7 @@ function makeRecrutamentoModule(opts) {
                 + `precisa de ${faltam.join(', ')}`);
             }
           }
-        } catch (e) {}
+        } catch (e) { seErroDeCodigo(e, 'Recrutamento'); }
         continue;
       }
 
@@ -8846,7 +8891,7 @@ function makeRecrutamentoModule(opts) {
 
         try {
           if (ctx.actualizarNumeros) await ctx.actualizarNumeros(town.id, quais);
-        } catch (e) {}
+        } catch (e) { seErroDeCodigo(e, 'Recrutamento'); }
       }
 
       for (const a of acoes) {
@@ -8884,7 +8929,7 @@ function makeRecrutamentoModule(opts) {
               a.amount = cabe;
             }
           }
-        } catch (e) {}
+        } catch (e) { seErroDeCodigo(e, 'Recrutamento'); }
 
         if (!a.amount || a.amount <= 0) continue;
 
@@ -8909,7 +8954,7 @@ function makeRecrutamentoModule(opts) {
             (ctx.logRotina || ctx.log)(
               `${town.name}: pedi ${a.amount} ${a.nome} — tinha ${tinha}, `
               + `fila ${naFilaU}, alvo ${alvoU}.`);
-          } catch (e) {}
+          } catch (e) { seErroDeCodigo(e, 'Recrutamento'); }
           log(`⚔️ ${town.name}: +${a.amount} ${a.nome}${a.isNaval ? ' (porto)' : ''}${a.mitica ? ` [${a.deus}, favor resta ~${favorLivre[a.deus]}]` : ''}.`);
           await ctx.sleep(ctx.rand(600, 1200));
         } else {
@@ -8922,7 +8967,7 @@ function makeRecrutamentoModule(opts) {
         }
       }
     }
-    try { armazem.setItem('grepoRecruta_expandido_v1', JSON.stringify(expandido)); } catch (e) {}
+    try { armazem.setItem('grepoRecruta_expandido_v1', JSON.stringify(expandido)); } catch (e) { seErroDeCodigo(e, 'Recrutamento'); }
     /* CANCELAR AS ORDENS QUE PASSAM DO TEMPLATE.
      *
      * Rede de segurança: se o travão falhar por alguma razão, isto desfaz o
@@ -8986,7 +9031,7 @@ function makeRecrutamentoModule(opts) {
           }
         }
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Recrutamento'); }
 
     /* ============ CORRIGIR AS ORDENS QUE PASSAM DO TEMPLATE ============
      *
@@ -9056,7 +9101,7 @@ function makeRecrutamentoModule(opts) {
           }
         }
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Recrutamento'); }
 
     /* AVISAR SE ALGUMA CIDADE PASSOU DO TEMPLATE.
      *
@@ -9120,7 +9165,7 @@ function makeRecrutamentoModule(opts) {
         }
       }
       gravarExcessos(excessos);
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Recrutamento'); }
 
     if (!fezAlgo) {
       /* Dizer PORQUE não recrutou — sem isto, uma cidade com população livre
@@ -9537,10 +9582,10 @@ function makeRecrutamentoModule(opts) {
       let tentativas = 0;
       const t = setInterval(() => {
         tentativas++;
-        if (getTownGroups().length) { clearInterval(t); try { render(container); } catch (e) {} }
+        if (getTownGroups().length) { clearInterval(t); try { render(container); } catch (e) { seErroDeCodigo(e, 'Recrutamento'); } }
         else if (tentativas > 40) clearInterval(t);   // ~20 s e desiste
       }, 500);
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Recrutamento'); }
   }
 
 
@@ -9579,14 +9624,14 @@ function makeRecrutamentoModule(opts) {
           if (el.scrollTop > 0) guardados.push({ caminho: caminhoDe(el), y: el.scrollTop, el });
         });
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Recrutamento'); }
     fn();
     const repor = () => guardados.forEach(({ caminho, y, el }) => {
       try {
         if (el && el.isConnected) { el.scrollTop = y; return; }
         const n2 = porCaminho(caminho);
         if (n2) n2.scrollTop = y;
-      } catch (e) {}
+      } catch (e) { seErroDeCodigo(e, 'Recrutamento'); }
     });
     repor();
     try { requestAnimationFrame(repor); } catch (e) { setTimeout(repor, 0); }
@@ -11099,7 +11144,7 @@ function makeHeroisModule(opts) {
             }
           }
         }
-      } catch (e) {}
+      } catch (e) { seErroDeCodigo(e, 'Herois'); }
     }
 
     // 1. COMPRA (prioritária)
@@ -11273,7 +11318,7 @@ function makeHeroisModule(opts) {
      * Daí só funcionar "com algum intervalo": era preciso guardar antes do
      * próximo redesenho. */
     const guardarHeroisAgora = () => {
-      try { saveLocal(cfgEdicao); } catch (e) {}
+      try { saveLocal(cfgEdicao); } catch (e) { seErroDeCodigo(e, 'Herois'); }
     };
 
     const ligarCaixa = (atributo, lista) => {
@@ -11293,7 +11338,7 @@ function makeHeroisModule(opts) {
     const chkT = container.querySelector('#her-trocar');
     if (chkT) chkT.onchange = () => {
       cfgEdicao.trocarMoedas = chkT.checked;
-      try { saveLocal(cfgEdicao); } catch (e) {}
+      try { saveLocal(cfgEdicao); } catch (e) { seErroDeCodigo(e, 'Herois'); }
     };
 
     ligarCaixa('data-c', 'comprar');
@@ -11302,9 +11347,9 @@ function makeHeroisModule(opts) {
     // manter aberto/fechado entre redesenhos
     const det = container.querySelector('#her-avancado');
     if (det) {
-      try { det.open = armazem.getItem('grepoHerois_avancadoAberto') === '1'; } catch (e) {}
+      try { det.open = armazem.getItem('grepoHerois_avancadoAberto') === '1'; } catch (e) { seErroDeCodigo(e, 'Herois'); }
       det.ontoggle = () => {
-        try { armazem.setItem('grepoHerois_avancadoAberto', det.open ? '1' : '0'); } catch (e) {}
+        try { armazem.setItem('grepoHerois_avancadoAberto', det.open ? '1' : '0'); } catch (e) { seErroDeCodigo(e, 'Herois'); }
       };
     }
 
@@ -11367,14 +11412,14 @@ function makeHeroisModule(opts) {
           if (el.scrollTop > 0) guardados.push({ caminho: caminhoDe(el), y: el.scrollTop, el });
         });
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Herois'); }
     fn();
     const repor = () => guardados.forEach(({ caminho, y, el }) => {
       try {
         if (el && el.isConnected) { el.scrollTop = y; return; }
         const n2 = porCaminho(caminho);
         if (n2) n2.scrollTop = y;
-      } catch (e) {}
+      } catch (e) { seErroDeCodigo(e, 'Herois'); }
     });
     repor();
     try { requestAnimationFrame(repor); } catch (e) { setTimeout(repor, 0); }
@@ -11601,7 +11646,7 @@ function makeBandidosModule(opts) {
         if (v === true) c.ativo = true;
         if (v === false) c.ativo = false;
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Bandidos'); }
 
     if (!c.ativo) { rotina('Bandidos: está desligado.'); return; }
 
@@ -11950,7 +11995,7 @@ function makeSentinelasModule(opts) {
         if (v === true) c.ativo = true;
         if (v === false) c.ativo = false;
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Sentinelas'); }
 
     if (!c.ativo) { rotina('Sentinelas: está desligado.'); return; }
 
@@ -11998,7 +12043,7 @@ function makeSentinelasModule(opts) {
         const achada = ((b0 && b0.islands) || []).find(
           (z) => Number(z.x) === Number(minhaCidade.ix) && Number(z.y) === Number(minhaCidade.iy));
         if (achada) islandId = Number(achada.id);
-      } catch (e) {}
+      } catch (e) { seErroDeCodigo(e, 'Sentinelas'); }
 
       if (!islandId) continue;
       await ctx.sleep(ctx.rand(700, 1300));
@@ -12018,7 +12063,7 @@ function makeSentinelasModule(opts) {
           const t = mUw.ITowns.getTown(minhaCidade.id);
           const u = (t && t.units && t.units()) || {};
           disp = Number(u[c.unidade]) || 0;
-        } catch (e) {}
+        } catch (e) { seErroDeCodigo(e, 'Sentinelas'); }
 
         const reserva = Math.ceil(disp * ((Number(c.reservaPct) || 0) / 100));
         if (disp - reserva < c.quantas) {
@@ -12211,7 +12256,7 @@ function makeDiariaModule(opts) {
         if (v === true) c.ativo = true;
         if (v === false) c.ativo = false;
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Diaria'); }
 
     if (!c.ativo) { rotina('Diária: está desligado.'); return; }
 
@@ -13277,10 +13322,10 @@ function makeAldeiasModule(opts) {
               descricao: 'A recolha das aldeias está parada. Resolve no jogo.',
             });
           }
-        } catch (e) {}
+        } catch (e) { seErroDeCodigo(e, 'Aldeias'); }
         return;
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Aldeias'); }
 
     const prontas = relacoesProntas();
     if (!prontas.length) { log('Recolha: nenhuma aldeia pronta.'); return; }
@@ -13379,14 +13424,14 @@ function makeAldeiasModule(opts) {
           if (el.scrollTop > 0) guardados.push({ caminho: caminhoDe(el), y: el.scrollTop, el });
         });
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Aldeias'); }
     fn();
     const repor = () => guardados.forEach(({ caminho, y, el }) => {
       try {
         if (el && el.isConnected) { el.scrollTop = y; return; }
         const n2 = porCaminho(caminho);
         if (n2) n2.scrollTop = y;
-      } catch (e) {}
+      } catch (e) { seErroDeCodigo(e, 'Aldeias'); }
     });
     repor();
     try { requestAnimationFrame(repor); } catch (e) { setTimeout(repor, 0); }
@@ -14168,7 +14213,7 @@ function makeAlertasModule(opts) {
       const t0 = agoraJogo();
       if (t0 != null) {
         arranqueAlertas = t0;
-        try { armazem.setItem(ARRANQUE_ALERTAS, String(t0)); } catch (e) {}
+        try { armazem.setItem(ARRANQUE_ALERTAS, String(t0)); } catch (e) { seErroDeCodigo(e, 'Alertas'); }
       }
     }
     const c = cfg();
@@ -14181,7 +14226,7 @@ function makeAlertasModule(opts) {
         if (v === true) c.ativo = true;
         if (v === false) c.ativo = false;
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Alertas'); }
 
     if (!c.ativo) { log('Alertas: está DESLIGADO (liga a caixa no painel e guarda).'); return; }
 
@@ -14211,7 +14256,7 @@ function makeAlertasModule(opts) {
           const n = Number(a.incoming) || 0;
           if (n > 0) out[String(a.town_id)] = n;
         }
-      } catch (e) {}
+      } catch (e) { seErroDeCodigo(e, 'Alertas'); }
       return out;
     })();
 
@@ -14249,7 +14294,7 @@ function makeAlertasModule(opts) {
         const r = await ataquesDoServidor(tid);
         r.filter((cc) => Number(cc.target_town_id) === tid).forEach((cc) => movs.push(cc));
         await ctx.sleep(ctx.rand(400, 800));
-      } catch (e) {}
+      } catch (e) { seErroDeCodigo(e, 'Alertas'); }
     }
 
     if (!movs.length) {
@@ -15417,7 +15462,7 @@ function makeDeusesModule(opts) {
         if (v === true) c.ativo = true;
         if (v === false) c.ativo = false;
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Deuses'); }
 
     if (!c.ativo) { log('Rotação de deus: está DESLIGADA (liga a caixa no painel e guarda).'); return; }
 
@@ -15618,7 +15663,7 @@ function makeDeusesModule(opts) {
 
         const de = efetivo(alvo.id);
         let unidade = '';
-        try { unidade = (mUw.GameData.units[DEUSES_VOADORES[falta.deus]] || {}).name || ''; } catch (e) {}
+        try { unidade = (mUw.GameData.units[DEUSES_VOADORES[falta.deus]] || {}).name || ''; } catch (e) { seErroDeCodigo(e, 'Deuses'); }
         if (c.simular) {
           log(`🔎 [simulação] ${alvo.name}: grupo de voadores — poria ${NOMES[falta.deus]}`
             + (unidade ? ` (${unidade})` : '') + (de ? ` em vez de ${NOMES[de]}.` : '.'));
@@ -15914,7 +15959,7 @@ function makeDeusesModule(opts) {
         // um ataque a caminho OU tropa a voltar de um ataque
         if (ehAtaque || ehRegresso) return true;
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Deuses'); }
 
     // Sem Administrador não dá para saber mais; assume-se que não há.
     if (semAdministrador()) return false;
@@ -15948,13 +15993,13 @@ function makeDeusesModule(opts) {
   function proximoAlvo(townId, alvos, guardar) {
     if (!alvos.length) return null;
     let mapa = {};
-    try { mapa = JSON.parse(armazem.getItem(ALVO_KEY) || '{}'); } catch (e) {}
+    try { mapa = JSON.parse(armazem.getItem(ALVO_KEY) || '{}'); } catch (e) { seErroDeCodigo(e, 'Deuses'); }
     const anterior = mapa[townId];
     const i = alvos.findIndex((a) => Number(a.townId) === Number(anterior));
     const escolhido = alvos[(i + 1) % alvos.length];   // roda um de cada vez
     if (guardar !== false) {
       mapa[townId] = escolhido.townId;
-      try { armazem.setItem(ALVO_KEY, JSON.stringify(mapa)); } catch (e) {}
+      try { armazem.setItem(ALVO_KEY, JSON.stringify(mapa)); } catch (e) { seErroDeCodigo(e, 'Deuses'); }
     }
     return escolhido;
   }
@@ -16055,7 +16100,7 @@ function makeDeusesModule(opts) {
               }
               chegada = melhor;
             }
-          } catch (e2) {}
+          } catch (e2) { seErroDeCodigo(e2, 'Deuses'); }
 
           const cmd = { id: idCmd };
           if (chegada) {
@@ -16233,10 +16278,10 @@ function makeDeusesModule(opts) {
       let n = 0;
       const t = setInterval(() => {
         n++;
-        if (ha()) { clearInterval(t); try { comRolamento(() => painel(container, ctx)); } catch (e) {} }
+        if (ha()) { clearInterval(t); try { comRolamento(() => painel(container, ctx)); } catch (e) { seErroDeCodigo(e, 'Deuses'); } }
         else if (n > 40) clearInterval(t);     // ~20 s e desiste
       }, 500);
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Deuses'); }
   }
 
 
@@ -16275,14 +16320,14 @@ function makeDeusesModule(opts) {
           if (el.scrollTop > 0) guardados.push({ caminho: caminhoDe(el), y: el.scrollTop, el });
         });
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Deuses'); }
     fn();
     const repor = () => guardados.forEach(({ caminho, y, el }) => {
       try {
         if (el && el.isConnected) { el.scrollTop = y; return; }
         const n2 = porCaminho(caminho);
         if (n2) n2.scrollTop = y;
-      } catch (e) {}
+      } catch (e) { seErroDeCodigo(e, 'Deuses'); }
     });
     repor();
     try { requestAnimationFrame(repor); } catch (e) { setTimeout(repor, 0); }
@@ -18485,7 +18530,7 @@ function makeEsquivaModule(opts) {
         if (v === true) c.ativo = true;
         if (v === false) c.ativo = false;
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Esquiva'); }
 
     if (!c.ativo) { rotina('Esquiva: está desligada.'); return; }
 
@@ -18574,7 +18619,7 @@ function makeEsquivaModule(opts) {
       if (avisos.length) {
         rotina(`Esquiva: ${avisos.length} aviso(s) da main pelo Firebase.`);
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Esquiva'); }
 
     const haNoLocal = Object.keys(esperados).length > 0 && !emFalta.length;
 
@@ -18598,17 +18643,17 @@ function makeEsquivaModule(opts) {
           }
           try {
             armazem.setItem('grepoEsquiva_desmentidas_v1', JSON.stringify(desmentidas));
-          } catch (e2) {}
+          } catch (e2) { seErroDeCodigo(e2, 'Esquiva'); }
         } else if (desmentidas[k]) {
           /* O servidor confirmou: limpar a contagem. */
           delete desmentidas[k];
           try {
             armazem.setItem('grepoEsquiva_desmentidas_v1', JSON.stringify(desmentidas));
-          } catch (e2) {}
+          } catch (e2) { seErroDeCodigo(e2, 'Esquiva'); }
         }
 
         await ctx.sleep(ctx.rand(500, 900));
-      } catch (e) {}
+      } catch (e) { seErroDeCodigo(e, 'Esquiva'); }
     }
 
     if (!haNoLocal && !emFalta.length) {
@@ -18623,11 +18668,11 @@ function makeEsquivaModule(opts) {
           if (todos.length && destinos.size === 1 && cidades.length > 1) {
             for (const ct of cidades.slice(1)) {
               await ctx.sleep(ctx.rand(700, 1100));
-              try { (await comandosDoServidor(ct.id)).forEach((cd) => doServidor.push(cd)); } catch (e) {}
+              try { (await comandosDoServidor(ct.id)).forEach((cd) => doServidor.push(cd)); } catch (e) { seErroDeCodigo(e, 'Esquiva'); }
             }
           }
         }
-      } catch (e) {}
+      } catch (e) { seErroDeCodigo(e, 'Esquiva'); }
     }
 
     // agrupar os ataques a chegar por cidade
@@ -18709,7 +18754,7 @@ function makeEsquivaModule(opts) {
             + `(sai daqui a ${Math.round(faltaR / 60)} min).`);
         }
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Esquiva'); }
 
     /* UM PLANO POR CIDADE — o ataque mais PRÓXIMO.
      *
@@ -19402,7 +19447,7 @@ function makeCulturaModule(opts) {
     /* Limpar a marca antiga de "uma celebração por cidade": era gravada para
      * sempre a partir de uma recusa pontual, e travava as celebrações em todas
      * as cidades. */
-    try { if (armazem.getItem(UMA_KEY) === '1') armazem.removeItem(UMA_KEY); } catch (e) {}
+    try { if (armazem.getItem(UMA_KEY) === '1') armazem.removeItem(UMA_KEY); } catch (e) { seErroDeCodigo(e, 'Cultura'); }
     const c = cfg();
     const log = ctx.log;
     /* O visto do painel manda sobre o `ativo` do módulo: quem liga ali
@@ -19414,7 +19459,7 @@ function makeCulturaModule(opts) {
         if (v === true) c.ativo = true;
         if (v === false) c.ativo = false;
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Cultura'); }
 
     if (!c.ativo) { log('Auto-cultura: está DESLIGADO (liga a caixa no painel e guarda).'); return; }
 
@@ -19917,7 +19962,7 @@ function makeGrutaModule(opts) {
         if (v === true) c.ativo = true;
         if (v === false) c.ativo = false;
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Gruta'); }
 
     if (!c.ativo) { log('Auto-gruta: está DESLIGADO (liga a caixa no painel e guarda).'); return; }
 
@@ -19978,7 +20023,7 @@ function makeGrutaModule(opts) {
           // o valor envelhece: a prata desce a cada espionagem, por isso só se
           // confia nele durante algum tempo
           if (reg && (Date.now() - reg.quando) < 30 * 60 * 1000) jaLa = Number(reg.valor);
-        } catch (e) {}
+        } catch (e) { seErroDeCodigo(e, 'Gruta'); }
         const cabe = (jaLa != null) ? Math.max(0, capacidade - jaLa) : capacidade;
         if (cabe <= 0) { log(`— ${t.name}: gruta cheia (${jaLa}/${capacidade}).`); continue; }
         if (quantidade > cabe) {
@@ -20687,7 +20732,7 @@ function makeTrocaCidadesModule(opts) {
         if (v === true) c.ativo = true;
         if (v === false) c.ativo = false;
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'TrocaCidades'); }
 
     if (!c.ativo) { log('Trocas entre cidades: está DESLIGADO (liga a caixa no painel e guarda).'); return; }
 
@@ -21820,7 +21865,7 @@ function makeEncaixeModule(opts) {
         if (v === true) c.ativo = true;
         if (v === false) c.ativo = false;
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
 
     if (!c.ativo) { rotina('Encaixe: está desligado.'); return; }
 
@@ -21878,10 +21923,10 @@ function makeEncaixeModule(opts) {
   // por isso tentamos também o document e o window direto.
   function hashAtual() {
     const fontes = [];
-    try { fontes.push(String(window.location.hash || '')); } catch (e) {}
-    try { fontes.push(String(document.location.hash || '')); } catch (e) {}
-    try { fontes.push(String(mUw.location.hash || '')); } catch (e) {}
-    try { fontes.push(String(top.location.hash || '')); } catch (e) {}
+    try { fontes.push(String(window.location.hash || '')); } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
+    try { fontes.push(String(document.location.hash || '')); } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
+    try { fontes.push(String(mUw.location.hash || '')); } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
+    try { fontes.push(String(top.location.hash || '')); } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
     for (const h of fontes) if (h && h.indexOf('eyJ') >= 0) return h;
     return '';
   }
@@ -21922,7 +21967,7 @@ function makeEncaixeModule(opts) {
           // 1) o pedido de abertura da janela traz o alvo
           if (/town_info/.test(u) && /action=(attack|support)/.test(u)) {
             let j = null;
-            try { j = JSON.parse(decodeURIComponent((u.split('json=')[1] || '').split('&')[0])); } catch (e) {}
+            try { j = JSON.parse(decodeURIComponent((u.split('json=')[1] || '').split('&')[0])); } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
             const id = j && (j.id || j.target_town_id);
             if (id) {
               alvoDetetado = Number(id);
@@ -21941,7 +21986,7 @@ function makeEncaixeModule(opts) {
                 nome = nome.replace(/^(atacar|apoiar|attack|support)\s+/i, '')
                   .split(/\s+[—–-]\s+/)[0].trim();
                 if (nome && nome.length < 40) alvoNomeDetetado = nome;
-              } catch (e) {}
+              } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
 
               const nb = document.getElementById('encj-alvo-nome');
               if (nb) {
@@ -21956,10 +22001,10 @@ function makeEncaixeModule(opts) {
             const j = JSON.parse(decodeURIComponent(String(b || '')).replace('json=', ''));
             if (j && j.id && aoCapturar) { capturaAtiva = false; aoCapturar(Number(j.id)); }
           }
-        } catch (e) {}
+        } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
         return oSend.apply(this, arguments);
       };
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
   }
 
   // O JOGO já calcula e mostra o tempo de viagem na janela (classe
@@ -21985,7 +22030,7 @@ function makeEncaixeModule(opts) {
         const n = parseInt(i.value, 10);
         if (n > 0) out[i.name] = n;
       });
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
     return out;
   }
 
@@ -21997,7 +22042,7 @@ function makeEncaixeModule(opts) {
         const a = m.attributes || {};
         if (Number(a.id) === Number(townId)) return { ix: Number(a.island_x), iy: Number(a.island_y) };
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
     return null;
   }
 
@@ -22011,7 +22056,7 @@ function makeEncaixeModule(opts) {
           return { id: Number(o.id), ix: Number(o.ix), iy: Number(o.iy), nome: o.name || ('cidade ' + o.id), via: 'endereço' };
         }
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
 
     // 2ª via: o alvo detetado no pedido de abertura da janela
     if (alvoDetetado) {
@@ -22028,7 +22073,7 @@ function makeEncaixeModule(opts) {
         const c = coordsDoMapa(id);
         return { id, ix: c ? c.ix : null, iy: c ? c.iy : null, nome: 'cidade ' + id, via: 'indicado' };
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
 
     return null;
   }
@@ -22057,7 +22102,7 @@ function makeEncaixeModule(opts) {
         const ro = new ResizeObserver(() => aplicar());
         ro.observe(box);
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
   }
 
   /* Vigiar a abertura da janela de ataque.
@@ -22075,7 +22120,7 @@ function makeEncaixeModule(opts) {
     vigiaJanela = { ctx };
 
     const tentar = () => {
-      try { injetarNaJanela(vigiaJanela.ctx); } catch (e) {}
+      try { injetarNaJanela(vigiaJanela.ctx); } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
     };
 
     try {
@@ -22086,7 +22131,7 @@ function makeEncaixeModule(opts) {
         tentar();
       });
       obs.observe(document.body, { childList: true, subtree: true });
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
 
     // reserva: de 2 em 2 segundos, barato porque sai logo se já lá está
     setInterval(tentar, 2000);
@@ -22115,7 +22160,7 @@ function makeEncaixeModule(opts) {
           }
           const txt = String(document.querySelector('.gpwindow_content').textContent || '').toLowerCase();
           if (/apoi|support/.test(txt) && !/atac|attack/.test(txt)) return 'support';
-        } catch (e) {}
+        } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
         return 'attack';
       })();
 
@@ -22208,7 +22253,7 @@ function makeEncaixeModule(opts) {
         if (nomeBox) nomeBox.textContent = al
           ? ('alvo ' + al.id + ' (' + al.via + ')')
           : 'indica a cidade alvo → escreve o id ou usa "captar"';
-      } catch (e) {}
+      } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
 
       // botão de captura do identificador
       const campoAlvo = box.querySelector('#encj-alvo');
@@ -22253,7 +22298,7 @@ function makeEncaixeModule(opts) {
           try {
             const g = (mUw.GameData && mUw.GameData.units) ? mUw.GameData.units[id] : null;
             if (g && g.name) return g.name;
-          } catch (e) {}
+          } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
           return id;
         };
 
@@ -22261,7 +22306,7 @@ function makeEncaixeModule(opts) {
           try {
             const t = mUw.ITowns.getTown(Number(id));
             if (t && t.getName) return t.getName();
-          } catch (e) {}
+          } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
           return '#' + id;
         };
 
@@ -22278,7 +22323,7 @@ function makeEncaixeModule(opts) {
               const o = JSON.parse(raw);
               if (o && Object.keys(o).length) return o;
             }
-          } catch (e) {}
+          } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
           return {};
         })();
 
@@ -22287,11 +22332,11 @@ function makeEncaixeModule(opts) {
             if (p.alvoNome) return p.alvoNome;
             const t = mUw.ITowns.getTown(Number(p.alvoId));
             if (t && t.getName) return t.getName();
-          } catch (e) {}
+          } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
           try {
             const i = nomeCache[p.alvoId];
             if (i && i.nome) return i.nome;
-          } catch (e) {}
+          } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
           return '#' + p.alvoId;
         };
 
@@ -22403,7 +22448,7 @@ function makeEncaixeModule(opts) {
               const v = Number((gd[u] || {}).speed) || 0;
               if (v && (!velJanela || v < velJanela)) velJanela = v;
             }
-          } catch (e) {}
+          } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
 
           for (let i = 0; i < navios.length; i++) {
             const usar = navios.slice(i);             // sem os i mais lentos
@@ -22461,7 +22506,7 @@ function makeEncaixeModule(opts) {
         try {
           const nc = document.querySelector('input.unit_input[name="colonize_ship"]');
           if (nc && Number(nc.value) > 0) tipo = 'colonize';
-        } catch (e) {}
+        } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
         const conf = Object.assign({}, cfg(), {
           // ATENÇÃO: nunca usar "|| 2" aqui — em JavaScript o zero é falso, e
           // uma margem de 0 (a mais exigente) seria silenciosamente trocada
@@ -22508,7 +22553,7 @@ function makeEncaixeModule(opts) {
           if (conflito) {
             diz('⚠️ Já há um agendamento desta cidade a menos de 2 min — as rajadas competem pelas mesmas tropas.');
           }
-        } catch (e) {}
+        } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
 
         adicionarPlano({ origemId, alvoId: alvo.id, alvoCoords: alvo, unidades, tipo, chegada,
           /* O nome da cidade alvo, apanhado do título da janela. */
@@ -22567,7 +22612,7 @@ function makeEncaixeModule(opts) {
           if (painelRef && painelRef.container && painelRef.container.isConnected) {
             painel(painelRef.container, painelRef.ctx);
           }
-        } catch (e) {}
+        } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
       };
       ['#encj-margem', '#encj-dir', '#encj-max', '#encj-atrasos', '#encj-limite', '#encj-antes'].forEach((sel) => {
         const el = box.querySelector(sel);
@@ -22622,7 +22667,7 @@ function makeEncaixeModule(opts) {
             escolhidas[u] = n;
             usado += n * (Number(g.population) || 1);
           });
-        } catch (e) {}
+        } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
         return { usado, escolhidas };
       };
 
@@ -22701,7 +22746,7 @@ function makeEncaixeModule(opts) {
           el.innerHTML = `<b>${usado}</b> de ${total} de carga${comPoroes ? ' (com porões)' : ''} · `
             + `<b>${livre}</b> livre`
             + (podeMais ? `<div style="opacity:.7;margin-top:2px">ainda cabem: ${podeMais}</div>` : '');
-        } catch (e) {}
+        } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
       };
 
       /* A TOLERÂNCIA MOSTRADA acompanha o que puseres nas unidades: mete um
@@ -22723,7 +22768,7 @@ function makeEncaixeModule(opts) {
           const nome = tp === 'attack' ? 'ataques' : (tp === 'colonize' ? 'colonizadores' : 'apoios');
           const el = box.querySelector('#encj-tolerancia');
           if (el) el.innerHTML = `±${m}s · ${comoTxt} <span style="opacity:.6">(dos ${nome})</span>`;
-        } catch (e) {}
+        } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
       };
       /* Agendar cada composição marcada como um plano próprio. */
       const agendarCombos = (combos, chegada) => {
@@ -22823,7 +22868,7 @@ function makeEncaixeModule(opts) {
 
           const bt = el.querySelector('#encj-combos-go');
           if (bt) bt.onclick = () => agendarCombos(combos, chegada);
-        } catch (e) {}
+        } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
       };
 
       mostrarTolerancia();
@@ -22839,7 +22884,7 @@ function makeEncaixeModule(opts) {
           el.addEventListener('input', mostrarCombos);
           el.addEventListener('change', mostrarCombos);
         });
-      } catch (e) {}
+      } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
       /* ACOMPANHAR OS CAMPOS DAS UNIDADES.
        *
        * Os eventos não chegam: o jogo escreve nos campos por dentro (setas,
@@ -22875,13 +22920,13 @@ function makeEncaixeModule(opts) {
             mostrarTolerancia();
             mostrarCarga();
             mostrarCombos();
-          } catch (e) {}
+          } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
         }, 500);
-      } catch (e) {}
+      } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
 
       box.querySelector('#encj-atk').onclick = () => programar('attack');
       box.querySelector('#encj-sup').onclick = () => programar('support');
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
   }
 
   /* ---------------------- API para o painel ----------------------------- */
@@ -23852,7 +23897,7 @@ function makeMissoesModule(opts) {
         if (v === true) c.ativo = true;
         if (v === false) c.ativo = false;
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Missoes'); }
 
     if (!c.ativo) { log('Missões: está DESLIGADO (liga a caixa no painel e guarda).'); return; }
 
@@ -24047,7 +24092,7 @@ function makeMissoesModule(opts) {
           }
           await ctx.sleep(ctx.rand(800, 1600));
         }
-      } catch (e) {}
+      } catch (e) { seErroDeCodigo(e, 'Missoes'); }
     }
 
     /* 3. CUMPRIR as que estão a decorrer */
@@ -24301,14 +24346,14 @@ function makeMissoesModule(opts) {
           if (el.scrollTop > 0) guardados.push({ caminho: caminhoDe(el), y: el.scrollTop, el });
         });
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Missoes'); }
     fn();
     const repor = () => guardados.forEach(({ caminho, y, el }) => {
       try {
         if (el && el.isConnected) { el.scrollTop = y; return; }
         const n2 = porCaminho(caminho);
         if (n2) n2.scrollTop = y;
-      } catch (e) {}
+      } catch (e) { seErroDeCodigo(e, 'Missoes'); }
     });
     repor();
     try { requestAnimationFrame(repor); } catch (e) { setTimeout(repor, 0); }
@@ -25085,7 +25130,7 @@ function makeColonosModule(opts) {
         if (v === true) c.ativo = true;
         if (v === false) c.ativo = false;
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Colonos'); }
 
     if (!c.ativo) { log('Colonos: está DESLIGADO (liga a caixa no painel e guarda).'); return; }
     if (c.modo === 'destino') {
@@ -25202,14 +25247,14 @@ function makeColonosModule(opts) {
           if (el.scrollTop > 0) guardados.push({ caminho: caminhoDe(el), y: el.scrollTop, el });
         });
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Colonos'); }
     fn();
     const repor = () => guardados.forEach(({ caminho, y, el }) => {
       try {
         if (el && el.isConnected) { el.scrollTop = y; return; }
         const n2 = porCaminho(caminho);
         if (n2) n2.scrollTop = y;
-      } catch (e) {}
+      } catch (e) { seErroDeCodigo(e, 'Colonos'); }
     });
     repor();
     try { requestAnimationFrame(repor); } catch (e) { setTimeout(repor, 0); }
@@ -26461,7 +26506,7 @@ function makeApoioModule(opts) {
         if (v === true) c.ativo = true;
         if (v === false) c.ativo = false;
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Apoio'); }
 
     if (!c.ativo) { log('Apoio: está DESLIGADO (liga a caixa no painel e guarda).'); return; }
 
@@ -26514,7 +26559,7 @@ function makeApoioModule(opts) {
           armazem.removeItem(POR_REMOVER_KEY);   // já lá não estavam
         }
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Apoio'); }
 
 
     const alvos = (lista.alvos || lista.targets || []).map(Number).filter(Boolean);
@@ -26536,7 +26581,7 @@ function makeApoioModule(opts) {
             const n = Number(b) || 0;
             if (n) out.add(n);
           }
-        } catch (e) {}
+        } catch (e) { seErroDeCodigo(e, 'Apoio'); }
         return out;
       })();
 
@@ -26557,7 +26602,7 @@ function makeApoioModule(opts) {
         const n = await retirarApoio(ctx, cidade);
         if (n) log(`↩️ Apoio: ${cidade} já não está na lista — ${n} comando(s) a voltar.`);
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Apoio'); }
 
     if (!alvos.length) { log('Apoio: a lista de alvos está vazia.'); return; }
 
@@ -26573,7 +26618,7 @@ function makeApoioModule(opts) {
         if (!m) { delete reg[k]; removidas++; continue; }
         try {
           if (!mUw.ITowns.towns[m[1]]) { delete reg[k]; removidas++; }
-        } catch (e) {}
+        } catch (e) { seErroDeCodigo(e, 'Apoio'); }
       }
       if (removidas) {
         gravarRegisto(reg);
@@ -26647,7 +26692,7 @@ function makeApoioModule(opts) {
             if (Number(a.home_town_id) === Number(origemId)
               && Number(a.target_town_id) === Number(alvo)) return true;
           }
-        } catch (e) {}
+        } catch (e) { seErroDeCodigo(e, 'Apoio'); }
         return false;
       };
 
@@ -26774,14 +26819,14 @@ function makeApoioModule(opts) {
           if (el.scrollTop > 0) guardados.push({ caminho: caminhoDe(el), y: el.scrollTop, el });
         });
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Apoio'); }
     fn();
     const repor = () => guardados.forEach(({ caminho, y, el }) => {
       try {
         if (el && el.isConnected) { el.scrollTop = y; return; }
         const n2 = porCaminho(caminho);
         if (n2) n2.scrollTop = y;
-      } catch (e) {}
+      } catch (e) { seErroDeCodigo(e, 'Apoio'); }
     });
     repor();
     try { requestAnimationFrame(repor); } catch (e) { setTimeout(repor, 0); }
@@ -27548,7 +27593,7 @@ function makeFundacaoModule(opts) {
         if (v === true) c.ativo = true;
         if (v === false) c.ativo = false;
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Fundacao'); }
 
     if (!c.ativo) { log('Fundação: está DESLIGADA (liga a caixa no painel e guarda).'); return; }
 
@@ -27790,7 +27835,7 @@ function makeFundacaoModule(opts) {
       const txt = (janela.textContent || '').replace(/\s+/g, ' ');
       const m = txt.match(/\((\d+)\s*\/\s*(\d+)\)/);   // "Oceano: 45 (475/549)"
       if (m) return { x: Number(m[1]), y: Number(m[2]) };
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Fundacao'); }
     return null;
   }
 
@@ -27799,7 +27844,7 @@ function makeFundacaoModule(opts) {
       const txt = (janela.textContent || '').replace(/\s+/g, ' ');
       const m = txt.match(/livres\s*:?\s*(\d+)/i);
       if (m) return Number(m[1]);
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Fundacao'); }
     return null;
   }
 
@@ -27871,13 +27916,13 @@ function makeFundacaoModule(opts) {
               const p2 = document.getElementById('maestro-painel-fundacao')
                 || document.getElementById('solo-corpo');
               if (p2 && vigiarJanelaDeIlha._ctx) painel(p2, vigiarJanelaDeIlha._ctx);
-            } catch (e) {}
+            } catch (e) { seErroDeCodigo(e, 'Fundacao'); }
           };
 
           const conteudo = jan.querySelector('.gpwindow_content') || jan;
           conteudo.insertBefore(bt, conteudo.firstChild);
         });
-      } catch (e) {}
+      } catch (e) { seErroDeCodigo(e, 'Fundacao'); }
     };
 
     setInterval(tentar, 900);
@@ -27913,14 +27958,14 @@ function makeFundacaoModule(opts) {
           if (el.scrollTop > 0) guardados.push({ caminho: caminhoDe(el), y: el.scrollTop, el });
         });
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Fundacao'); }
     fn();
     const repor = () => guardados.forEach(({ caminho, y, el }) => {
       try {
         if (el && el.isConnected) { el.scrollTop = y; return; }
         const n2 = porCaminho(caminho);
         if (n2) n2.scrollTop = y;
-      } catch (e) {}
+      } catch (e) { seErroDeCodigo(e, 'Fundacao'); }
     });
     repor();
     try { requestAnimationFrame(repor); } catch (e) { setTimeout(repor, 0); }
@@ -27938,7 +27983,7 @@ function makeFundacaoModule(opts) {
         const i = ilhaDe(id);
         if (i && Number(i.x) === Number(ix) && Number(i.y) === Number(iy)) return true;
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Fundacao'); }
     return false;
   }
 
@@ -27973,7 +28018,7 @@ function makeFundacaoModule(opts) {
         const co = coordenadasDoLinkDestino(a.link_destination);
         if (co) out.add(`${co.ix}:${co.iy}`);
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Fundacao'); }
     if (out.size) return out;
 
     try {
@@ -27989,7 +28034,7 @@ function makeFundacaoModule(opts) {
       const re = /Ilha\s+(\d+)[^<]*\(\s*Funda/gi;
       let m;
       while ((m = re.exec(html))) out.add(Number(m[1]));
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Fundacao'); }
     return out;
   }
 
@@ -28391,7 +28436,7 @@ function makeRelatoriosModule(opts) {
         if (v === true) c.ativo = true;
         if (v === false) c.ativo = false;
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Relatorios'); }
 
     if (!c.ativo) { rotina('Relatórios: está desligado.'); return; }
 
