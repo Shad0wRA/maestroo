@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.31.1320
+// @version      2026.08.31.1428
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -691,7 +691,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.31.1320';
+  const MAESTRO_VERSAO = '2026.08.31.1428';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -9271,6 +9271,116 @@ function makeHeroisModule(opts) {
   const comprarHeroi = (type, townId) => bridge('PlayerHero', 'buyHero', { type }, townId);
   const subirNivel = (heroId, type, amount, townId) =>
     bridge('PlayerHero/' + heroId, 'levelUpHero', { type, amount }, townId);
+  /* A CIDADE DE COLONIZADORES QUE MAIS APROVEITA O ARGUS.
+   *
+   * São as que têm o recrutamento contínuo de colonizadores ligado. Entre
+   * elas, escolhe-se a que tem mais recursos prontos — é lá que o desconto
+   * rende mais unidades de uma vez.
+   *
+   * Ignoram-se as que já estão a recrutar: essas ficam ocupadas horas, e o
+   * Argus deve estar noutro lado nesse tempo. */
+  function melhorCidadeDeColonos() {
+    try {
+      /* SÓ NAS MULTIS.
+       *
+       * É lá que se juntam colonizadores em massa para a rotação. Na conta
+       * principal o Argus faz mais falta noutro lado. */
+      const perfil = (() => {
+        try {
+          const e = JSON.parse(localStorage.getItem('grepoMaestro_modulos_v1') || '{}');
+          return String(e.perfil || '');
+        } catch (e) { return ''; }
+      })();
+      if (perfil !== 'multi') return null;
+
+      const templates = (() => {
+        try { return JSON.parse(armazem.getItem('grepoRecruta_templates_v1') || '{}'); }
+        catch (e) { return {}; }
+      })();
+
+      /* Que grupos têm o recrutamento contínuo de colonizadores? */
+      const gruposNC = new Set();
+      for (const nome of Object.keys(templates)) {
+        if ((templates[nome] || {}).ncContinuo) gruposNC.add(nome);
+      }
+      if (!gruposNC.size) return null;
+
+      const candidatas = new Set();
+
+      /* SEM ADMINISTRADOR NÃO HÁ GRUPOS.
+       *
+       * Nas multis o único template é o "todos" — e se ele tem o contínuo
+       * ligado, todas as cidades são candidatas. A versão anterior procurava
+       * grupos e não encontrava nenhum, portanto nunca movia o Argus. */
+      if (gruposNC.has('todos')) {
+        try {
+          for (const id of Object.keys(mUw.ITowns.towns)) candidatas.add(Number(id));
+        } catch (e) {}
+      } else {
+        const grupos = {};
+        try {
+          const gs = mUw.MM.getCollections().TownGroup;
+          for (const m of ((gs && gs[0] && gs[0].models) || [])) {
+            const a = m.attributes || {};
+            if (gruposNC.has(a.name)) grupos[a.id] = a.name;
+          }
+        } catch (e) {}
+
+        try {
+          const gts = mUw.MM.getCollections().TownGroupTown;
+          for (const m of ((gts && gts[0] && gts[0].models) || [])) {
+            const a = m.attributes || {};
+            if (grupos[a.group_id]) candidatas.add(Number(a.town_id));
+          }
+        } catch (e) {}
+      }
+
+      if (!candidatas.size) return null;
+
+      /* Quantos colonizadores cada uma consegue fazer AGORA, com o desconto. */
+      const gd = (mUw.GameData.units || {}).colonize_ship || {};
+      const custo = gd.resources || {};
+
+      let melhor = null;
+      for (const id of candidatas) {
+        /* Já tem uma ordem a decorrer? Então está ocupada. */
+        let naFila = 0;
+        try {
+          const col = mUw.MM.getCollections().UnitOrder;
+          naFila = ((col && col[0] && col[0].models) || []).filter((m) => {
+            const a = m.attributes || {};
+            return Number(a.town_id) === Number(id) && a.unit_type === 'colonize_ship';
+          }).length;
+        } catch (e) {}
+        if (naFila) continue;
+
+        let r = null;
+        try {
+          const t = mUw.ITowns.getTown(Number(id));
+          const rr = (t.resources && t.resources()) || {};
+          r = { wood: Number(rr.wood) || 0, stone: Number(rr.stone) || 0, iron: Number(rr.iron) || 0,
+                nome: t.getName() };
+        } catch (e) { continue; }
+        if (!r) continue;
+
+        /* Com o Argus lá, quantos caberiam? */
+        let quantos = Infinity;
+        for (const k of ['wood', 'stone', 'iron']) {
+          const c2 = Number(custo[k]) || 0;
+          if (!c2) continue;
+          quantos = Math.min(quantos, Math.floor(r[k] / c2));
+        }
+        if (!Number.isFinite(quantos)) quantos = 0;
+
+        const total = r.wood + r.stone + r.iron;
+        if (!melhor || total > melhor.recursos) {
+          melhor = { townId: Number(id), nome: r.nome, recursos: total, quantos };
+        }
+      }
+      return melhor;
+    } catch (e) { return null; }
+  }
+
   const atribuirACidade = (heroId, type, targetTownId) =>
     bridge('PlayerHero/' + heroId, 'assignToTown', { type, target_town_id: Number(targetTownId) }, targetTownId);
   // Retirar de uma cidade: o jogo recusa atribuir directamente um herói que já
@@ -9798,6 +9908,43 @@ function makeHeroisModule(opts) {
       if (melhor.townId === est.cidade) {
         porques.push(`${nome}: já está na melhor cidade`);
         continue;
+      }
+
+      /* O ARGUS E AS CIDADES DE COLONIZADORES.
+       *
+       * O Argus reduz o custo das unidades navais — 22% ao nível 1, mais 2%
+       * por nível. Com a pesquisa de matemática (-10%) chega a 36% no nível 3.
+       *
+       * Numa cidade de colonizadores isso muda tudo: eles custam 10 000 de
+       * cada recurso, e com 36% de desconto passam a 6 400 — um armazém de
+       * 30 000 faz quatro em vez de dois.
+       *
+       * A estratégia é: pôr o Argus onde o armazém está mais cheio, deixar
+       * fazer a ordem grande, e passá-lo adiante enquanto essa cidade recruta
+       * durante horas.
+       *
+       * Por isso, para o Argus, o que conta não é quanto falta recrutar: é
+       * QUANTOS RECURSOS a cidade tem prontos a gastar. */
+      if (tipo === 'argus') {
+        const doColono = melhorCidadeDeColonos();
+        if (doColono && doColono.townId !== est.cidade) {
+          const r = await atribuirACidade(h.id, tipo, doColono.townId);
+          if (r.ok) {
+            if (est.cidade) ocupadas.delete(est.cidade);
+            ocupadas.add(doColono.townId);
+            const mins = Math.round(viagemSegundos() / 60);
+            log(`🦸 ${nome} → ${doColono.nome}: ${doColono.recursos} recursos prontos, `
+              + `dá para ${doColono.quantos} colonizador(es)`
+              + (mins ? ` (chega em ${mins} min)` : '') + '.');
+          } else {
+            porques.push(`${nome}: não consegui mover para ${doColono.nome} — ${r.msg}`);
+          }
+          continue;
+        }
+        if (doColono && doColono.townId === est.cidade) {
+          porques.push(`${nome}: já está na cidade de colonizadores com mais recursos`);
+          continue;
+        }
       }
 
       // Se já está algures, exigir uma melhoria substancial para o mover.
@@ -19063,13 +19210,26 @@ function makeTrocaCidadesModule(opts) {
   const CFG_KEY = 'grepoTrocaCid_cfg_v1';
   const DEFAULTS = {
     ativo: true,
-    limiarEnvio: 50,       // só envia quem tiver o armazém acima disto (%)
-    encherAte: 75,         // até onde encher a cidade que recebe (%) — precisa
-                           // de folga para lançar ordens que rendam
-    deixarPct: 45,         // quem AINDA vai precisar guarda isto (%)
-    deixarSemNada: 10,     // quem já não tem nada para fazer pode descer a isto
-    minEnvio: 500,         // não vale a pena enviar menos do que isto
+    /* Quanto fica na cidade que envia. */
+    deixarCumprida: 10,    // % — templates todos feitos
+    deixarParada: 40,      // % — feitos mas com a fila de construção cheia
+    /* Até onde encher quem recebe: o resto seria desperdício, porque o
+     * armazém tem tecto e o excedente perde-se. */
+    encherAte: 95,
+    /* O jogo recusa envios abaixo de 100 ("Tem de enviar pelo menos 100
+     * recursos") — confirmado em jogo. */
+    minEnvio: 500,
   };
+
+  /* A fila de construção está cheia? São sete lugares. */
+  function filaDeConstrucaoCheia(townId) {
+    try {
+      const col = mUw.MM.getCollections().BuildingOrder;
+      const n = ((col && col[0] && col[0].models) || [])
+        .filter((m) => Number((m.attributes || {}).town_id) === Number(townId)).length;
+      return n >= 7;
+    } catch (e) { return false; }
+  }
 
   let mUw = null, mWorld = '';
 
@@ -19472,11 +19632,22 @@ function makeTrocaCidadesModule(opts) {
        * pode esvaziar-se quase toda, enquanto uma que tem as filas cheias mas
        * ainda vai precisar de recursos deve guardar uma boa parte.
        *
-       * - nada pendente (template completo)  → guarda só `deixarSemNada`
-       * - ainda tem coisas por fazer         → guarda `deixarPct` */
+       * - templates cumpridos                → guarda `deixarCumprida`
+       * - cumpridos mas com a fila cheia      → guarda `deixarParada` */
+      /* AS REGRAS, sem percentagens de armazém a decidir quem envia:
+       *
+       *   templates todos cumpridos           → guarda 10%
+       *   cumpridos mas com a fila cheia      → guarda 40%
+       *   ainda tem coisas por fazer          → não envia nada
+       *
+       * Uma cidade parada com a fila cheia volta a precisar quando ela
+       * esvaziar, por isso guarda mais. Mas entretanto continua a farmar, e
+       * a fila são sete lugares — dá tempo de sobra para recuperar. */
       const aindaPrecisa = temTrabalhoPendente(t.id, res);
-      const deixar = aindaPrecisa ? c.deixarPct : c.deixarSemNada;
-      const limiar = aindaPrecisa ? c.limiarEnvio : c.deixarSemNada;
+      if (aindaPrecisa && !filaDeConstrucaoCheia(t.id)) continue;   // ainda usa o que tem
+
+      const deixar = filaDeConstrucaoCheia(t.id) ? c.deixarParada : c.deixarCumprida;
+      const limiar = 0;   // não se exige armazém nenhum: se pode dar, dá
 
       /* NÃO excluir por ter obras na fila.
        *
@@ -19485,7 +19656,7 @@ function makeTrocaCidadesModule(opts) {
        * armazém CHEIO a desperdiçar produção enquanto outras esperavam.
        *
        * O que protege a construção é a percentagem que se deixa em casa
-       * (`deixarPct`), não impedir o envio.
+       * (a percentagem que fica), não impedir o envio.
        *
        * Visto em jogo: uma cidade com os três recursos a 11824/11824 e nada a
        * sair não era considerada dadora, só por ter 2 obras na fila. */
@@ -19535,7 +19706,7 @@ function makeTrocaCidadesModule(opts) {
   function excedente(d, c) {
     /* Cada dador tem o SEU limite: quem já não tem nada para fazer deixa
      * pouco, quem ainda vai precisar deixa mais. */
-    const pct = (d.deixar != null) ? d.deixar : c.deixarPct;
+    const pct = (d.deixar != null) ? d.deixar : c.deixarCumprida;
     const guardar = d.res.storage * (pct / 100);
     const out = {};
     let total = 0;
@@ -19667,17 +19838,29 @@ function makeTrocaCidadesModule(opts) {
 
     container.innerHTML = `
       <div style="font-size:11px;line-height:1.7">
-        <label><input type="checkbox" id="tc-on"${c.ativo ? ' checked' : ''}> <b>Enviar recursos entre cidades</b></label><br>
-        Envia quem tiver o armazém acima de
-        <input type="number" id="tc-limiar" min="10" max="95" value="${c.limiarEnvio}" style="width:46px">%
-        e nada em fila<br>
-        Quem ainda tem coisas para fazer deixa
-        <input type="number" id="tc-deixar" min="0" max="90" value="${c.deixarPct}" style="width:46px">% em casa<br>
-        Quem já tem o template completo deixa só
-        <input type="number" id="tc-deixar-vazio" min="0" max="90" value="${c.deixarSemNada}" style="width:46px">%
-        <span style="opacity:.65;font-size:10px">— e envia mesmo com pouco em caixa</span><br>
+        <label><input type="checkbox" id="tc-on"${c.ativo ? ' checked' : ''}> <b>Enviar recursos entre cidades</b></label>
+        <div style="opacity:.65;font-size:10px;margin:2px 0 5px 18px">
+          Quem já não precisa manda a quem está a meio de uma ordem. Conta o que
+          já vai a caminho, o espaço no armazém do destino e a capacidade do
+          mercado.
+        </div>
+
+        <div style="background:#0d141c;padding:5px 7px;border-radius:4px;margin-bottom:5px">
+          <b style="font-size:11px">Quem envia</b>
+          <div style="opacity:.8;margin-top:2px">
+            templates cumpridos → deixa
+            <input type="number" id="tc-deixar-vazio" min="0" max="90" value="${c.deixarCumprida}" style="width:44px">%<br>
+            cumpridos mas com a fila cheia → deixa
+            <input type="number" id="tc-deixar" min="0" max="90" value="${c.deixarParada}" style="width:44px">%
+          </div>
+          <div style="opacity:.55;font-size:10px;margin-top:3px">
+            Uma cidade parada volta a precisar quando a fila esvaziar, por isso
+            guarda mais. Entretanto continua a farmar, e a fila são sete lugares.
+          </div>
+        </div>
+
         Encher quem recebe até <input type="number" id="tc-encher" min="20" max="100" value="${c.encherAte}" style="width:46px">%
-        <span style="opacity:.65">(folga para as ordens renderem)</span>
+        <span style="opacity:.65;font-size:10px">do armazém</span>
       </div>
       <div style="background:#0d141c;padding:5px;border-radius:4px;margin-top:5px;font-size:11px">
         A precisar: <b>${carentes.length}</b> · com excedente: <b>${dadores.length}</b>
@@ -19693,10 +19876,9 @@ function makeTrocaCidadesModule(opts) {
     if (g) g.onclick = () => {
       guardarCfg(Object.assign({}, c, {
         ativo: container.querySelector('#tc-on').checked,
-        limiarEnvio: Number(container.querySelector('#tc-limiar').value) || 50,
-        encherAte: Number(container.querySelector('#tc-encher').value) || 75,
-        deixarPct: Number(container.querySelector('#tc-deixar').value) || 30,
-        deixarSemNada: Number(container.querySelector('#tc-deixar-vazio').value) || 10,
+        encherAte: Number(container.querySelector('#tc-encher').value) || 95,
+        deixarParada: Number(container.querySelector('#tc-deixar').value) || 40,
+        deixarCumprida: Number(container.querySelector('#tc-deixar-vazio').value) || 10,
       }));
       ctx.log('Trocas entre cidades: configuração guardada.');
       g.textContent = 'Guardado ✓';
