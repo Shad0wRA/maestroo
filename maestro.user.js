@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.01.2000
+// @version      2026.09.02.0030
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1059,7 +1059,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.01.2000';
+  const MAESTRO_VERSAO = '2026.09.02.0030';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -8606,7 +8606,8 @@ function makeRecrutamentoModule(opts) {
       // cidade inteira aqui excluía unidades que nem sequer custam recursos
       // (o enviado divino custa favor e população, não madeira/pedra/prata).
       // (a verificação por unidade é feita dentro da decisão, com o custo real)
-      const minPct = tpl.minArmazemPct;
+      /* `minArmazemPct` já não é usado — ficou guardado nos templates antigos
+       * mas a decisão passou a ter uma regra só (mínimo de população). */
       /* Mínimo de POPULAÇÃO por ordem. Se estiver definido, substitui a regra
        * antiga da percentagem do armazém. */
       const minPop = Number(tpl.minPopOrdem);
@@ -8754,19 +8755,26 @@ function makeRecrutamentoModule(opts) {
 
             if (uid === NC_ID) {
               // o colonizador não obedece ao mínimo de ordem
-            } else if (minPop > 0) {
+            } else {
+              /* UMA REGRA SÓ, como na decisão.
+               *
+               * O caminho do `minArmazemPct` ficou aqui depois de a decisão
+               * passar a usar só o mínimo de população. O diagnóstico dizia
+               * "armazém a 23% (min 70%)" por uma regra que já não existe —
+               * e mandava-nos procurar no sítio errado.
+               *
+               * Quando o template não tem mínimo guardado, usa-se 60, que é
+               * o mesmo valor por omissão da decisão. */
+              const minimo = minPop > 0 ? minPop : 60;
               const popQueFalta = (querem - ja) * (Number(gd.population) || 1);
-              if (popQueFalta > minPop) {
-                const podePop = popDaOrdemPossivel(recursos, gd.resources || {}, gd.population, reservaPct);
-                if (podePop < minPop) {
+              if (popQueFalta > minimo) {
+                const podePop = popDaOrdemPossivel(recursos, gd.resources || {}, gd.population, 0);
+                if (podePop < minimo) {
                   linhas.push(`${nome}: só dá para ${Math.round(podePop)} de população `
-                    + `(mínimo ${minPop}; faltam ${popQueFalta})`);
+                    + `(mínimo ${minimo}; faltam ${popQueFalta})`);
                   continue;
                 }
               }
-            } else {
-              const arm = armazemSuficiente(recursos, minPct, gd.resources);
-              if (!arm.ok) { linhas.push(`${nome}: armazém a ${arm.pctAtual}% (min ${minPct}%)`); continue; }
             }
 
             const disp = recursosGastaveis(recursos, reservaPct) || {};
