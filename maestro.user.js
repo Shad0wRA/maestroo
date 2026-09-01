@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.31.1730
+// @version      2026.08.31.1830
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -972,7 +972,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.31.1730';
+  const MAESTRO_VERSAO = '2026.08.31.1830';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -1475,11 +1475,17 @@
           }
           /* REDESENHAR O PAINEL.
            *
-           * Quando o perfil chega atrasado — o que acontece se a primeira
-           * leitura falhar — o painel já foi desenhado com os valores
-           * antigos. Sem isto, o campo do Firebase aparecia vazio apesar de o
-           * endereço estar guardado e a funcionar. */
-          try { buildPanel(); atualizarPainelEstado(); } catch (e) {}
+           * O perfil chega SEMPRE depois do painel — segundos ou minutos mais
+           * tarde. Sem isto, os campos ficam com os valores antigos até fechares
+           * e reabrires: mudavas o centro da fundação na principal, ele chegava
+           * à multi, e o painel dela continuava a mostrar o valor velho.
+           *
+           * Redesenha-se o menu E o módulo aberto — o `buildPanel` sozinho só
+           * trata do menu, e é o módulo aberto que tem os campos. */
+          try {
+            atualizarPainelEstado();
+            if (redesenharPainelAberto) redesenharPainelAberto();
+          } catch (e) {}
           return;
         }
       } catch (e) {}
@@ -2682,6 +2688,10 @@
     } catch (e) {}
   }
 
+  /* Redesenhar o módulo que está aberto no painel. Fica preenchido quando o
+   * painel é construído. */
+  let redesenharPainelAberto = null;
+
   function buildPanel() {
     if (document.getElementById('maestro-panel')) return;
     const btn = document.createElement('div');
@@ -3798,6 +3808,11 @@
       if (moduloAberto) desenharModulo(moduloAberto);
       else desenharMenu();
     }
+
+    /* Guardar a referência: o perfil chega DEPOIS do painel estar desenhado,
+     * e é preciso redesenhar o módulo aberto para os campos mostrarem os
+     * valores novos. */
+    redesenharPainelAberto = desenhar;
     desenhar();
   }
 
@@ -13623,26 +13638,85 @@ function makeAlertasModule(opts) {
   // dentro de transportes e o comando anda à velocidade do transporte, não da
   // unidade. Listar arqueiros ou fundibulários num ataque de outra ilha é
   // simplesmente impossível.
+  /* ============ QUE UNIDADE EXPLICA ESTE TEMPO? =========================
+   *
+   * Em vez de calcular uma velocidade e ver em que faixa cai, testam-se
+   * TODAS as combinações possíveis de unidade e bónus, e fica-se com as que
+   * explicam o tempo observado.
+   *
+   * Os bónus que o atacante pode ter (medidos em jogo com 4 envios reais,
+   * dispersão de 3,6%):
+   *   cartografia  ×1,10  nas unidades navais
+   *   farol        ×1,15  nas unidades navais, por cidade
+   *   e multiplicam entre si, não somam — confirmado.
+   *
+   * Uma unidade "cabe" se existir alguma combinação de bónus que a faça
+   * chegar no tempo observado, com uma folga pequena para ruído de medição.
+   * ==================================================================== */
+  const FOLGA_MEDICAO = 0.08;    // 8%: a dispersão medida foi de 3,6%
+
   function unidadesCompativeis(velEquivalente, mesmaIlha) {
     const out = [];
     try {
       const u = mUw.GameData.units || {};
+
+      /* As combinações de bónus possíveis, da mais lenta para a mais rápida.
+       * Terrestres não beneficiam de cartografia nem do farol. */
+      const combosNavais = [
+        { f: 1,           nome: 'sem bónus' },
+        { f: 1.10,        nome: 'cartografia' },
+        { f: 1.15,        nome: 'farol' },
+        { f: 1.10 * 1.15, nome: 'cartografia + farol' },
+      ];
+      const combosTerra = [{ f: 1, nome: '' }, { f: 1.10, nome: 'meteorologia' }];
+
       for (const id of Object.keys(u)) {
         const v = Number(u[id].speed) || 0;
         if (v <= 0) continue;
         const naval = !!u[id].is_naval;
         const voadora = !!(u[id].flying || u[id].is_flying);
-        // fora da ilha: só navais (ou voadoras, que atravessam o mar sozinhas)
         if (!mesmaIlha && !naval && !voadora) continue;
-        const desvio = Math.abs(v - velEquivalente) / v;
-        if (desvio <= TOLERANCIA) out.push({ id, nome: u[id].name || id, v, desvio, naval });
+
+        const combos = naval ? combosNavais : combosTerra;
+
+        /* A velocidade observada é a da unidade COM os bónus. Procura-se a
+         * combinação que melhor explica o que vimos. */
+        let melhor = null;
+        for (const c2 of combos) {
+          const velComBonus = v * c2.f;
+          const desvio = Math.abs(velComBonus - velEquivalente) / velComBonus;
+          if (desvio > FOLGA_MEDICAO) continue;
+          if (!melhor || desvio < melhor.desvio) {
+            melhor = { desvio, bonus: c2.nome };
+          }
+        }
+
+        if (melhor) {
+          out.push({
+            id, nome: u[id].name || id, v, naval,
+            desvio: melhor.desvio,
+            bonus: melhor.bonus,
+          });
+        }
       }
     } catch (e) {}
     out.sort((a, b) => a.desvio - b.desvio);
     return out;
   }
 
+  /* É COLONIZADOR?
+   *
+   * Agora que se testam as combinações de bónus, a resposta é directa: ele
+   * está entre as unidades que explicam o tempo observado?
+   *
+   * Isto é melhor do que comparar com uma faixa fixa — apanha o colonizador
+   * com farol (velocidade aparente 10,4) que uma faixa até 12 apanharia por
+   * pouco, e não dá falsos positivos com o incendiário sem bónus (15). */
   function pareceColonizador(velEquivalente, compativeis) {
+    try {
+      if ((compativeis || []).some((c) => c.id === 'colonize_ship')) return true;
+    } catch (e) {}
+
     try {
       const cs = (mUw.GameData.units || {}).colonize_ship;
       const vcs = cs ? Number(cs.speed) : 9;
@@ -13868,16 +13942,38 @@ function makeAlertasModule(opts) {
          * classificação nenhuma e sem aviso. */
         const velMax = (dist > 0 && falta > 0) ? (c.K * dist) / falta : null;
 
+        /* O QUE O LIMITE PERMITE DIZER.
+         *
+         * `velMax` é o MÁXIMO que o ataque pode ter — a viagem real é maior do
+         * que o tempo que falta, logo mais lenta. Serve para EXCLUIR coisas,
+         * não para identificar.
+         *
+         * Um limite de 46 não exclui quase nada (birremes andam a 45), por
+         * isso é pouco útil. Um limite de 12 exclui tudo menos o colonizador.
+         *
+         * Diz-se em texto o que ele exclui, para não parecer uma velocidade
+         * medida. */
         if (velMax != null && velMax <= 12.5) {
-          cls = { cat: '🚨 NAVIO COLONIZADOR', grave: true, nc: true, certo: true };
-        } else {
+          cls = { cat: '🚨 NAVIO COLONIZADOR (é o único tão lento)', grave: true, nc: true, certo: true };
+        } else if (velMax != null && velMax <= 20.5) {
           cls = {
-            cat: 'não consegui estimar (já vinha a caminho quando abri o jogo)'
-               + (velMax != null ? ` — no máximo velocidade ${Math.round(velMax)}` : ''),
+            cat: `🚨 colonizador ou navio incendiário (nada mais anda abaixo de ${Math.round(velMax)})`,
+            grave: true, nc: true,
+          };
+        } else if (velMax != null && velMax <= 32) {
+          cls = {
+            cat: `possível colonizador — anda a ${Math.round(velMax)} ou menos, `
+               + 'o que ainda inclui transportes grandes',
+            grave: true, nc: true,
+          };
+        } else {
+          /* Limite alto: não exclui nada de útil. Avisa-se na mesma, mas sem
+           * fingir que se sabe o que é. */
+          cls = {
+            cat: 'já vinha a caminho quando abri o jogo — não sei o que é'
+               + (velMax != null ? ` (anda a ${Math.round(velMax)} ou menos, o que quase nada exclui)` : ''),
             grave: true,
-            /* Sem saber o que é, trata-se como suspeito: mais vale um aviso a
-             * mais do que perder uma cidade. */
-            nc: velMax == null || velMax <= 32,
+            nc: false,
           };
         }
       } else if (dist > 0 && viagem > 0) {
