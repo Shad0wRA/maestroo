@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.31.1135
+// @version      2026.08.31.1200
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -691,7 +691,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.31.1135';
+  const MAESTRO_VERSAO = '2026.08.31.1200';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -11767,7 +11767,9 @@ function makeAldeiasModule(opts) {
     ativo: true,
     reservaPontos: 0,        // nunca descer abaixo destes pontos de combate
     desbloquear: true,       // também desbloquear aldeias bloqueadas
-    aCadaNPassagens: 12,     // não precisa de ser frequente
+    /* 1 = a cada passagem das aldeias (10 min). Era 12, o que dava duas
+     * horas de espera mesmo com pontos de sobra. */
+    aCadaNPassagens: 1,     // não precisa de ser frequente
   };
   function evoCfg() {
     const c = Object.assign({}, EVO_DEFAULTS);
@@ -11996,7 +11998,20 @@ function makeAldeiasModule(opts) {
     if (forcarEvolucao && !cfgE.ativo) {
       log('Evolução: está DESLIGADA na configuração — liga a caixa "Evoluir aldeias" e guarda.');
     }
-    if (cfgE.ativo && (forcarEvolucao || passagem % (cfgE.aCadaNPassagens || 12) === 0)) {
+    /* A CADA PASSAGEM, se houver pontos para gastar.
+     *
+     * Corria de 12 em 12 passagens — com as aldeias a 10 minutos, eram duas
+     * horas de espera. Não há razão: se há pontos de combate acima da
+     * reserva, evolui-se já.
+     *
+     * O `aCadaNPassagens` fica como travão para quem o quiser: pondo 12 no
+     * painel, volta ao ritmo antigo. */
+    /* O 12 que ficou guardado das versões antigas passa a 1: era o valor por
+     * omissão de então, não uma escolha. Quem quiser espaçar põe outro
+     * número no painel. */
+    let cadaN = Number(cfgE.aCadaNPassagens) || 1;
+    if (cadaN === 12) cadaN = 1;
+    if (cfgE.ativo && (forcarEvolucao || cadaN <= 1 || passagem % cadaN === 0)) {
       try { await evoluirAldeias(ctx, cfgE); } catch (e) { log('Evolução falhou: ' + e.message); }
     }
 
@@ -24133,6 +24148,19 @@ function makeApoioModule(opts) {
    * e a primeira escrita passa a lista para lá. Não é preciso fazer nada. */
   const fbCaminhoApoio = () => `apoio/${mWorld}`;
 
+  /* JÁ MIGRÁMOS PARA O FIREBASE?
+   *
+   * Depois da primeira escrita, o Firebase é a fonte — mesmo que a lista
+   * esteja vazia. Sem esta marca, uma lista vazia fazia cair para o Gist e
+   * daí para a cópia local, que podia ter dias. */
+  const MIGRADO_KEY = 'grepoApoio_migrado_v1';
+  const migrouParaFirebase = () => {
+    try { return armazem.getItem(MIGRADO_KEY) === '1'; } catch (e) { return false; }
+  };
+  const marcarMigrado = () => {
+    try { armazem.setItem(MIGRADO_KEY, '1'); } catch (e) {}
+  };
+
   /* Atalhos para a camada do núcleo — o módulo não lhe chega directamente. */
   const fbAlvo = () => {
     try { return (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroFb; }
@@ -24146,13 +24174,24 @@ function makeApoioModule(opts) {
   const fbUrlM = () => { const f = fbAlvo(); return f ? f.url() : ''; };
 
   async function lerLista() {
-    /* 1) Firebase. */
+    /* 1) Firebase.
+     *
+     * Uma lista VAZIA é uma resposta legítima — significa que não há alvos.
+     * Aceita-se como está, sem cair para o Gist nem para a cópia local: foi
+     * assim que uma lista de dois dias atrás voltou ao arrancar a VPS e o
+     * apoio reenviou tudo.
+     *
+     * Só se passa ao Gist quando o Firebase não responde de todo. */
     try {
-      if (typeof fbLerM === 'function') {
+      if (typeof fbLerM === 'function' && fbUrlM && fbUrlM()) {
         const d = await fbLerM(fbCaminhoApoio());
-        if (d && (d.alvos || d.targets)) {
-          try { armazem.setItem(CACHE_ALVOS, JSON.stringify(d)); } catch (e) {}
+        if (d && Array.isArray(d.alvos)) {
+          guardarEmCache(d);
           return d;
+        }
+        /* Migrado mas sem alvos: o caminho existe e está vazio. */
+        if (d === null && migrouParaFirebase()) {
+          return { alvos: [] };
         }
       }
     } catch (e) {}
@@ -24169,7 +24208,7 @@ function makeApoioModule(opts) {
       if (!f || !f.content) return null;
       const dados = JSON.parse(f.content);
       // guardar em cache para o painel funcionar mesmo offline
-      try { armazem.setItem(CACHE_ALVOS, JSON.stringify(dados)); } catch (e) {}
+      guardarEmCache(dados);
       return dados;
     } catch (e) { return null; }
   }
@@ -24191,7 +24230,8 @@ function makeApoioModule(opts) {
       if (typeof fbEscreverM === 'function' && fbUrlM && fbUrlM()) {
         const r0 = await fbEscreverM(fbCaminhoApoio(), dados);
         if (r0.ok) {
-          try { armazem.setItem(CACHE_ALVOS, JSON.stringify(dados)); } catch (e) {}
+          marcarMigrado();
+          guardarEmCache(dados);
           return { ok: true };
         }
       }
@@ -24212,7 +24252,7 @@ function makeApoioModule(opts) {
       });
 
       if (r.ok) {
-        try { armazem.setItem(CACHE_ALVOS, JSON.stringify(dados)); } catch (e) {}
+        guardarEmCache(dados);
         return { ok: true };
       }
 
@@ -24220,7 +24260,7 @@ function makeApoioModule(opts) {
         /* Pode ser limite de pedidos ou permissões — a mensagem do GitHub
          * diz qual. Guarda-se localmente na mesma, para não se perder o que
          * se acabou de configurar. */
-        try { armazem.setItem(CACHE_ALVOS, JSON.stringify(dados)); } catch (e) {}
+        guardarEmCache(dados);
         let porque = 'o GitHub recusou (403)';
         try {
           const j = await r.json();
@@ -24236,8 +24276,38 @@ function makeApoioModule(opts) {
     } catch (e) { return { ok: false, msg: e.message }; }
   }
 
-  function listaEmCache() {
-    try { return JSON.parse(armazem.getItem(CACHE_ALVOS) || 'null'); } catch (e) { return null; }
+  /* A CÓPIA LOCAL EXPIRA.
+   *
+   * Serve para o painel funcionar quando a rede falha, não para MANDAR
+   * apoios com uma lista velha.
+   *
+   * Visto em jogo: ao reiniciar a VPS, o Firebase e o Gist não responderam,
+   * usou-se a cópia local de dois dias antes, e o apoio reenviou tudo o que
+   * já tinha sido retirado.
+   *
+   * Passadas 6 horas, deixa de servir para enviar — mais vale não fazer nada
+   * do que fazer o errado. */
+  const VALIDADE_CACHE_MS = 6 * 60 * 60 * 1000;
+
+  function listaEmCache(paraEnviar) {
+    try {
+      const d = JSON.parse(armazem.getItem(CACHE_ALVOS) || 'null');
+      if (!d) return null;
+
+      if (paraEnviar) {
+        const quando = Number(d.guardadaEm) || 0;
+        if (!quando || (Date.now() - quando) > VALIDADE_CACHE_MS) return null;
+      }
+      return d;
+    } catch (e) { return null; }
+  }
+
+  /* Guardar com a hora, para se saber se ainda serve. */
+  function guardarEmCache(dados) {
+    try {
+      const d = Object.assign({}, dados, { guardadaEm: Date.now() });
+      armazem.setItem(CACHE_ALVOS, JSON.stringify(d));
+    } catch (e) {}
   }
 
   /* ---------------------- informação sobre os alvos --------------------- */
@@ -24812,18 +24882,21 @@ function makeApoioModule(opts) {
 
     let lista = await lerLista();
 
-    /* SE O GIST FALHAR, usar a última lista conhecida.
+    /* SE A LISTA NÃO VIER, usar a cópia local — mas SÓ SE FOR RECENTE.
      *
-     * Uma falha momentânea — um 429, a rede a hesitar — não é razão para o
-     * módulo não fazer nada. A lista muda raramente e a cópia local serve.
+     * Uma falha momentânea não é razão para o módulo não fazer nada. Mas uma
+     * cópia velha é pior do que nada: ao reiniciar a VPS, nem o Firebase nem
+     * o Gist responderam, usou-se uma lista de dois dias antes, e o apoio
+     * reenviou tudo o que já tinha sido retirado.
      *
-     * Só se desiste se nunca tiver havido lista nenhuma. */
+     * Passadas 6 horas a cópia deixa de servir para enviar. */
     if (!lista) {
-      lista = listaEmCache();
+      lista = listaEmCache(true);        // true = para enviar, exige recente
       if (lista) {
-        rotina('Apoio: o Gist não respondeu — uso a última lista guardada.');
+        rotina('Apoio: a lista partilhada não respondeu — uso a última guardada.');
       } else {
-        log('Apoio: não consegui ler a lista partilhada e não tenho cópia local.');
+        rotina('Apoio: não consegui ler a lista partilhada e a cópia local está '
+          + 'velha de mais para enviar. Não faço nada nesta passagem.');
         return;
       }
     }
