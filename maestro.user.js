@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.01.1825
+// @version      2026.09.01.1845
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -465,9 +465,53 @@
    * NÃO substitui o registo do ecrã: é uma camada à parte que só escreve.
    * ==================================================================== */
   const CAIXA_NEGRA_KEY = 'grepoMaestro_caixaNegra_v1';
-  const CAIXA_NEGRA_MAX = 800;
+  /* 3000 linhas: com as de rotina a entrar, 800 davam só uma hora. São uns
+   * 200 KB, que o navegador aguenta bem. */
+  const CAIXA_NEGRA_MAX = 3000;
+
+  /* Escrever em LOTES.
+   *
+   * Cada escrita relê e regrava a caixa toda — 1,8 ms com 3000 linhas. Com
+   * as de rotina a entrar e 40 abas na VPS, isso somava. Junta-se o que
+   * chega e grava-se de 3 em 3 segundos. */
+  let caixaPendente = [];
+  let caixaTemporizador = null;
+
+  function descarregarCaixa() {
+    caixaTemporizador = null;
+    if (!caixaPendente.length) return;
+    const novas = caixaPendente;
+    caixaPendente = [];
+    try {
+      let lista = [];
+      try { lista = JSON.parse(localStorage.getItem(CAIXA_NEGRA_KEY) || '[]'); } catch (e) {}
+      for (const l of novas) lista.push(l);
+      while (lista.length > CAIXA_NEGRA_MAX) lista.shift();
+      localStorage.setItem(CAIXA_NEGRA_KEY, JSON.stringify(lista));
+    } catch (e) {
+      try {
+        const lista = JSON.parse(localStorage.getItem(CAIXA_NEGRA_KEY) || '[]');
+        localStorage.setItem(CAIXA_NEGRA_KEY,
+          JSON.stringify(lista.slice(Math.floor(lista.length / 2))));
+      } catch (e2) {}
+    }
+  }
+
+  /* Não perder o que está pendente se a página fechar. */
+  try { uw.addEventListener('beforeunload', descarregarCaixa); } catch (e) {}
 
   function guardarNaCaixa(modulo, texto) {
+    try {
+      caixaPendente.push({
+        t: Math.floor(Date.now() / 1000),
+        m: String(modulo || 'core'),
+        x: String(texto || '').slice(0, 300),
+      });
+      if (!caixaTemporizador) caixaTemporizador = setTimeout(descarregarCaixa, 3000);
+      return;
+    } catch (e) {}
+
+    /* Se algo falhar acima, grava-se à moda antiga. */
     try {
       const linha = {
         t: Math.floor(Date.now() / 1000),
@@ -497,6 +541,7 @@
   try {
     uw.__maestroCaixaNegra = (quantas, modulo) => {
       try {
+        descarregarCaixa();   // mostrar também o que ainda não foi gravado
         let lista = JSON.parse(localStorage.getItem(CAIXA_NEGRA_KEY) || '[]');
         if (modulo) lista = lista.filter((l) => l.m === String(modulo));
         const n = Number(quantas) || 40;
@@ -942,6 +987,15 @@
      * Vão para a consola do navegador, para quem quiser depurar. */
     const rotina = (msg) => {
       try { console.log('[MAESTRO/rotina]', modId, msg); } catch (e) {}
+      /* GUARDAR NA CAIXA NEGRA.
+       *
+       * As linhas de rotina não aparecem no ecrã de propósito — mas são
+       * exactamente as que explicam porque é que algo NÃO aconteceu, e é
+       * isso que se procura quando se está a diagnosticar.
+       *
+       * Sem isto, o "porque não recruta" ficava só na consola e perdia-se no
+       * primeiro recarregamento. */
+      try { guardarNaCaixa(modId, '· ' + String(msg)); } catch (e) {}
     };
 
     return {
@@ -972,7 +1026,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.01.1825';
+  const MAESTRO_VERSAO = '2026.09.01.1845';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -8615,6 +8669,22 @@ function makeRecrutamentoModule(opts) {
        * população e favor. */
       if (!acoes.length) {
         try {
+          /* A RESERVA DE POPULAÇÃO PARA A CONSTRUÇÃO.
+           *
+           * Guarda-se o que falta construir até ao fim do template, para a
+           * cidade não ficar sem população para subir edifícios. Se isso
+           * comer tudo, não sobra nada para tropa — e o diagnóstico calava-se,
+           * porque só olhava a pesquisa, recursos e favor.
+           *
+           * Visto em jogo: a 55.17 com 2534 de população livre e 162
+           * trirremes por fazer não recrutava, sem dizer porquê. */
+          const popLivreAgora = Number((recursos || {}).population) || 0;
+          if (popParaConstruir >= popLivreAgora) {
+            rotina(`${town.name}: toda a população livre (${popLivreAgora}) está `
+              + `reservada para acabar de construir (precisa de ${popParaConstruir}). `
+              + 'Não recruto para a cidade não ficar sem espaço para subir edifícios.');
+          }
+
           /* Ficar com registo de que a cidade FOI avaliada.
            *
            * Sem isto não se distingue "avaliei e não havia nada a fazer" de
