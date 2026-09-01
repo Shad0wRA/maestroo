@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.31.1245
+// @version      2026.08.31.1320
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -691,7 +691,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.31.1245';
+  const MAESTRO_VERSAO = '2026.08.31.1320';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -7977,7 +7977,12 @@ function makeRecrutamentoModule(opts) {
       const req = cumpreRequisitos(niveis[town.id], tpl.requisitos);
       if (!req.ok) continue;   // ainda não está pronta
 
-      const reservaPct = tpl.reservaPct != null ? tpl.reservaPct : (opts.reservaPct || 0);
+      /* SEM RESERVA DE RECURSOS.
+       *
+       * Guardava-se uma percentagem do armazém para a construção, mas isso
+       * competia com o mínimo de população e deixava cidades paradas com o
+       * armazém cheio. O travão passa a ser um só. */
+      const reservaPct = 0;
       const recursos = getRecursos(town.id);
 
       // Só recrutar com o armazém suficientemente cheio (ordens maiores rendem mais).
@@ -8066,23 +8071,24 @@ function makeRecrutamentoModule(opts) {
            * sempre que dê para um. */
           if (uid === NC_ID) return true;
 
-          if (minPop > 0) {
-            /* O mínimo só vale quando AINDA FALTA MUITO.
-             *
-             * Sem isto, o resto de um template nunca se fazia: 1 barco de
-             * transporte são 7 de população e os últimos 30 espadachins são
-             * 30 — nenhum chegaria aos 100 e ficariam por fazer para sempre.
-             *
-             * Se o que falta já vale menos do que o mínimo, é o remate do
-             * template: faz-se de uma vez. */
-            const faltaU = Math.max(0, (Number(alvos[uid]) || 0)
-              - ((tenho[uid] || 0) + (emFila[uid] || 0)));
-            const popQueFalta = faltaU * (Number(gd.population) || 1);
-            if (popQueFalta <= minPop) return true;      // é o remate: deixa passar
+          /* UMA REGRA SÓ: os recursos chegam para o mínimo de população?
+           *
+           * Antes havia três travões a competir — percentagem do armazém,
+           * reserva para construção, e o mínimo de população. Uma cidade com
+           * 25 000 de madeira e 17 000 de pedra ficava parada porque a pedra
+           * estava a 57% e o template exigia 70%.
+           *
+           * Agora a pergunta é simples: dá para fazer uma ordem que valha o
+           * mínimo? Se dá, faz-se. Se o que FALTA já vale menos do que o
+           * mínimo, é o remate do template e faz-se de uma vez. */
+          const minimo = minPop > 0 ? minPop : 60;
 
-            return popDaOrdemPossivel(recursos, gd.resources || {}, gd.population, reservaPct) >= minPop;
-          }
-          return armazemSuficiente(recursos, minPct, gd.resources).ok;
+          const faltaU = Math.max(0, (Number(alvos[uid]) || 0)
+            - ((tenho[uid] || 0) + (emFila[uid] || 0)));
+          const popQueFalta = faltaU * (Number(gd.population) || 1);
+          if (popQueFalta <= minimo) return true;      // é o remate: deixa passar
+
+          return popDaOrdemPossivel(recursos, gd.resources || {}, gd.population, 0) >= minimo;
         },
         popParaConstruir, deusDaCidade(town.id));
       /* DIAGNÓSTICO: porque é que esta cidade não recruta nada.
@@ -8554,25 +8560,13 @@ function makeRecrutamentoModule(opts) {
     })()}
     <div style="background:#0d141c;padding:5px;border-radius:4px;margin-bottom:6px;font-size:11px">
       Só recrutar se a ordem valer pelo menos
-      <input type="number" min="0" max="2000" value="${Number(tpl.minPopOrdem) || 0}" id="rec-minpop" style="width:56px">
+      <input type="number" min="0" max="2000" value="${Number(tpl.minPopOrdem) || 60}" id="rec-minpop" style="width:56px">
       de população<br>
-      <span style="opacity:.65">Evita ordens minúsculas, e mede o que interessa: 15 birremes são
-      120 de população (vale a pena), 15 espadachins são 15 (não vale). O mesmo número serve
-      para qualquer unidade e não muda quando o armazém cresce. 0 = desligado.</span>
-
-      <div style="margin-top:5px;opacity:.7">
-        <i>Regra antiga (percentagem do armazém):</i>
-        <input type="number" min="0" max="100" value="${Number(tpl.minArmazemPct) || 0}" id="rec-minarm" style="width:44px">%
-        <span style="font-size:10px">— só é usada se a de cima estiver a 0.</span>
-      </div>
-    </div>`;
-
-    // reserva de recursos para a construção
-    const reserva = tpl.reservaPct != null ? tpl.reservaPct : 0;
-    html += `<div style="display:flex;gap:5px;align-items:center;margin-bottom:6px;font-size:11px">
-      <span style="flex:1">Reservar para construção:</span>
-      <input type="number" min="0" max="90" value="${reserva}" id="rec-reserva" style="width:50px">
-      <span>% do armazém</span>
+      <span style="opacity:.65">É a única regra: se os recursos derem para uma ordem que valha
+      isto, recruta-se. Mede o que interessa — 15 birremes são 120 de população (vale a pena),
+      15 espadachins são 15 (não vale).<br>
+      Quando o que FALTA para acabar o template já vale menos do que isto, faz-se de uma vez,
+      senão o remate ficava por fazer para sempre.</span>
     </div>
 
     <div style="background:#0d141c;padding:6px;border-radius:4px;margin-bottom:6px;font-size:11px">
@@ -8713,8 +8707,6 @@ function makeRecrutamentoModule(opts) {
       if (elMin) elMin.onchange = guardarFeit;
     }
 
-    const minArm = container.querySelector('#rec-minarm');
-    if (minArm) minArm.onchange = (e) => { tpl.minArmazemPct = Math.min(100, Math.max(0, Number(e.target.value) || 0)); };
     const minPop = container.querySelector('#rec-minpop');
     if (minPop) minPop.onchange = (e) => { tpl.minPopOrdem = Math.max(0, Number(e.target.value) || 0); };
     const voOn = container.querySelector('#rec-voadores-on');
@@ -8741,8 +8733,6 @@ function makeRecrutamentoModule(opts) {
     const ncM = container.querySelector('#rec-nc-max');
     if (ncM) ncM.onchange = (e) => { tpl.ncMax = Math.max(0, Number(e.target.value) || 0); };
 
-    const res = container.querySelector('#rec-reserva');
-    if (res) res.onchange = (e) => { tpl.reservaPct = Math.min(90, Math.max(0, Number(e.target.value) || 0)); };
     const guardar = container.querySelector('#rec-guardar');
     if (guardar) guardar.onclick = async () => {
       guardar.textContent = 'A guardar...';
@@ -24554,9 +24544,25 @@ function makeApoioModule(opts) {
    * Antes devolvia só true/false e a mensagem dizia sempre "falta o token do
    * Gist?", mesmo quando o token estava bom. O que costuma falhar é o LIMITE
    * DE ESCRITAS do GitHub: com 19 contas a gravar, esgota-se depressa. */
+  /* SÓ A CONTA PRINCIPAL ESCREVE A LISTA.
+   *
+   * Escrevia qualquer conta. Uma multi com a cópia local desactualizada
+   * escrevia-a de volta e os alvos retirados reapareciam — visto em jogo: ao
+   * reiniciar a VPS voltaram apoios de dois dias antes.
+   *
+   * As outras contas só leem e seguem. Mexes na principal, todas obedecem. */
+  function souAPrincipalDoApoio() {
+    try { return localStorage.getItem('grepoMaestro_principal_v1') === '1'; }
+    catch (e) { return false; }
+  }
+
   async function escreverLista(dados) {
     // não segurar o processo (importante nos testes)
     try { if (typeof t2 !== 'undefined' && t2 && t2.unref) t2.unref(); } catch (e) {}
+
+    if (!souAPrincipalDoApoio()) {
+      return { ok: false, msg: 'só a conta principal altera a lista de apoio' };
+    }
 
     /* FIREBASE PRIMEIRO — não tem o limite de escritas do GitHub.
      *
@@ -25591,6 +25597,11 @@ function makeApoioModule(opts) {
       </div>
 
       <div style="background:#0d141c;padding:5px;border-radius:4px;margin-top:6px">
+        ${souAPrincipalDoApoio() ? '' :
+          '<div style="background:#2a2416;border-left:3px solid #c96;padding:4px 6px;'
+          + 'margin-bottom:5px;font-size:10px;opacity:.85">'
+          + 'Esta conta só <b>lê</b> a lista. Acrescenta e retira alvos na conta '
+          + 'principal — as outras seguem sozinhas.</div>'}
         <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px">
           <b style="font-size:11px">Alvos apoiados</b>
           <button id="ap-nomes" style="cursor:pointer;font-size:10px" title="traz a lista partilhada e procura os nomes que faltam">🔄 actualizar</button>
@@ -25627,7 +25638,12 @@ function makeApoioModule(opts) {
       const ids = extrairIds(el.value);
       if (!ids.length) { ctx.log('Apoio: escreve o id da cidade (123 ou [town]123[/town]).'); return; }
 
-      const atual0 = (await lerLista()) || listaEmCache() || {};
+      const atual0 = await lerLista();
+      if (!atual0) {
+        ctx.log('Apoio: não consegui ler a lista partilhada — não acrescento nada '
+          + 'para não escrever dados velhos.');
+        return;
+      }
       const arr0 = (atual0.alvos || atual0.targets || []).map(Number).filter(Boolean);
       const novos = ids.filter((x) => arr0.indexOf(x) < 0);
       const repetidos = ids.filter((x) => arr0.indexOf(x) >= 0);
@@ -25689,7 +25705,14 @@ function makeApoioModule(opts) {
           paraRemover = new Set();
           if (!quais.length) return;
 
-          const atual = (await lerLista()) || listaEmCache() || {};
+          /* NUNCA escrever a partir da cópia local: se a leitura falhar,
+           * escrever a cópia de volta faz reaparecer alvos já retirados. */
+          const atual = await lerLista();
+          if (!atual) {
+            ctx.log('Apoio: não consegui ler a lista partilhada — não mexo nela '
+              + 'para não escrever dados velhos. Tenta daqui a pouco.');
+            return;
+          }
           const arr = (atual.alvos || atual.targets || [])
             .map(Number).filter((x) => x && quais.indexOf(x) < 0);
           atual.alvos = arr; delete atual.targets;
