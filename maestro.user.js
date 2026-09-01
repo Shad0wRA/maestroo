@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.08.31.1830
+// @version      2026.09.01.1650
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -972,7 +972,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.08.31.1830';
+  const MAESTRO_VERSAO = '2026.09.01.1650';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -3519,7 +3519,53 @@
         try {
           bI.disabled = true;
           bI.textContent = 'a publicar...';
+
+          /* OS TEMPLATES TÊM FICHEIROS PRÓPRIOS NO GIST.
+           *
+           * A construção, o recrutamento e a pesquisa guardam os seus
+           * templates em ficheiros separados do perfil — um por mundo. Ao
+           * arrancar, cada módulo lê o SEU ficheiro e escreve por cima do que
+           * se acabou de importar.
+           *
+           * Visto em jogo: os templates do pt125 chegavam ao pt127, o painel
+           * mostrava-os, e desapareciam no recarregamento.
+           *
+           * Publica-se cada um com o conteúdo importado, para o ficheiro do
+           * mundo de destino passar a ter o que importaste. */
           const perfil = perfilParaChaves();
+          const suf = `__${perfil}`;
+
+          const FICHEIROS = {
+            grepoConstru_templates_v1: 'construcao-templates',
+            grepoRecruta_templates_v1: 'recrutamento-templates',
+            grepoPesquisa_templates_v1: 'pesquisa-templates',
+          };
+
+          for (const chave of Object.keys(FICHEIROS)) {
+            let conteudo = null;
+            try { conteudo = localStorage.getItem(chave + suf) || localStorage.getItem(chave); }
+            catch (e) {}
+            if (!conteudo) continue;
+
+            const nome = `${FICHEIROS[chave]}-${perfil}-${WORLD}.json`;
+            try {
+              await pedirFora(`https://api.github.com/gists/${GIST_ID_GLOBAL}`, {
+                method: 'PATCH',
+                headers: {
+                  Accept: 'application/vnd.github+json',
+                  Authorization: `Bearer ${GIST_TOKEN_GLOBAL}`,
+                  'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ files: { [nome]: { content: conteudo } } }),
+              });
+              log('core', `Templates de ${FICHEIROS[chave].split('-')[0]} publicados para ${WORLD}.`);
+            } catch (e) {
+              log('core', `⚠️ Não consegui publicar ${nome} — os templates podem `
+                + 'voltar aos antigos no recarregamento.');
+            }
+            await new Promise((r2) => setTimeout(r2, 800));
+          }
+
           const rp = await publicarPerfil(perfil);
           if (rp && rp.ok) {
             log('core', 'Definições publicadas — o recarregamento não as vai perder.');
