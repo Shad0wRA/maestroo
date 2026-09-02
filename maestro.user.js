@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.02.1545
+// @version      2026.09.02.1600
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1095,7 +1095,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.02.1545';
+  const MAESTRO_VERSAO = '2026.09.02.1600';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -11992,12 +11992,39 @@ function makeSentinelasModule(opts) {
       const col = mUw.MM.getCollections().AlliancePact;
       const mods = (col && col[0] && col[0].models) || [];
 
-      /* O nome da minha aliança vem nos próprios pactos. */
+      /* O NOME DA MINHA ALIANÇA.
+       *
+       * Vinha só dos pactos — e numa aliança SEM pactos nenhuns ficava vazio,
+       * fazendo o módulo concluir que não estava em aliança nenhuma.
+       *
+       * Visto em jogo: aliança 46, zero pactos, "não estou em nenhuma
+       * aliança" em cada passagem.
+       *
+       * Tenta-se primeiro o próprio jogo, que sabe o nome, e só depois os
+       * pactos. */
       let minhaNome = '';
-      for (const m of mods) {
-        const a = m.attributes || {};
-        if (Number(a.alliance_1_id) === minhaId) { minhaNome = String(a.alliance_1_name || ''); break; }
-        if (Number(a.alliance_2_id) === minhaId) { minhaNome = String(a.alliance_2_name || ''); break; }
+      try {
+        minhaNome = String(mUw.Game.alliance_name || '');
+      } catch (e) {}
+
+      if (!minhaNome) {
+        try {
+          const p = mUw.MM.getModels().Player || {};
+          for (const k of Object.keys(p)) {
+            const a = p[k].attributes || {};
+            if (Number(a.alliance_id) === minhaId && a.alliance_name) {
+              minhaNome = String(a.alliance_name); break;
+            }
+          }
+        } catch (e) {}
+      }
+
+      if (!minhaNome) {
+        for (const m of mods) {
+          const a = m.attributes || {};
+          if (Number(a.alliance_1_id) === minhaId) { minhaNome = String(a.alliance_1_name || ''); break; }
+          if (Number(a.alliance_2_id) === minhaId) { minhaNome = String(a.alliance_2_name || ''); break; }
+        }
       }
       if (minhaNome) out.add(minhaNome.trim().toLowerCase());
 
