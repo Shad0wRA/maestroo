@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.02.1950
+// @version      2026.09.02.2030
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1102,7 +1102,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.02.1950';
+  const MAESTRO_VERSAO = '2026.09.02.2030';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -11869,6 +11869,16 @@ function makeBandidosModule(opts) {
         const q = (rec.configuration || {});
         log(`🎁 Bandidos: recompensa recolhida`
           + (q.amount ? ` (${q.amount} ${q.type || rec.subtype || ''})` : '') + '.');
+      } else if (/sobrepor|mesmo tempo|override/i.test(String(r.msg))) {
+        /* Dois poderes do mesmo tipo: guardar em vez de substituir. */
+        const rg = await bridge('stashReward', {}, townId);
+        if (rg.ok) {
+          log('🎁 Bandidos: já havia um efeito igual — guardei no inventário.');
+        } else {
+          const rd = await bridge('trashReward', {}, townId);
+          if (rd.ok) log('🎁 Bandidos: efeito igual activo e sem espaço — descartei.');
+          else rotina(`Bandidos: não consegui guardar nem descartar — ${rg.msg}`);
+        }
       } else if (/j[áa] est[áa] ativ|already active/i.test(String(r.msg))) {
         /* O feitiço já está activo aqui: noutra cidade passa. */
         let usou = false;
@@ -12580,6 +12590,28 @@ function makeDiariaModule(opts) {
     const acao = (tropa && c.descartarTropas) ? 'trashReward' : 'useReward';
 
     let r2 = await bridge(depois.id, acao);
+
+    /* DOIS PODERES DO MESMO TIPO NÃO COEXISTEM.
+     *
+     * O jogo pergunta se queres substituir, e a pergunta fica sem resposta —
+     * o pedido devolve um erro e a recompensa nunca é usada.
+     *
+     * Guardar é melhor do que substituir: o efeito que está a correr não se
+     * perde, e o novo fica no inventário para quando fizer falta. Se nem
+     * guardar der, descarta-se — deixar pendente não serve de nada. */
+    if (!r2.ok && acao === 'useReward' && /sobrepor|mesmo tempo|override|replace/i.test(String(r2.msg))) {
+      const rg = await bridge(depois.id, 'stashReward');
+      if (rg.ok) {
+        log(`🎁 Diária: já havia um efeito igual activo — guardei no inventário.`);
+        r2 = rg;
+      } else {
+        const rd = await bridge(depois.id, 'trashReward');
+        if (rd.ok) {
+          log('🎁 Diária: efeito igual já activo e o inventário não a aceitou — descartei.');
+          r2 = rd;
+        }
+      }
+    }
 
     /* O FEITIÇO JÁ ESTÁ ACTIVO NESTA CIDADE?
      *
@@ -24898,6 +24930,9 @@ function makeMissoesModule(opts) {
     'unit_training_boost', 'instant_unit_package', 'unit_package', 'instant_units',
   ];
 
+  /* Missões do guia que o jogo recusou fechar por pedir verificação. */
+  const GUIA_BLOQUEADAS = 'grepoMissoes_guiaBloqueadas_v1';
+
   /* Missões já iniciadas — o jogo não distingue "aceite" de "a decorrer",
    * portanto guarda-se aqui para não repetir o pedido a cada passagem. */
   const INICIADAS_KEY = 'grepoMissoes_iniciadas_v1';
@@ -25528,7 +25563,83 @@ function makeMissoesModule(opts) {
     await ctx.sleep(ctx.rand(400, 800));
 
     const todas = missoes();
-    if (!todas.length) { log('Missões: nenhuma disponível.'); return; }
+
+    /* AS MISSÕES DO GUIA INICIAL.
+     *
+     * São as do painel lateral — "expandir a serração para 25", "vencer 25
+     * combates". Ficam na colecção `Progressable`, não na `IslandQuest`.
+     *
+     * Não há "recolher recompensa": fecha-se a missão e o jogo dá-a.
+     * Capturado do jogo:
+     *   Progressable/<id> · progressTo · { progressable_id, state: 'closed' }
+     *
+     * Só se fecham as que estão `satisfied` — objectivos cumpridos, à espera
+     * de serem fechadas. */
+    if (c.guiaInicial !== false) {
+      try {
+        const col = mUw.MM.getCollections().Progressable;
+        const mods = (col && col[0] && col[0].models) || [];
+
+        const bloqueadas = (() => {
+          try { return JSON.parse(armazem.getItem(GUIA_BLOQUEADAS) || '{}'); }
+          catch (e) { return {}; }
+        })();
+        const agoraS2 = Math.floor(Date.now() / 1000);
+
+        for (const m2 of mods) {
+          const a2 = m2.attributes || {};
+          if (String(a2.state) !== 'satisfied') continue;
+
+          /* Bloqueada por verificação há menos de 6 h? Não insistir. */
+          const desde = Number(bloqueadas[a2.progressable_id]) || 0;
+          if (desde && (agoraS2 - desde) < 6 * 3600) continue;
+
+          const nome2 = (a2.static_data || {}).name || a2.progressable_id;
+          const r2 = await bridgeProgressable(a2.id, a2.progressable_id);
+
+          if (r2.ok) {
+            log(`🎓 Guia: "${nome2}" concluída — recompensa recebida.`);
+            try {
+              const b = JSON.parse(armazem.getItem(GUIA_BLOQUEADAS) || '{}');
+              delete b[a2.progressable_id];
+              armazem.setItem(GUIA_BLOQUEADAS, JSON.stringify(b));
+            } catch (e) {}
+          } else if (/verification|captcha|bot_protection/i.test(String(r2.msg))) {
+            /* O JOGO PEDIU VERIFICAÇÃO.
+             *
+             * Insistir não resolve — visto em jogo: a mesma missão a falhar
+             * com `backend_requested_verification` de passagem em passagem
+             * durante horas, sem captcha nenhum visível para resolver.
+             *
+             * Marca-se e não se tenta durante 6 horas. Avisa-se uma vez, para
+             * poderes fechá-la à mão. */
+            try {
+              const b = JSON.parse(armazem.getItem(GUIA_BLOQUEADAS) || '{}');
+              const agoraS = Math.floor(Date.now() / 1000);
+              if (!b[a2.progressable_id] || (agoraS - b[a2.progressable_id]) > 6 * 3600) {
+                b[a2.progressable_id] = agoraS;
+                armazem.setItem(GUIA_BLOQUEADAS, JSON.stringify(b));
+                log(`🔒 Guia: "${nome2}" está pronta mas o jogo pede verificação. `
+                  + 'Fecha-a à mão no painel das missões — não volto a tentar nas '
+                  + 'próximas 6 h.');
+              }
+            } catch (e) {}
+          } else {
+            rotina(`Guia: não consegui fechar "${nome2}" — ${r2.msg}`);
+          }
+          await ctx.sleep(ctx.rand(800, 1600));
+        }
+      } catch (e) { seErroDeCodigo(e, 'Missoes'); }
+    }
+
+
+    /* As de ILHA são outra lista: sem elas não há mais nada a fazer aqui,
+     * mas o guia acima corre à mesma — antes ficava depois deste `return` e
+     * nunca era alcançado numa conta sem missões de ilha.
+     *
+     * Visto em jogo: `StartTutorialQuest` pronta e o módulo a dizer "nenhuma
+     * disponível". */
+    if (!todas.length) { rotina('Missões: nenhuma missão de ilha disponível.'); return; }
 
     let agiu = 0;
 
@@ -25644,6 +25755,18 @@ function makeMissoesModule(opts) {
         log(`🎁 ${nome}: recompensa recolhida (${acao === 'trash' ? 'descartada' : acao === 'use' ? 'usada' : 'guardada'}).`);
         agiu++;
         await ctx.sleep(ctx.rand(800, 1500));
+      } else if (/sobrepor|mesmo tempo|override/i.test(String(r.msg))) {
+        /* Dois poderes do mesmo tipo não coexistem e o jogo pergunta se
+         * queres substituir. Guarda-se em vez de substituir: o efeito a
+         * decorrer não se perde. */
+        const rg = await recolher(alvo, m.progressable_id, 'stash');
+        if (rg.ok) {
+          log(`🎁 ${nome}: já havia um efeito igual — guardei no inventário.`);
+        } else {
+          const rd = await recolher(alvo, m.progressable_id, 'trash');
+          if (rd.ok) log(`🎁 ${nome}: efeito igual activo e sem espaço — descartei.`);
+          else rotina(`${nome}: não consegui guardar nem descartar — ${rg.msg}`);
+        }
       } else if (/j[áa] est[áa] ativ|already active/i.test(String(r.msg))) {
         /* O FEITIÇO JÁ ESTÁ ACTIVO NESTA CIDADE.
          *
@@ -25680,39 +25803,6 @@ function makeMissoesModule(opts) {
       } else {
         log(`⚠️ ${nome}: não consegui recolher a recompensa (${r.msg}).`);
       }
-    }
-
-    /* 2c. AS MISSÕES DO GUIA INICIAL.
-     *
-     * São as do painel lateral — "expandir a serração para 25", "vencer 25
-     * combates". Ficam na colecção `Progressable`, não na `IslandQuest`.
-     *
-     * Não há "recolher recompensa": fecha-se a missão e o jogo dá-a.
-     * Capturado do jogo:
-     *   Progressable/<id> · progressTo · { progressable_id, state: 'closed' }
-     *
-     * Só se fecham as que estão `satisfied` — objectivos cumpridos, à espera
-     * de serem fechadas. */
-    if (c.guiaInicial !== false) {
-      try {
-        const col = mUw.MM.getCollections().Progressable;
-        const mods = (col && col[0] && col[0].models) || [];
-
-        for (const m2 of mods) {
-          const a2 = m2.attributes || {};
-          if (String(a2.state) !== 'satisfied') continue;
-
-          const nome2 = (a2.static_data || {}).name || a2.progressable_id;
-          const r2 = await bridgeProgressable(a2.id, a2.progressable_id);
-
-          if (r2.ok) {
-            log(`🎓 Guia: "${nome2}" concluída — recompensa recebida.`);
-          } else {
-            rotina(`Guia: não consegui fechar "${nome2}" — ${r2.msg}`);
-          }
-          await ctx.sleep(ctx.rand(800, 1600));
-        }
-      } catch (e) { seErroDeCodigo(e, 'Missoes'); }
     }
 
     /* 3. CUMPRIR as que estão a decorrer */
