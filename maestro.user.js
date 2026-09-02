@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.02.1640
+// @version      2026.09.02.1700
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1095,7 +1095,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.02.1640';
+  const MAESTRO_VERSAO = '2026.09.02.1700';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -12384,8 +12384,19 @@ function makeDiariaModule(opts) {
     descartarTropas: true,     // tropas ocupam população
   };
 
-  /* Poderes que dão unidades — os mesmos que o módulo das missões usa. */
-  const PODERES_DE_TROPAS = ['instant_unit_package', 'unit_package', 'instant_units'];
+  /* PODERES LIGADOS A TROPA — para descartar.
+   *
+   * A lista era só de três nomes e ficava curta. Visto em jogo: a caixa deu
+   * `unit_training_boost` (acelerador de arqueiros por 8 h) e o módulo, não o
+   * reconhecendo, usou-o.
+   *
+   * Em vez de uma lista fechada, procura-se pelo padrão: qualquer poder cujo
+   * nome fale de unidades ou treino, ou cuja recompensa tenha um `subtype`
+   * que seja uma unidade do jogo. */
+  const PODERES_DE_TROPAS = [
+    'instant_unit_package', 'unit_package', 'instant_units',
+    'unit_training_boost',
+  ];
 
   const armazem = {
     getItem: (k) => localStorage.getItem(chavePorPerfil(k)),
@@ -12449,9 +12460,22 @@ function makeDiariaModule(opts) {
   /* O que saiu na caixa é tropa? */
   function ehTropa(rec) {
     try {
-      const pid = String((rec || {}).power_id || '');
-      return PODERES_DE_TROPAS.indexOf(pid) >= 0;
-    } catch (e) { return false; }
+      const r = rec || {};
+      const pid = String(r.power_id || '');
+      if (PODERES_DE_TROPAS.indexOf(pid) >= 0) return true;
+
+      /* Pelo nome do poder: apanha os que a lista não conhece. */
+      if (/unit|troop|training|recruit/i.test(pid)) return true;
+
+      /* Pelo subtipo: se for uma unidade do jogo, é tropa. */
+      const sub = String(r.subtype || (r.configuration || {}).type || '');
+      if (sub) {
+        try {
+          if ((mUw.GameData.units || {})[sub]) return true;
+        } catch (e) {}
+      }
+    } catch (e) {}
+    return false;
   }
 
   async function run(ctx) {
@@ -24668,7 +24692,11 @@ function makeMissoesModule(opts) {
    *     "configuration":{"type":"sword","amount":54,...}}}
    *
    * Ou seja: procura-se o power_id, não o type. */
-  const PODERES_DE_TROPAS = ['unit_training_boost'];
+  /* Os mesmos que a diária: nomes conhecidos mais o padrão, para as
+   * recompensas novas não escaparem. */
+  const PODERES_DE_TROPAS = [
+    'unit_training_boost', 'instant_unit_package', 'unit_package', 'instant_units',
+  ];
 
   /* Missões já iniciadas — o jogo não distingue "aceite" de "a decorrer",
    * portanto guarda-se aqui para não repetir o pedido a cada passagem. */
@@ -24968,7 +24996,13 @@ function makeMissoesModule(opts) {
       const rec = (missao.configuration || {}).rewards || [];
       const temTropas = rec.some((r) => {
         const pid = String((r || {}).power_id || '');
-        return PODERES_DE_TROPAS.indexOf(pid) >= 0;
+        if (PODERES_DE_TROPAS.indexOf(pid) >= 0) return true;
+        /* Pelo nome, para apanhar as que a lista não conhece. */
+        if (/unit|troop|training|recruit/i.test(pid)) return true;
+        /* Pelo subtipo: se for uma unidade do jogo, é tropa. */
+        const sub = String((r || {}).subtype || ((r || {}).configuration || {}).type || '');
+        try { if (sub && (mUw.GameData.units || {})[sub]) return true; } catch (e) {}
+        return false;
       });
       if (temTropas && c && c.descartarTropas !== false) return 'trash';
     } catch (e) {}
