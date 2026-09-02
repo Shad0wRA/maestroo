@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.02.2200
+// @version      2026.09.02.2320
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1102,7 +1102,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.02.2200';
+  const MAESTRO_VERSAO = '2026.09.02.2320';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -12005,7 +12005,22 @@ function makeBandidosModule(opts) {
       log(`🗡️ Bandidos: atacado o nível ${p.level} com ${quais} `
         + `(${p.battle_points || 0} pontos de combate).`);
     } else {
-      log(`⚠️ Bandidos: o ataque falhou — ${r.msg}`);
+      /* SEM TROPA NÃO É ERRO.
+       *
+       * A cidade gastou a tropa no ataque anterior e ela ainda vem a
+       * caminho. Insistir de 3 em 3 minutos só enche o sininho — visto em
+       * jogo: 17 linhas iguais numa hora.
+       *
+       * Passa a rotina, e a cidade fica de fora até a tropa voltar. */
+      if (/unidades suficientes|not enough units/i.test(String(r.msg))) {
+        const nome = (() => {
+          try { return mUw.ITowns.getTown(Number(townId)).getName(); }
+          catch (e) { return String(townId); }
+        })();
+        rotina(`Bandidos: ${nome} sem tropa em casa; espero que volte.`);
+      } else {
+        log(`⚠️ Bandidos: o ataque falhou — ${r.msg}`);
+      }
     }
   }
 
