@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.02.2145
+// @version      2026.09.02.2200
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1102,7 +1102,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.02.2145';
+  const MAESTRO_VERSAO = '2026.09.02.2200';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -14109,8 +14109,43 @@ function makeAldeiasModule(opts) {
         if (!plano) break;
         let falhou = false;
         for (const leg of plano.legs) {
-          const r = await executeTrade(t.id, leg.relationId, leg.villageId, leg.give);
-          if (!r.ok) { log(`⚠️ ${t.name}: troca falhou (${r.error})`); falhou = true; break; }
+          let r = await executeTrade(t.id, leg.relationId, leg.villageId, leg.give);
+
+          /* CAPACIDADE A MENOS: MANDAR O QUE CABE.
+           *
+           * O jogo recusa e diz exactamente quanto ainda leva — "Restam-lhe
+           * apenas capacidade comercial para 2149 recursos". Desistir por
+           * causa disso é desperdiçar a viagem.
+           *
+           * Aproveita-se o número da mensagem e repete-se com essa
+           * quantidade. */
+          if (!r.ok && /capacidade comercial|trade capacity/i.test(String(r.error || ''))) {
+            const m = String(r.error).match(/(\d[\d\s.]*)\s*recursos/);
+            const cabe = m ? Number(String(m[1]).replace(/[^\d]/g, '')) : 0;
+
+            if (cabe >= 100 && cabe < leg.give) {
+              r = await executeTrade(t.id, leg.relationId, leg.villageId, cabe);
+              if (r.ok) {
+                rotina(`${t.name}: só cabiam ${cabe} — mandei esses.`);
+                leg.give = cabe;
+              }
+            } else if (cabe < 100) {
+              /* Menos de 100 é o mínimo do jogo: não vale a pena. */
+              rotina(`${t.name}: mercado sem capacidade (${cabe}); fica para a próxima.`);
+              falhou = true;
+              break;
+            }
+          }
+
+          if (!r.ok) {
+            /* Falta de capacidade é rotina — resolve-se sozinha quando as
+             * viagens em curso chegarem. */
+            const semCapacidade = /capacidade comercial|trade capacity/i.test(String(r.error || ''));
+            if (semCapacidade) rotina(`${t.name}: mercado ocupado; fica para a próxima.`);
+            else log(`⚠️ ${t.name}: troca falhou (${r.error})`);
+            falhou = true;
+            break;
+          }
           trades++; totalTrades++;
           const k = capKey(leg.villageId);
           villageGiven[k] = (villageGiven[k] || 0) + leg.give;
