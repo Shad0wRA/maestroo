@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.02.1600
+// @version      2026.09.02.1640
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1095,7 +1095,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.02.1600';
+  const MAESTRO_VERSAO = '2026.09.02.1640';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -10220,6 +10220,38 @@ function makeHeroisModule(opts) {
    * Argus deve estar noutro lado nesse tempo. */
   function melhorCidadeDeColonos() {
     try {
+      /* A FÁBRICA DE COLONIZADORES MANDA.
+       *
+       * Os dois módulos mexem no Argus: a fábrica leva-o para a cidade que
+       * está a encher, e esta rotação podia tirá-lo de lá a meio — deixando
+       * a cidade sem o desconto precisamente quando ia lançar a ordem.
+       *
+       * Se a fábrica está a trabalhar numa cidade, é essa e mais nenhuma. */
+      try {
+        const fab = JSON.parse(
+          localStorage.getItem(chavePorPerfil('grepoFabricaNC_cfg_v1')) || '{}');
+        if (fab && fab.ativo) {
+          const est = JSON.parse(
+            localStorage.getItem(chavePorPerfil('grepoFabricaNC_estado_v1')) || '{}');
+          if (est && est.cidade) {
+            const t = mUw.ITowns.getTown(Number(est.cidade));
+            if (t) {
+              return {
+                townId: Number(est.cidade),
+                nome: t.getName(),
+                recursos: 0,
+                quantos: 0,
+                daFabrica: true,
+              };
+            }
+          }
+          /* A fábrica está ligada mas ainda não escolheu cidade: não mexer no
+           * Argus, para não o mandar para longe do sítio onde vai fazer
+           * falta. */
+          return null;
+        }
+      } catch (e) {}
+
       /* SÓ NAS MULTIS.
        *
        * É lá que se juntam colonizadores em massa para a rotação. Na conta
@@ -10883,8 +10915,10 @@ function makeHeroisModule(opts) {
             if (est.cidade) ocupadas.delete(est.cidade);
             ocupadas.add(doColono.townId);
             const mins = Math.round(viagemSegundos() / 60);
-            log(`🦸 ${nome} → ${doColono.nome}: ${doColono.recursos} recursos prontos, `
-              + `dá para ${doColono.quantos} colonizador(es)`
+            log(`🦸 ${nome} → ${doColono.nome}: `
+              + (doColono.daFabrica
+                  ? 'é a cidade que a fábrica está a encher'
+                  : `${doColono.recursos} recursos prontos, dá para ${doColono.quantos} colonizador(es)`)
               + (mins ? ` (chega em ${mins} min)` : '') + '.');
           } else {
             porques.push(`${nome}: não consegui mover para ${doColono.nome} — ${r.msg}`);
@@ -12597,6 +12631,9 @@ function makeFabricaNCModule(opts) {
     desperdicioOk: 1000,
     /* Não vale a pena lançar uma ordem de um só quando se pode esperar. */
     minimoPorOrdem: 2,
+    /* Chamamento do oceano antes da ordem: 60 de favor de Poseidon, porto ao
+     * dobro durante 4 h. */
+    usarFeitico: true,
   };
 
   const armazem = {
@@ -12817,6 +12854,29 @@ function makeFabricaNCModule(opts) {
     const est = estado();
     let alvo = livres.find((t) => Number(t.id) === Number(est.cidade));
 
+    /* NÃO MUDAR DE CIDADE COM O ARGUS A CAMINHO.
+     *
+     * Ele demora a viajar. Se entretanto se escolhesse outra cidade, ele
+     * chegaria a uma que já não interessa e teria de voltar a viajar — e o
+     * desconto nunca apanharia a ordem. */
+    if (!alvo && est.cidade) {
+      try {
+        const ph = mUw.MM.getCollections().PlayerHero;
+        const arg = ((ph && ph[0] && ph[0].models) || [])
+          .find((m) => (m.attributes || {}).type === 'argus');
+        const a = (arg && arg.attributes) || {};
+        const aCaminhoDe = Number(a.home_town_id) === Number(est.cidade)
+          && a.town_arrival_at && Number(a.town_arrival_at) > agoraJogo();
+        if (aCaminhoDe) {
+          const t = mUw.ITowns.getTown(Number(est.cidade));
+          const faltam = Math.round((Number(a.town_arrival_at) - agoraJogo()) / 60);
+          rotina(`Fábrica de NC: o Argus chega a ${t ? t.getName() : est.cidade} `
+            + `daqui a ${faltam} min — espero por ele.`);
+          return;
+        }
+      } catch (e) { seErroDeCodigo(e, 'FabricaNC'); }
+    }
+
     if (!alvo) {
       /* A que está mais perto de conseguir uma ordem — assim começa a
        * produzir mais depressa. */
@@ -12950,6 +13010,69 @@ function makeFabricaNCModule(opts) {
       return;
     }
 
+    /* CHAMAMENTO DO OCEANO ANTES DA ORDEM.
+     *
+     * Poseidon, 60 de favor, acelera o PORTO em +100% durante 4 h — e vale
+     * para tudo o que for ordenado nesse tempo. Uma ordem de cinco
+     * colonizadores demora horas; a metade do tempo é muito.
+     *
+     * A cidade não precisa de venerar Poseidon: basta ter favor dele.
+     *
+     * Lança-se ANTES da ordem, senão não a apanha. */
+    if (c.usarFeitico !== false) {
+      try {
+        const favor = (() => {
+          try {
+            const pg = mUw.MM.getModels().PlayerGods || {};
+            const k = Object.keys(pg)[0];
+            const a = (pg[k] && pg[k].attributes) || {};
+            const prod = a.production_overview || {};
+            return Math.floor(Number((prod.poseidon || {}).current) || 0);
+          } catch (e) { return 0; }
+        })();
+
+        /* Já está activo? Não se gasta favor duas vezes. */
+        const jaActivo = (() => {
+          try {
+            const cp = mUw.MM.getCollections().CastedPowers;
+            return ((cp && cp[0] && cp[0].models) || []).some((m) => {
+              const a = m.attributes || {};
+              return String(a.power_id) === 'call_of_the_ocean'
+                && Number(a.town_id) === Number(alvo.id);
+            });
+          } catch (e) { return false; }
+        })();
+
+        if (!jaActivo && favor >= 60) {
+          const url = mUw.location.origin + '/game/frontend_bridge?town_id=' + Number(alvo.id)
+            + '&action=execute&h=' + mUw.Game.csrfToken;
+          const rf = await mUw.fetch(url, {
+            method: 'POST',
+            headers: { 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                       'x-requested-with': 'XMLHttpRequest' },
+            credentials: 'include',
+            body: 'json=' + encodeURIComponent(JSON.stringify({
+              model_url: 'CastedPowers',
+              action_name: 'cast',
+              arguments: { power_id: 'call_of_the_ocean', target_id: Number(alvo.id) },
+              town_id: Number(alvo.id), nl_init: true,
+            })),
+          }).then(lerResposta);
+
+          const errF = rf && rf.json && rf.json.error;
+          if (!errF) {
+            log(`✨ ${alvo.name}: Chamamento do oceano — porto ao dobro nas próximas 4 h.`);
+            await ctx.sleep(ctx.rand(600, 1200));
+          } else if (!/j[áa] est[áa] ativ|already active/i.test(String(errF))) {
+            rotina(`Fábrica de NC: o feitiço falhou (${errF}).`);
+          }
+        } else if (!jaActivo && favor < 60) {
+          rotina(`Fábrica de NC: sem favor de Poseidon para o feitiço (${favor}/60) — `
+            + 'faço a ordem à mesma.');
+        }
+      } catch (e) { seErroDeCodigo(e, 'FabricaNC'); }
+    }
+
     const r2 = await recrutarNC(alvo.id, cabem);
     if (r2.ok) {
       log(`🚢 ${alvo.name}: ordem de ${cabem} colonizador(es) ${etiqueta}.`);
@@ -13014,8 +13137,17 @@ function makeFabricaNCModule(opts) {
 
         Mínimo por ordem
         <input type="number" id="fnc-min" value="${c.minimoPorOrdem}" min="1" max="10" style="width:44px">
-        <div style="opacity:.6;font-size:10px">
+        <div style="opacity:.6;font-size:10px;margin-bottom:5px">
           Espera até dar para este número, em vez de fazer um de cada vez.
+        </div>
+
+        <label style="display:block">
+          <input type="checkbox" id="fnc-feitico"${c.usarFeitico !== false ? ' checked' : ''}>
+          Chamamento do oceano antes da ordem
+        </label>
+        <div style="opacity:.6;font-size:10px;margin-left:18px">
+          60 de favor de Poseidon, porto ao dobro durante 4 h. A cidade não
+          precisa de venerar Poseidon — basta teres o favor.
         </div>
       </div>
 
@@ -13026,6 +13158,7 @@ function makeFabricaNCModule(opts) {
       cc.ativo = container.querySelector('#fnc-on').checked;
       cc.armazemMinimo = Math.max(5000, Number(container.querySelector('#fnc-arm').value) || 20000);
       cc.minimoPorOrdem = Math.max(1, Number(container.querySelector('#fnc-min').value) || 2);
+      cc.usarFeitico = container.querySelector('#fnc-feitico').checked;
       guardarCfg(cc);
       ctx.log('Fábrica de NC: definições guardadas.');
       painel(container, ctx);
