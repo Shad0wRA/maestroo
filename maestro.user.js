@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.02.1715
+// @version      2026.09.02.1745
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1095,7 +1095,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.02.1715';
+  const MAESTRO_VERSAO = '2026.09.02.1745';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -9512,8 +9512,11 @@ function makeRecrutamentoModule(opts) {
       <label><input type="checkbox" id="rec-nc-cont"${tpl.ncContinuo ? ' checked' : ''}>
         <b>Depois do template cumprido, fazer colonizadores sem parar</b></label>
       <div style="opacity:.65;font-size:10px;margin:2px 0 4px 18px">
-        Para a rotação entre multis ou para enviar à cidade que serve de depósito.
-        Só começa quando as outras tropas do template já estiverem feitas.
+        Cada cidade faz os seus quando conseguir juntar os recursos. Só começa
+        quando as outras tropas do template já estiverem feitas.<br>
+        <b>Funciona bem com a Fábrica de colonizadores:</b> ela junta recursos
+        numa cidade de cada vez para ordens grandes, pedindo só uma fatia a
+        cada uma — o resto fica para estas ordens.
       </div>
       <div style="margin-left:18px">
         Parar aos <input type="number" min="0" id="rec-nc-max" value="${Number(tpl.ncMax) || 0}" style="width:56px">
@@ -12943,6 +12946,22 @@ function makeFabricaNCModule(opts) {
 
     let enviados = 0;
     if (totalFalta > c.desperdicioOk) {
+      /* A FATIA DE CADA CIDADE.
+       *
+       * Pedir a cada uma tudo o que falta faz a primeira dar tudo e as
+       * outras nada — e essa fica sem recursos para os seus próprios
+       * colonizadores.
+       *
+       * Com 18 cidades e 27 000 em falta, cada uma dá 1 500. Isso enche a
+       * fábrica e deixa-lhes o resto para trabalharem.
+       *
+       * Conta-se só as que têm mercado livre, senão a fatia sai curta. */
+      const podemDar = towns.filter((t) =>
+        Number(t.id) !== Number(alvo.id) && capacidadeDe(t.id) >= 100).length || 1;
+
+      const fatiaPorCidade = {};
+      for (const k of RES) fatiaPorCidade[k] = Math.ceil(falta[k] / podemDar);
+
       for (const t of towns) {
         if (Number(t.id) === Number(alvo.id)) continue;
         if (RES.every((k) => falta[k] <= 0)) break;
@@ -12981,13 +13000,15 @@ function makeFabricaNCModule(opts) {
             const tem = Number(r[k]) || 0;
             if (tem <= 0) continue;
 
-            /* A fatia desta cidade para este recurso. */
-            const fatia = Math.floor(cap * (falta[k] / totalFaltaAgora));
-            const dar = Math.min(tem, falta[k], fatia);
+            /* O menor de três: o que a cidade tem, o que ainda falta, a fatia
+             * que lhe cabe, e o que o mercado leva. */
+            const porCapacidade = Math.floor(cap * (falta[k] / totalFaltaAgora));
+            const dar = Math.min(tem, falta[k], fatiaPorCidade[k], porCapacidade);
             if (dar > 0) { carga[k] = dar; soma += dar; }
           }
 
-          /* Sobrou capacidade? Usa-se no que ainda falta mais. */
+          /* Sobrou capacidade? Usa-se no que ainda falta mais — mas sem
+           * passar a fatia desta cidade. */
           let sobra = cap - soma;
           if (sobra > 0) {
             const porFalta = RES.slice()
@@ -12996,7 +13017,11 @@ function makeFabricaNCModule(opts) {
             for (const k of porFalta) {
               if (sobra <= 0) break;
               const tem = Number(r[k]) || 0;
-              const podeMais = Math.min(tem - (carga[k] || 0), falta[k] - (carga[k] || 0), sobra);
+              const podeMais = Math.min(
+                tem - (carga[k] || 0),
+                falta[k] - (carga[k] || 0),
+                Math.max(0, fatiaPorCidade[k] - (carga[k] || 0)),
+                sobra);
               if (podeMais > 0) { carga[k] = (carga[k] || 0) + podeMais; soma += podeMais; sobra -= podeMais; }
             }
           }
