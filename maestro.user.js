@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.02.1240
+// @version      2026.09.02.1330
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1095,7 +1095,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.02.1240';
+  const MAESTRO_VERSAO = '2026.09.02.1330';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -3946,6 +3946,7 @@
             bandidos: 'grepoBandidos_cfg_v1',
             sentinelas: 'grepoSentinelas_cfg_v1',
             diaria: 'grepoDiaria_cfg_v1',
+            fabricanc: 'grepoFabricaNC_cfg_v1',
           };
           const nomeChave = CHAVE_DO_MODULO[m.id];
           if (!nomeChave) throw new Error('sem chave');
@@ -12473,6 +12474,455 @@ function makeDiariaModule(opts) {
   }
 
   return { id: 'diaria', nome: 'Recompensa diária', run, painel };
+}
+
+/* =========================================================================
+ *  MÓDULO: FÁBRICA DE COLONIZADORES
+ *
+ *  O problema: numa multi com 19 cidades, todas juntavam recursos para um
+ *  colonizador ao mesmo tempo e NENHUMA chegava aos 10 000. Doze cidades a
+ *  meio caminho dão zero; seis cidades cheias dão seis.
+ *
+ *  A solução: concentrar. Uma cidade de cada vez enche-se até acima, faz a
+ *  MAIOR ordem que couber, e passa-se à seguinte.
+ *
+ *  Com o Argus lá, o custo baixa muito — ao nível 20 são 60% (lido do jogo,
+ *  não de uma tabela), e com a matemática o colonizador cai de 10 000 para
+ *  3 600. Um armazém de 20 000 passa a dar cinco por ordem em vez de dois.
+ *
+ *  Quem não tem Argus usa na mesma as cidades de armazém grande — o ganho da
+ *  concentração existe sem ele.
+ *
+ *  O ciclo:
+ *    1. escolher a cidade — armazém grande, sem ordem de colonizador em curso
+ *    2. mandar o Argus para lá, se houver
+ *    3. as outras cidades enviam-lhe recursos, sem encher a mais
+ *    4. quando der para uma ordem que valha a pena, lançar
+ *    5. passar à cidade seguinte
+ * ========================================================================= */
+function makeFabricaNCModule(opts) {
+  let mUw = null;
+  let mWorld = '';
+
+  const CFG_KEY = 'grepoFabricaNC_cfg_v1';
+  const ESTADO_KEY = 'grepoFabricaNC_estado_v1';
+  const RES = ['wood', 'stone', 'iron'];
+  const NC = 'colonize_ship';
+
+  const DEFAULTS = {
+    ativo: false,
+    /* Armazém mínimo para uma cidade servir de fábrica. Abaixo disto não
+     * cabem colonizadores que cheguem para valer a viagem do herói. */
+    armazemMinimo: 20000,
+    /* Quanto se pode passar do armazém ao encher. Mil por recurso: abaixo
+     * disso não vale a pena afinar, acima começa a doer. */
+    desperdicioOk: 1000,
+    /* Não vale a pena lançar uma ordem de um só quando se pode esperar. */
+    minimoPorOrdem: 2,
+  };
+
+  const armazem = {
+    getItem: (k) => localStorage.getItem(chavePorPerfil(k)),
+    setItem: (k, v) => localStorage.setItem(chavePorPerfil(k), v),
+  };
+
+  async function lerResposta(resposta) {
+    try {
+      const txt = await resposta.text();
+      if (!txt || !txt.trim()) return { json: { error: `HTTP ${resposta.status}` } };
+      try { return JSON.parse(txt); }
+      catch (e) { return { json: { error: `resposta ilegível (HTTP ${resposta.status})` } }; }
+    } catch (e) { return { json: { error: e.message } }; }
+  }
+
+  function cfg() {
+    try { return Object.assign({}, DEFAULTS, JSON.parse(armazem.getItem(CFG_KEY) || '{}')); }
+    catch (e) { return Object.assign({}, DEFAULTS); }
+  }
+  function guardarCfg(c) {
+    try { armazem.setItem(CFG_KEY, JSON.stringify(c)); } catch (e) {}
+  }
+  function estado() {
+    try { return JSON.parse(armazem.getItem(ESTADO_KEY) || '{}'); } catch (e) { return {}; }
+  }
+  function guardarEstado(e) {
+    try { armazem.setItem(ESTADO_KEY, JSON.stringify(e)); } catch (e2) {}
+  }
+
+  /* ---------------------- o custo REAL do colonizador -------------------- */
+
+  /* O DESCONTO VEM DO JOGO, não de uma tabela.
+   *
+   * O herói sabe o seu próprio bónus ao nível em que está — `getCalculatedBonusForLevel`
+   * devolve 0.6 para o Argus ao nível 20, confirmado em jogo. Uma tabela minha
+   * ficaria errada assim que o jogo mudasse os números.
+   *
+   * A pesquisa de matemática é outra parte, e lê-se das pesquisas da cidade.
+   * Os bónus MULTIPLICAM: 10000 × 0.4 × 0.9 = 3600. */
+  function descontoDoArgus(townId) {
+    try {
+      const ph = mUw.MM.getCollections().PlayerHero;
+      const arg = ((ph && ph[0] && ph[0].models) || [])
+        .find((m) => (m.attributes || {}).type === 'argus');
+      if (!arg) return 0;
+
+      const a = arg.attributes || {};
+      if (String(a.assignment_type) !== 'town') return 0;
+      if (Number(a.home_town_id) !== Number(townId)) return 0;
+      /* Ainda a viajar? Só conta quando lá chegar. */
+      if (a.town_arrival_at && Number(a.town_arrival_at) > agoraJogo()) return 0;
+
+      const b = arg.getCalculatedBonusForLevel ? Number(arg.getCalculatedBonusForLevel()) : 0;
+      return (b > 0 && b < 1) ? b : 0;
+    } catch (e) { return 0; }
+  }
+
+  function temMatematica(townId) {
+    try {
+      const t = mUw.ITowns.getTown(Number(townId));
+      const r = (t.researches && t.researches()) || {};
+      const a = r.attributes || r || {};
+      return a.mathematics === true;
+    } catch (e) { return false; }
+  }
+
+  /* Quanto custa um colonizador NESTA cidade, agora. */
+  function custoAqui(townId) {
+    const base = ((mUw.GameData.units || {})[NC] || {}).resources || {};
+    const fArgus = 1 - descontoDoArgus(townId);
+    const fMat = temMatematica(townId) ? 0.9 : 1;
+    const out = {};
+    for (const k of RES) out[k] = Math.ceil((Number(base[k]) || 0) * fArgus * fMat);
+    return out;
+  }
+
+  function agoraJogo() {
+    try { return Math.floor(Number(mUw.Timestamp.now())); }
+    catch (e) { return Math.floor(Date.now() / 1000); }
+  }
+
+  /* ---------------------- estado das cidades ---------------------------- */
+
+  function recursosDa(townId) {
+    try {
+      const t = mUw.ITowns.getTown(Number(townId));
+      const r = (t.resources && t.resources()) || {};
+      return {
+        wood: Number(r.wood) || 0, stone: Number(r.stone) || 0, iron: Number(r.iron) || 0,
+        armazem: Number(r.storage) || 0, populacao: Number(r.population) || 0,
+      };
+    } catch (e) { return null; }
+  }
+
+  function temOrdemDeNC(townId) {
+    try {
+      const col = mUw.MM.getCollections().UnitOrder;
+      return ((col && col[0] && col[0].models) || []).some((m) => {
+        const a = m.attributes || {};
+        return Number(a.town_id) === Number(townId) && a.unit_type === NC;
+      });
+    } catch (e) { return false; }
+  }
+
+  function capacidadeDe(townId) {
+    try {
+      const t = mUw.ITowns.getTown(Number(townId));
+      return Number(t.getAvailableTradeCapacity && t.getAvailableTradeCapacity()) || 0;
+    } catch (e) { return 0; }
+  }
+
+  /* O que já vai a caminho de cada cidade — para não mandar duas vezes. */
+  function aCaminho() {
+    const out = {};
+    try {
+      const mods = mUw.MM.getModels().Trade || {};
+      for (const k of Object.keys(mods)) {
+        const a = mods[k].attributes || {};
+        const d = Number(a.destination_town_id);
+        if (!d) continue;
+        out[d] = out[d] || { wood: 0, stone: 0, iron: 0 };
+        for (const r of RES) out[d][r] += Number(a[r]) || 0;
+      }
+    } catch (e) {}
+    return out;
+  }
+
+  /* ---------------------- envio ----------------------------------------- */
+
+  async function enviarRecursos(origem, destino, carga) {
+    try {
+      const url = mUw.location.origin + '/game/town_info?town_id=' + Number(origem)
+        + '&action=trade&h=' + mUw.Game.csrfToken;
+      const r = await mUw.fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                   'x-requested-with': 'XMLHttpRequest' },
+        credentials: 'include',
+        body: 'json=' + encodeURIComponent(JSON.stringify({
+          id: Number(destino),
+          wood: Number(carga.wood) || 0,
+          stone: Number(carga.stone) || 0,
+          iron: Number(carga.iron) || 0,
+          town_id: Number(origem), nl_init: true,
+        })),
+      }).then(lerResposta);
+      const j = r && r.json;
+      return { ok: !(j && j.error), msg: (j && (j.error || j.success)) || 'ok' };
+    } catch (e) { return { ok: false, msg: e.message }; }
+  }
+
+  /* Capturado do jogo:
+   *   POST /game/building_docks?town_id=<id>&action=build&h=<token>
+   *   json={"unit_id":"colonize_ship","amount":2,"town_id":<id>,"nl_init":true} */
+  async function recrutarNC(townId, quantos) {
+    try {
+      const url = mUw.location.origin + '/game/building_docks?town_id=' + Number(townId)
+        + '&action=build&h=' + mUw.Game.csrfToken;
+      const r = await mUw.fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                   'x-requested-with': 'XMLHttpRequest' },
+        credentials: 'include',
+        body: 'json=' + encodeURIComponent(JSON.stringify({
+          unit_id: NC,
+          amount: Number(quantos),
+          town_id: Number(townId),
+          nl_init: true,
+        })),
+      }).then(lerResposta);
+      const j = r && r.json;
+      return { ok: !(j && j.error), msg: (j && (j.error || j.success)) || 'ok' };
+    } catch (e) { return { ok: false, msg: e.message }; }
+  }
+
+  /* ---------------------- o ciclo --------------------------------------- */
+
+  async function run(ctx) {
+    mUw = ctx.uw; mWorld = ctx.WORLD;
+    const log = ctx.log;
+    const rotina = ctx.logRotina || ctx.log;
+    const c = cfg();
+
+    try {
+      const doPainel = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroLigado;
+      if (doPainel) {
+        const v = doPainel('fabricanc');
+        if (v === true) c.ativo = true;
+        if (v === false) c.ativo = false;
+      }
+    } catch (e) {}
+
+    if (!c.ativo) { rotina('Fábrica de NC: está desligada.'); return; }
+
+    const towns = ctx.getMyTowns() || [];
+    if (towns.length < 2) { rotina('Fábrica de NC: preciso de mais cidades.'); return; }
+
+    /* ---- 1. AS CANDIDATAS: armazém grande, sem ordem em curso ---- */
+    const grandes = towns.filter((t) => {
+      const r = recursosDa(t.id);
+      return r && r.armazem >= c.armazemMinimo;
+    });
+
+    if (!grandes.length) {
+      rotina(`Fábrica de NC: nenhuma cidade com armazém de ${c.armazemMinimo}+.`);
+      return;
+    }
+
+    const livres = grandes.filter((t) => !temOrdemDeNC(t.id));
+
+    if (!livres.length) {
+      rotina(`Fábrica de NC: as ${grandes.length} cidade(s) grandes já têm ordem em curso.`);
+      return;
+    }
+
+    /* ---- 2. A FÁBRICA DE AGORA ---- */
+    const est = estado();
+    let alvo = livres.find((t) => Number(t.id) === Number(est.cidade));
+
+    if (!alvo) {
+      /* A que está mais perto de conseguir uma ordem — assim começa a
+       * produzir mais depressa. */
+      alvo = livres.slice().sort((a, b) => {
+        const ra = recursosDa(a.id) || {}, rb = recursosDa(b.id) || {};
+        const ca = custoAqui(a.id), cb = custoAqui(b.id);
+        const na = Math.min(...RES.map((k) => Math.floor((ra[k] || 0) / (ca[k] || 1))));
+        const nb = Math.min(...RES.map((k) => Math.floor((rb[k] || 0) / (cb[k] || 1))));
+        return nb - na;
+      })[0];
+      est.cidade = Number(alvo.id);
+      est.desde = agoraJogo();
+      guardarEstado(est);
+    }
+
+    const custo = custoAqui(alvo.id);
+    const rAlvo = recursosDa(alvo.id);
+    if (!rAlvo) { rotina('Fábrica de NC: não consigo ler os recursos da cidade.'); return; }
+
+    const desconto = descontoDoArgus(alvo.id);
+    const etiqueta = desconto
+      ? `com Argus (-${Math.round(desconto * 100)}%)`
+      : 'sem Argus';
+
+    /* ---- 3. AS OUTRAS ENVIAM ---- */
+    const viagem = aCaminho();
+    const vem = viagem[alvo.id] || { wood: 0, stone: 0, iron: 0 };
+
+    /* Quanto falta para encher, contando o que já vem a caminho. */
+    const falta = {};
+    let totalFalta = 0;
+    for (const k of RES) {
+      const f = Math.max(0, rAlvo.armazem - (rAlvo[k] || 0) - (vem[k] || 0));
+      falta[k] = f;
+      totalFalta += f;
+    }
+
+    let enviados = 0;
+    if (totalFalta > c.desperdicioOk) {
+      for (const t of towns) {
+        if (Number(t.id) === Number(alvo.id)) continue;
+        if (RES.every((k) => falta[k] <= 0)) break;
+
+        let cap = capacidadeDe(t.id);
+        if (cap < 100) continue;                       // o jogo recusa abaixo de 100
+
+        const r = recursosDa(t.id);
+        if (!r) continue;
+
+        /* CADA UMA DÁ O PROPORCIONAL AO QUE TEM.
+         *
+         * Se a fábrica precisa de 12 000 de madeira e há seis cidades, cada
+         * uma dá a sua parte — em vez de a primeira dar tudo e as outras
+         * ficarem sem nada.
+         *
+         * E nunca mais do que falta: mandar 5000 a mais é desperdício. */
+        const carga = {};
+        let soma = 0;
+        for (const k of RES) {
+          if (falta[k] <= 0) continue;
+          const tem = Number(r[k]) || 0;
+          if (tem <= 0) continue;
+          const dar = Math.min(tem, falta[k], Math.max(0, cap - soma));
+          if (dar > 0) { carga[k] = dar; soma += dar; }
+        }
+
+        if (soma < 100) continue;
+
+        const res = await enviarRecursos(t.id, alvo.id, carga);
+        if (res.ok) {
+          enviados++;
+          for (const k of RES) falta[k] = Math.max(0, falta[k] - (carga[k] || 0));
+          await ctx.sleep(ctx.rand(700, 1400));
+        } else {
+          rotina(`Fábrica de NC: ${t.name} → ${alvo.name} falhou (${res.msg}).`);
+          break;
+        }
+      }
+    }
+
+    /* ---- 4. DÁ PARA UMA ORDEM? ---- */
+    const agora = recursosDa(alvo.id) || rAlvo;
+    let cabem = Infinity;
+    for (const k of RES) {
+      const cu = Number(custo[k]) || 0;
+      if (!cu) continue;
+      cabem = Math.min(cabem, Math.floor((Number(agora[k]) || 0) / cu));
+    }
+    if (!Number.isFinite(cabem)) cabem = 0;
+
+    /* A população também manda. */
+    const popNC = Number(((mUw.GameData.units || {})[NC] || {}).population) || 170;
+    cabem = Math.min(cabem, Math.floor((Number(agora.populacao) || 0) / popNC));
+
+    if (cabem < c.minimoPorOrdem) {
+      rotina(`Fábrica de NC: ${alvo.name} ${etiqueta} — dá para ${cabem}, espero por `
+        + `${c.minimoPorOrdem}. Custo aqui: ${RES.map((k) => custo[k]).join('/')}`
+        + (enviados ? ` · ${enviados} envio(s) nesta passagem.` : '.'));
+      return;
+    }
+
+    const r2 = await recrutarNC(alvo.id, cabem);
+    if (r2.ok) {
+      log(`🚢 ${alvo.name}: ordem de ${cabem} colonizador(es) ${etiqueta}.`);
+
+      /* ---- 5. PASSAR À SEGUINTE ---- */
+      est.cidade = null;
+      est.ultima = Number(alvo.id);
+      guardarEstado(est);
+    } else {
+      rotina(`Fábrica de NC: ${alvo.name} — não consegui recrutar (${r2.msg}).`);
+    }
+  }
+
+  function painel(container, ctx) {
+    mUw = ctx.uw; mWorld = ctx.WORLD;
+    const c = cfg();
+    const est = estado();
+
+    let grandes = 0, comOrdem = 0;
+    let linhaAlvo = '(nenhuma escolhida)';
+    try {
+      for (const t of (ctx.getMyTowns() || [])) {
+        const r = recursosDa(t.id);
+        if (!r || r.armazem < c.armazemMinimo) continue;
+        grandes++;
+        if (temOrdemDeNC(t.id)) comOrdem++;
+      }
+      if (est.cidade) {
+        const t = mUw.ITowns.getTown(Number(est.cidade));
+        if (t) {
+          const custo = custoAqui(est.cidade);
+          const d = descontoDoArgus(est.cidade);
+          linhaAlvo = `${t.getName()} — custo ${RES.map((k) => custo[k]).join('/')}`
+            + (d ? ` (Argus -${Math.round(d * 100)}%)` : ' (sem Argus)');
+        }
+      }
+    } catch (e) {}
+
+    container.innerHTML = `
+      <label style="display:block;margin-bottom:4px">
+        <input type="checkbox" id="fnc-on"${c.ativo ? ' checked' : ''}>
+        <b>Fábrica de colonizadores</b>
+      </label>
+      <div style="opacity:.6;font-size:10px;margin:0 0 8px 18px">
+        Em vez de todas as cidades juntarem recursos ao mesmo tempo e nenhuma
+        chegar ao fim, concentra-se numa: enche-se, faz-se a maior ordem que
+        couber, passa-se à seguinte. Com o Argus lá, o custo baixa muito.
+      </div>
+
+      <div style="background:#0d141c;padding:6px 8px;border-radius:4px;margin-bottom:6px;font-size:11px">
+        <div><b>${grandes}</b> cidade(s) com armazém de ${c.armazemMinimo}+${
+          comOrdem ? ` · <b>${comOrdem}</b> já a produzir` : ''}</div>
+        <div style="opacity:.75;margin-top:2px">a encher: ${linhaAlvo}</div>
+      </div>
+
+      <div style="font-size:11px">
+        Armazém mínimo
+        <input type="number" id="fnc-arm" value="${c.armazemMinimo}" min="5000" step="1000" style="width:74px">
+        <div style="opacity:.6;font-size:10px;margin-bottom:4px">
+          Só cidades acima disto servem de fábrica.
+        </div>
+
+        Mínimo por ordem
+        <input type="number" id="fnc-min" value="${c.minimoPorOrdem}" min="1" max="10" style="width:44px">
+        <div style="opacity:.6;font-size:10px">
+          Espera até dar para este número, em vez de fazer um de cada vez.
+        </div>
+      </div>
+
+      <button id="fnc-guardar" style="cursor:pointer;width:100%;margin-top:8px;background:#48d;color:#fff;padding:6px;border:none;border-radius:4px">Guardar</button>`;
+
+    container.querySelector('#fnc-guardar').onclick = () => {
+      const cc = cfg();
+      cc.ativo = container.querySelector('#fnc-on').checked;
+      cc.armazemMinimo = Math.max(5000, Number(container.querySelector('#fnc-arm').value) || 20000);
+      cc.minimoPorOrdem = Math.max(1, Number(container.querySelector('#fnc-min').value) || 2);
+      guardarCfg(cc);
+      ctx.log('Fábrica de NC: definições guardadas.');
+      painel(container, ctx);
+    };
+  }
+
+  return { id: 'fabricanc', nome: 'Fábrica de colonizadores', run, painel };
 }
 
 function makeAldeiasModule(opts) {
@@ -28938,6 +29388,8 @@ function makeRelatoriosModule(opts) {
   registerModule(makeSentinelasModule({ intervaloMin: 720 }));
   /* 60 min: a caixa aparece uma vez por dia, não é preciso mais. */
   registerModule(makeDiariaModule({ intervaloMin: 60 }));
+  /* 10 min: enquanto enche precisa de passar muitas vezes. */
+  registerModule(makeFabricaNCModule({ intervaloMin: 10 }));
   registerModule(makeFundacaoModule({ intervaloMin: 30 }));
   registerModule(makeRelatoriosModule({ intervaloMin: 60 }));
 
