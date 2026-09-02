@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.02.1420
+// @version      2026.09.02.1440
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1095,7 +1095,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.02.1420';
+  const MAESTRO_VERSAO = '2026.09.02.1440';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -12100,10 +12100,32 @@ function makeSentinelasModule(opts) {
      *
      * De cada ilha guarda-se UMA cidade minha — é ela que envia, porque o
      * apoio dentro da mesma ilha é instantâneo. */
+    /* AS COORDENADAS VÊM DO JOGO, não do getMyTowns.
+     *
+     * O `getMyTowns` devolve só `id` e `name` — o `ix` e o `iy` nunca
+     * existiram. A chave ficava "undefined:undefined", todas as cidades caíam
+     * na mesma entrada, e o cálculo do mapa falhava.
+     *
+     * Era por isso que o módulo dizia sempre "nada a fazer": zero ilhas
+     * percorridas, sem nunca chegar a olhar para nenhuma. */
     const porIlha = {};
     for (const t of minhas) {
-      const k = `${t.ix}:${t.iy}`;
-      if (!porIlha[k]) porIlha[k] = t;
+      let ix = null, iy = null;
+      try {
+        const tw = mUw.ITowns.getTown(Number(t.id));
+        ix = Number(tw.getIslandCoordinateX());
+        iy = Number(tw.getIslandCoordinateY());
+      } catch (e) { seErroDeCodigo(e, 'Sentinelas'); }
+
+      if (!Number.isFinite(ix) || !Number.isFinite(iy)) continue;
+
+      const k = `${ix}:${iy}`;
+      if (!porIlha[k]) porIlha[k] = Object.assign({}, t, { ix, iy });
+    }
+
+    if (!Object.keys(porIlha).length) {
+      rotina('Sentinelas: não consegui ler as coordenadas de nenhuma cidade.');
+      return;
     }
 
     const registo = lerRegisto();
@@ -12112,6 +12134,8 @@ function makeSentinelasModule(opts) {
     /* Para o registo dizer onde a coisa pára. */
     let ilhasVistas = 0;
     let aliadosVistos = 0;
+    let cidadesVistas = 0;
+    let semIlha = 0;
 
     for (const k of Object.keys(porIlha)) {
       const minhaCidade = porIlha[k];
@@ -12136,7 +12160,14 @@ function makeSentinelasModule(opts) {
         if (achada) islandId = Number(achada.id);
       } catch (e) { seErroDeCodigo(e, 'Sentinelas'); }
 
-      if (!islandId) continue;
+      /* Contar ANTES de desistir, senão não se distingue "não há cidades"
+       * de "não consegui identificar a ilha". */
+      cidadesVistas++;
+
+      if (!islandId) {
+        semIlha++;
+        continue;
+      }
       await ctx.sleep(ctx.rand(700, 1300));
 
       ilhasVistas++;
@@ -12184,11 +12215,10 @@ function makeSentinelasModule(opts) {
     } else {
       /* "Nada a fazer" não diz nada. Conta-se cada passo, para se ver ONDE
        * a coisa pára: ilhas percorridas, aliados encontrados, já cobertos. */
-      rotina(`Sentinelas: ${ilhasVistas} ilha(s) percorrida(s), `
-        + `${aliadosVistos} cidade(s) aliada(s) encontrada(s), `
-        + `${jaLa} já com sentinela`
-        + (aliadosVistos && !jaLa && !enviadas ? ' — nenhuma enviada, ver o registo acima' : '')
-        + '.');
+      rotina(`Sentinelas: ${cidadesVistas} cidade(s) minha(s) vista(s), `
+        + `${ilhasVistas} ilha(s) identificada(s)`
+        + (semIlha ? ` (${semIlha} sem identificar — o mapa não respondeu)` : '')
+        + `, ${aliadosVistos} aliada(s) encontrada(s), ${jaLa} já com sentinela.`);
     }
   }
 
