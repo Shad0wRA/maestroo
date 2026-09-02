@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.02.0230
+// @version      2026.09.02.1215
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -464,10 +464,18 @@
    *
    * NÃO substitui o registo do ecrã: é uma camada à parte que só escreve.
    * ==================================================================== */
-  const CAIXA_NEGRA_KEY = 'grepoMaestro_caixaNegra_v1';
-  /* 3000 linhas: com as de rotina a entrar, 800 davam só uma hora. São uns
-   * 200 KB, que o navegador aguenta bem. */
-  const CAIXA_NEGRA_MAX = 3000;
+  /* DUAS CAIXAS, não uma.
+   *
+   * As linhas de rotina são ~200 por passagem do recrutamento. Numa caixa só,
+   * empurravam para fora tudo o resto em poucas horas — e quando se foi
+   * procurar o que o encaixe tinha feito às 8h, já não havia nada.
+   *
+   * Agora há duas: as ACÇÕES e os erros ficam muito mais tempo; a rotina tem
+   * a sua própria, mais curta, que serve para diagnóstico imediato. */
+  const CAIXA_NEGRA_KEY = 'grepoMaestro_caixaNegra_v1';        // acções e erros
+  const CAIXA_ROTINA_KEY = 'grepoMaestro_caixaRotina_v1';      // rotina
+  const CAIXA_NEGRA_MAX = 2000;
+  const CAIXA_ROTINA_MAX = 1500;
 
   /* Escrever em LOTES.
    *
@@ -475,38 +483,45 @@
    * as de rotina a entrar e 40 abas na VPS, isso somava. Junta-se o que
    * chega e grava-se de 3 em 3 segundos. */
   let caixaPendente = [];
+  let rotinaPendente = [];
   let caixaTemporizador = null;
+
+  function gravarNuma(chave, novas, tecto) {
+    if (!novas.length) return;
+    try {
+      let lista = [];
+      try { lista = JSON.parse(localStorage.getItem(chave) || '[]'); } catch (e) {}
+      for (const l of novas) lista.push(l);
+      while (lista.length > tecto) lista.shift();
+      localStorage.setItem(chave, JSON.stringify(lista));
+    } catch (e) {
+      try {
+        const lista = JSON.parse(localStorage.getItem(chave) || '[]');
+        localStorage.setItem(chave, JSON.stringify(lista.slice(Math.floor(lista.length / 2))));
+      } catch (e2) {}
+    }
+  }
 
   function descarregarCaixa() {
     caixaTemporizador = null;
-    if (!caixaPendente.length) return;
-    const novas = caixaPendente;
-    caixaPendente = [];
-    try {
-      let lista = [];
-      try { lista = JSON.parse(localStorage.getItem(CAIXA_NEGRA_KEY) || '[]'); } catch (e) {}
-      for (const l of novas) lista.push(l);
-      while (lista.length > CAIXA_NEGRA_MAX) lista.shift();
-      localStorage.setItem(CAIXA_NEGRA_KEY, JSON.stringify(lista));
-    } catch (e) {
-      try {
-        const lista = JSON.parse(localStorage.getItem(CAIXA_NEGRA_KEY) || '[]');
-        localStorage.setItem(CAIXA_NEGRA_KEY,
-          JSON.stringify(lista.slice(Math.floor(lista.length / 2))));
-      } catch (e2) {}
-    }
+    const a = caixaPendente; caixaPendente = [];
+    const r = rotinaPendente; rotinaPendente = [];
+    gravarNuma(CAIXA_NEGRA_KEY, a, CAIXA_NEGRA_MAX);
+    gravarNuma(CAIXA_ROTINA_KEY, r, CAIXA_ROTINA_MAX);
   }
 
   /* Não perder o que está pendente se a página fechar. */
   try { uw.addEventListener('beforeunload', descarregarCaixa); } catch (e) {}
 
-  function guardarNaCaixa(modulo, texto) {
+  function guardarNaCaixa(modulo, texto, ehRotina) {
     try {
-      caixaPendente.push({
+      const linha = {
         t: Math.floor(Date.now() / 1000),
         m: String(modulo || 'core'),
         x: String(texto || '').slice(0, 300),
-      });
+      };
+      if (ehRotina) rotinaPendente.push(linha);
+      else caixaPendente.push(linha);
       if (!caixaTemporizador) caixaTemporizador = setTimeout(descarregarCaixa, 3000);
       return;
     } catch (e) {}
@@ -539,6 +554,24 @@
   }
 
   try {
+    /* __maestroCaixaNegra()           acções e erros
+     * __maestroCaixaNegra(50,'encaixe') só de um módulo
+     * __maestroRotina()                as linhas de rotina, à parte */
+    uw.__maestroRotina = (quantas, modulo) => {
+      try {
+        descarregarCaixa();
+        let lista = JSON.parse(localStorage.getItem(CAIXA_ROTINA_KEY) || '[]');
+        if (modulo) lista = lista.filter((l) => l.m === String(modulo));
+        const fim = lista.slice(-(Number(quantas) || 40));
+        if (!fim.length) { console.log('Sem linhas de rotina.'); return; }
+        console.log(`Rotina — ${fim.length} de ${lista.length} linha(s)`
+          + (modulo ? ` (só ${modulo})` : '') + ':');
+        for (const l of fim) {
+          console.log(`  ${new Date(l.t * 1000).toLocaleString()} [${l.m}] ${l.x}`);
+        }
+      } catch (e) { console.log('erro a ler a rotina:', e.message); }
+    };
+
     uw.__maestroCaixaNegra = (quantas, modulo) => {
       try {
         descarregarCaixa();   // mostrar também o que ainda não foi gravado
@@ -558,8 +591,11 @@
       } catch (e) { console.log('erro a ler a caixa negra:', e.message); }
     };
     uw.__maestroCaixaNegraLimpar = () => {
-      try { localStorage.removeItem(CAIXA_NEGRA_KEY); console.log('Caixa negra limpa.'); }
-      catch (e) {}
+      try {
+        localStorage.removeItem(CAIXA_NEGRA_KEY);
+        localStorage.removeItem(CAIXA_ROTINA_KEY);
+        console.log('Caixas limpas.');
+      } catch (e) {}
     };
   } catch (e) {}
 
@@ -1028,7 +1064,7 @@
        *
        * Sem isto, o "porque não recruta" ficava só na consola e perdia-se no
        * primeiro recarregamento. */
-      try { guardarNaCaixa(modId, '· ' + String(msg)); } catch (e) {}
+      try { guardarNaCaixa(modId, String(msg), true); } catch (e) {}
     };
 
     return {
@@ -1059,7 +1095,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.02.0230';
+  const MAESTRO_VERSAO = '2026.09.02.1215';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -12072,6 +12108,9 @@ function makeSentinelasModule(opts) {
     const registo = lerRegisto();
     let enviadas = 0;
     let jaLa = 0;
+    /* Para o registo dizer onde a coisa pára. */
+    let ilhasVistas = 0;
+    let aliadosVistos = 0;
 
     for (const k of Object.keys(porIlha)) {
       const minhaCidade = porIlha[k];
@@ -12099,7 +12138,9 @@ function makeSentinelasModule(opts) {
       if (!islandId) continue;
       await ctx.sleep(ctx.rand(700, 1300));
 
+      ilhasVistas++;
       const aliadas = await aliadasNaIlha(islandId, minhaCidade.id, amigas);
+      aliadosVistos += (aliadas || []).length;
       if (!aliadas.length) continue;
 
       await ctx.sleep(ctx.rand(500, 1000));
@@ -12140,7 +12181,13 @@ function makeSentinelasModule(opts) {
     if (enviadas) {
       log(`Sentinelas: ${enviadas} enviada(s)${jaLa ? `, ${jaLa} já no sítio` : ''}.`);
     } else {
-      rotina(`Sentinelas: nada a fazer${jaLa ? ` — ${jaLa} já no sítio` : ''}.`);
+      /* "Nada a fazer" não diz nada. Conta-se cada passo, para se ver ONDE
+       * a coisa pára: ilhas percorridas, aliados encontrados, já cobertos. */
+      rotina(`Sentinelas: ${ilhasVistas} ilha(s) percorrida(s), `
+        + `${aliadosVistos} cidade(s) aliada(s) encontrada(s), `
+        + `${jaLa} já com sentinela`
+        + (aliadosVistos && !jaLa && !enviadas ? ' — nenhuma enviada, ver o registo acima' : '')
+        + '.');
     }
   }
 
