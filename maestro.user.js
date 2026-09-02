@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.02.1510
+// @version      2026.09.02.1525
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1095,7 +1095,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.02.1510';
+  const MAESTRO_VERSAO = '2026.09.02.1525';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -9235,6 +9235,27 @@ function makeRecrutamentoModule(opts) {
           excessos[k] = total;
 
           if (antes && total > antes) {
+            /* SÓ AVISAR SE FOMOS NÓS.
+             *
+             * A tropa também aumenta por outras vias: recompensas das missões
+             * e da caixa diária dão unidades, e o jogo dá-as sem passar pelo
+             * recrutamento.
+             *
+             * Visto em jogo: "Navio-farol passou de 58 para 59" numa cidade
+             * com zero na fila e zero fora — não houve ordem nenhuma, foi uma
+             * recompensa.
+             *
+             * Avisa-se só quando há registo de um pedido nosso recente. */
+            const fomosNos = (() => {
+              try {
+                const p = JSON.parse(armazem.getItem(PEDIDOS_KEY) || '{}');
+                const lista = p[`${town.id}|${u}`] || [];
+                const limite = Date.now() - 30 * 60 * 1000;   // meia hora
+                return lista.some((x) => Number(x.t) > limite);
+              } catch (e) { return true; }   // na dúvida, avisar
+            })();
+            if (!fomosNos) continue;
+
             const nomeU = ((mUw.GameData.units || {})[u] || {}).name || u;
 
             /* Separar o que está EM CASA do que está fora: numa cidade de
