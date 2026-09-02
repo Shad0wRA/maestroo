@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.02.1440
+// @version      2026.09.02.1510
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1095,7 +1095,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.02.1440';
+  const MAESTRO_VERSAO = '2026.09.02.1510';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -18134,6 +18134,21 @@ function makeEsquivaModule(opts) {
       const erroAdm = r && r.json && r.json.error;
       if (erroAdm && /administrador|administrator|premium/i.test(String(erroAdm))) {
         marcarSemAdministrador();
+
+        /* SEM ADMINISTRADOR, PÔR O MODELO LOCAL EM DIA.
+         *
+         * O `command_overview` devolve "Necessita do administrador" e a
+         * esquiva passa a depender do modelo local — que NÃO se actualiza
+         * sozinho.
+         *
+         * Visto em jogo, numa multi: o modelo mostrava um ataque já cancelado
+         * e não mostrava o novo que estava a caminho. A esquiva dizia "nenhum
+         * ataque a chegar" e as birremes ficavam em casa a matar a tropa da
+         * outra conta do grupo.
+         *
+         * O `gpAjax` sobre a vista da cidade obriga o jogo a refrescar os
+         * movimentos — é o mesmo que ele faz quando abres a cidade. */
+        await actualizarMovimentosLocais(townId);
         return [];
       }
       const cmds = ((r && r.json && r.json.data) || {}).commands || [];
@@ -18227,6 +18242,26 @@ function makeEsquivaModule(opts) {
     return out;
   }
 
+  /* Obrigar o jogo a refrescar os movimentos de uma cidade.
+   *
+   * No máximo de 10 em 10 segundos: a esquiva corre de 30 em 30 e não vale a
+   * pena martelar o servidor. */
+  let ultimoRefrescoMov = 0;
+
+  function actualizarMovimentosLocais(townId) {
+    const agora = Date.now();
+    if (agora - ultimoRefrescoMov < 10000) return Promise.resolve();
+    ultimoRefrescoMov = agora;
+
+    return new Promise((resolve) => {
+      try {
+        mUw.gpAjax.ajaxGet('town_info', 'index',
+          { town_id: Number(townId), nl_init: true }, true, () => resolve());
+      } catch (e) { resolve(); }
+      setTimeout(resolve, 2500);
+    });
+  }
+
   async function ataquesDoServidor(townId) {
     try {
       const url = mUw.location.origin + '/game/town_overviews?town_id=' + Number(townId)
@@ -18246,6 +18281,21 @@ function makeEsquivaModule(opts) {
       const erroAdm = r && r.json && r.json.error;
       if (erroAdm && /administrador|administrator|premium/i.test(String(erroAdm))) {
         marcarSemAdministrador();
+
+        /* SEM ADMINISTRADOR, PÔR O MODELO LOCAL EM DIA.
+         *
+         * O `command_overview` devolve "Necessita do administrador" e a
+         * esquiva passa a depender do modelo local — que NÃO se actualiza
+         * sozinho.
+         *
+         * Visto em jogo, numa multi: o modelo mostrava um ataque já cancelado
+         * e não mostrava o novo que estava a caminho. A esquiva dizia "nenhum
+         * ataque a chegar" e as birremes ficavam em casa a matar a tropa da
+         * outra conta do grupo.
+         *
+         * O `gpAjax` sobre a vista da cidade obriga o jogo a refrescar os
+         * movimentos — é o mesmo que ele faz quando abres a cidade. */
+        await actualizarMovimentosLocais(townId);
         return [];
       }
       const cmds = ((r && r.json && r.json.data) || {}).commands || [];
