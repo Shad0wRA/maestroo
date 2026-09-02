@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.02.1350
+// @version      2026.09.02.1420
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1095,7 +1095,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.02.1350';
+  const MAESTRO_VERSAO = '2026.09.02.1420';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -16241,8 +16241,88 @@ function makeDeusesModule(opts) {
     return meus.some((g) => (cont[g] || 0) < MAX_AFRODITE_POR_GRUPO);
   }
 
+  /* ARRUMAR AS AFRODITES QUE JÁ ESTÃO MAL COLOCADAS.
+   *
+   * A regra impede que se criem novas fora do sítio, mas não arruma as que
+   * já lá estavam. Se um grupo tem duas e outro nenhuma, muda-se uma —
+   * a que tiver menos favor acumulado, para se perder o mínimo.
+   *
+   * Corre antes do equilíbrio geral, para os números baterem certo. */
+  async function arrumarAfrodites(ctx, c, towns) {
+    const escolhidos = gruposDaAfrodite(c);
+    if (!escolhidos.size) return false;
+
+    const cont = afroditePorGrupo(towns, escolhidos);
+    const semNenhuma = [...escolhidos].filter((g) => (cont[g] || 0) === 0);
+    if (!semNenhuma.length) return false;
+
+    const aMais = [...escolhidos].filter((g) => (cont[g] || 0) > 1);
+    if (!aMais.length) return false;
+
+    /* Uma cidade de um grupo que tem a mais, que não esteja também num grupo
+     * vazio (senão tirá-la piora as coisas). */
+    for (const g of aMais) {
+      const candidatas = towns.filter((t) => {
+        if (deusDa(t.id) !== AFRODITE) return false;
+        const meus = gruposDaCidade(t.id).filter((x) => escolhidos.has(x));
+        if (meus.indexOf(g) < 0) return false;
+        return !meus.some((x) => semNenhuma.indexOf(x) >= 0);
+      });
+      if (!candidatas.length) continue;
+
+      /* A de menos favor: mudar de deus perde o acumulado. */
+      const favores = favorPorDeus();
+      const alvo = candidatas.slice().sort((a, b) => {
+        const fa = Number((favores[AFRODITE] || {})[a.id]) || 0;
+        const fb = Number((favores[AFRODITE] || {})[b.id]) || 0;
+        return fa - fb;
+      })[0];
+
+      /* QUE DEUS LHE PÔR? O que estiver mais em falta face aos pesos.
+       *
+       * Escolher o primeiro da lista era arbitrário e podia desequilibrar
+       * tudo o resto. */
+      const jaTem = {};
+      for (const d of DEUSES) jaTem[d] = 0;
+      for (const t of towns) { const d = deusDa(t.id); if (d && jaTem[d] != null) jaTem[d]++; }
+
+      const pesos = c.pesos || {};
+      const totalPeso = DEUSES.reduce((x, d) => x + (Number(pesos[d]) || 0), 0);
+      const querido = {};
+      for (const d of DEUSES) {
+        querido[d] = totalPeso
+          ? Math.round(towns.length * ((Number(pesos[d]) || 0) / totalPeso))
+          : Math.round(towns.length / DEUSES.length);
+      }
+
+      const nova = DEUSES
+        .filter((d) => d !== AFRODITE)
+        .sort((a, b) => ((querido[b] - jaTem[b]) - (querido[a] - jaTem[a])))[0];
+      if (!nova) return false;
+
+      if (c.simular) {
+        ctx.log(`🔎 [simulação] ${alvo.name}: o grupo "${g}" tem 2 Afrodites e `
+          + `"${semNenhuma[0]}" não tem nenhuma — tiraria esta.`);
+        return true;
+      }
+
+      const r = await mudarDeus(alvo.id, nova);
+      if (r.ok) {
+        ctx.log(`⚖️ ${alvo.name}: o grupo "${g}" tinha 2 Afrodites e "${semNenhuma[0]}" `
+          + `nenhuma — passei esta a ${NOMES[nova] || nova}.`);
+        return true;
+      }
+      return false;
+    }
+    return false;
+  }
+
   async function equilibrarPorPesos(ctx, c, towns) {
     const log = ctx.log;
+
+    /* Arrumar as Afrodites mal colocadas antes de contar os pesos. */
+    try { await arrumarAfrodites(ctx, c, towns); } catch (e) { seErroDeCodigo(e, 'Deuses'); }
+
     const favores = favorPorDeus();
     for (const k of Object.keys(deusesSimulados)) delete deusesSimulados[k];   // estado limpo
 
@@ -16310,6 +16390,19 @@ function makeDeusesModule(opts) {
             .sort(porFavor)[0];
         }
         if (!alvo) break;
+
+        /* A REGRA DA AFRODITE TAMBÉM AQUI.
+         *
+         * Este caminho — o dos grupos de voadores — atribuía deuses sem
+         * passar pela regra dos grupos. Resultado: um grupo ficava com duas
+         * Afrodites enquanto outro ficava sem nenhuma.
+         *
+         * Visto em jogo: 4 grupos escolhidos, 4 cidades com Afrodite, mas
+         * duas no mesmo grupo. */
+        if (falta.deus === AFRODITE && !podeReceberAfrodite(alvo.id, towns, c)) {
+          rotina(`${alvo.name}: Afrodite não entra aqui — outro grupo ainda não tem nenhuma.`);
+          break;
+        }
 
         const de = efetivo(alvo.id);
         let unidade = '';
@@ -16436,7 +16529,16 @@ function makeDeusesModule(opts) {
         const candidatas = towns.filter((t) => deusDa(t.id) === doador)
           .filter((t) => !doGrupoVoa.has(Number(t.id)))   // o grupo de voadores tem regra própria
           .filter((t) => (fixas[t.id] || {}).tipo !== 'fixo')
-          .filter((t) => !(c.protegerMiticas && miticasNaCidade(t.id, doador)));
+          .filter((t) => !(c.protegerMiticas && miticasNaCidade(t.id, doador)))
+          /* A REGRA DOS GRUPOS DA AFRODITE.
+           *
+           * Este é o caminho do equilíbrio geral — escolhia qualquer cidade
+           * do deus excedentário, sem olhar a grupos. Era por aqui que um
+           * grupo acabava com duas Afrodites e outro com nenhuma.
+           *
+           * Visto em jogo: 4 grupos escolhidos, 4 cidades com Afrodite, duas
+           * delas no mesmo grupo. */
+          .filter((t) => alvo !== AFRODITE || podeReceberAfrodite(t.id, towns, c));
         if (!candidatas.length) {
           log(`— ${NOMES[doador]}: sem cidades disponíveis (fixas ou com míticas); não mexo.`);
           tenho[doador] = querido[doador] || 0;   // deixa de ser candidato
