@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.02.2030
+// @version      2026.09.02.2110
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1102,7 +1102,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.02.2030';
+  const MAESTRO_VERSAO = '2026.09.02.2110';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -4624,7 +4624,13 @@ function makeConstrucaoModule(opts) {
   // Cache local (para leitura rápida e fallback offline).
   const CACHE_KEY = 'grepoConstru_templates_v1';
   function loadTemplatesLocal() {
-    try { return JSON.parse(armazem.getItem(CACHE_KEY) || '{}'); } catch (e) { return {}; }
+    try {
+      const t = JSON.parse(armazem.getItem(CACHE_KEY) || '{}');
+      /* Endireitar blocos aninhados de versões antigas — ver
+       * `endireitarBlocos`. */
+      for (const k of Object.keys(t)) endireitarBlocos(t[k]);
+      return t;
+    } catch (e) { return {}; }
   }
   function saveTemplatesLocal(tpls) {
     try { armazem.setItem(CACHE_KEY, JSON.stringify(tpls)); } catch (e) {}
@@ -5301,6 +5307,35 @@ function makeConstrucaoModule(opts) {
 
   // Bloco novo nasce com uma linha POR ESCOLHER, não com a serração.
   function novoBlocoVazio() { return [{ b: '', alvo: 1 }]; }
+
+  /* ENDIREITAR BLOCOS ESTRAGADOS.
+   *
+   * Uma versão anterior metia um bloco inteiro dentro de outro, criando
+   * `[[{...}], {...}]`. O painel não sabia desenhar isso e as alterações
+   * pareciam perder-se.
+   *
+   * Ao ler, achata-se o que estiver aninhado e deitam-se fora as linhas sem
+   * edifício. Corre uma vez e o template fica bom. */
+  function endireitarBlocos(tpl) {
+    try {
+      if (!tpl || !Array.isArray(tpl.blocos)) return tpl;
+
+      tpl.blocos = tpl.blocos.map((bloco) => {
+        if (!Array.isArray(bloco)) return [bloco];
+
+        const plano = [];
+        for (const item of bloco) {
+          if (Array.isArray(item)) {
+            for (const dentro of item) if (dentro && typeof dentro === 'object') plano.push(dentro);
+          } else if (item && typeof item === 'object') {
+            plano.push(item);
+          }
+        }
+        return plano.length ? plano : [{ b: '', alvo: 1 }];
+      });
+    } catch (e) {}
+    return tpl;
+  }
   function templateVazio() { return { modo: 'blocos', blocos: [novoBlocoVazio()] }; }
 
   function esc(s) { return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
@@ -5901,7 +5936,20 @@ function makeConstrucaoModule(opts) {
       const ii = Number(el.getAttribute('data-ii'));
       if (act === 'edif') el.onchange = (e) => { tpl.blocos[bi][ii].b = e.target.value; comRolamento(() => renderPainel(container)); };
       else if (act === 'alvo') el.onchange = (e) => { tpl.blocos[bi][ii].alvo = Math.max(0, Number(e.target.value) || 0); };
-      else if (act === 'edif-del') el.onclick = (e) => { e.preventDefault(); tpl.blocos[bi].splice(ii, 1); if (!tpl.blocos[bi].length) tpl.blocos[bi].push(novoBlocoVazio()); comRolamento(() => renderPainel(container)); };
+      else if (act === 'edif-del') el.onclick = (e) => {
+        e.preventDefault();
+        tpl.blocos[bi].splice(ii, 1);
+        /* UMA LINHA, NÃO UM BLOCO.
+         *
+         * Estava `push(novoBlocoVazio())` — e essa função devolve um BLOCO
+         * inteiro, que é uma lista. Empurrá-la para dentro de um bloco criava
+         * uma lista dentro da lista.
+         *
+         * Visto em jogo: bloco 14 com `[[{"b":"","alvo":1}],{...}]`, o painel
+         * a não conseguir desenhá-lo, e as alterações a parecerem perdidas. */
+        if (!tpl.blocos[bi].length) tpl.blocos[bi].push({ b: '', alvo: 1 });
+        comRolamento(() => renderPainel(container));
+      };
       else if (act === 'edif-add') el.onclick = (e) => {
         e.preventDefault();
         // b vazio: obriga a escolher. Antes vinha 'lumber' (serração) e era
@@ -6380,7 +6428,13 @@ function makePesquisaModule(opts) {
   /* ---------------------- templates (Gist + cache local) -------------- */
   const CACHE_KEY = 'grepoPesquisa_templates_v1';
   function loadTemplatesLocal() {
-    try { return JSON.parse(armazem.getItem(CACHE_KEY) || '{}'); } catch (e) { return {}; }
+    try {
+      const t = JSON.parse(armazem.getItem(CACHE_KEY) || '{}');
+      /* Endireitar blocos aninhados de versões antigas — ver
+       * `endireitarBlocos`. */
+      for (const k of Object.keys(t)) endireitarBlocos(t[k]);
+      return t;
+    } catch (e) { return {}; }
   }
   function saveTemplatesLocal(t) {
     try { armazem.setItem(CACHE_KEY, JSON.stringify(t)); } catch (e) {}
@@ -25575,7 +25629,19 @@ function makeMissoesModule(opts) {
      *
      * Só se fecham as que estão `satisfied` — objectivos cumpridos, à espera
      * de serem fechadas. */
-    if (c.guiaInicial !== false) {
+    /* DESLIGADO POR OMISSÃO ATÉ SE PERCEBER MELHOR.
+     *
+     * Fechar a missão pelo `progressTo` funciona — a recompensa entra — mas
+     * a INTERFACE do jogo fica dessincronizada: a missão continua a aparecer
+     * como concluída à espera de recompensa, e ao carregares nela a lista
+     * inteira deixa de mostrar missões.
+     *
+     * Falta provavelmente um passo que o jogo faz e não foi capturado. Até
+     * lá, é melhor não mexer: uma lista estragada custa mais do que a
+     * recompensa vale.
+     *
+     * Liga no painel das missões se quiseres tentar. */
+    if (c.guiaInicial === true) {
       try {
         const col = mUw.MM.getCollections().Progressable;
         const mods = (col && col[0] && col[0].models) || [];
@@ -26096,12 +26162,14 @@ function makeMissoesModule(opts) {
       <div style="font-size:11px;line-height:1.7">
         <label><input type="checkbox" id="mis-on"${c.ativo ? ' checked' : ''}> <b>Fazer missões de ilha</b></label><br>
       <label style="display:block;font-size:11px;margin-top:3px">
-        <input type="checkbox" id="mis-guia"${c.guiaInicial !== false ? ' checked' : ''}>
+        <input type="checkbox" id="mis-guia"${c.guiaInicial === true ? ' checked' : ''}>
         fechar as missões do guia inicial
       </label>
       <div style="opacity:.55;font-size:10px;margin:0 0 4px 18px">
-        As do painel lateral — construir, recrutar, vencer combates. Fechá-las
-        é o que dá a recompensa.
+        As do painel lateral — construir, recrutar, vencer combates.<br>
+        <b style="color:#c96">Desligado por omissão:</b> a recompensa entra, mas
+        a lista do jogo fica dessincronizada e deixa de mostrar missões até
+        recarregares. Liga por tua conta.
       </div>
         <label><input type="checkbox" id="mis-sab"${c.preferirSabedoria ? ' checked' : ''}> preferir moedas de sabedoria</label>
         <span style="opacity:.6;font-size:10px">(nas de ameaça, é também a de defender)</span><br>
@@ -26150,7 +26218,7 @@ function makeMissoesModule(opts) {
       guardar({
         ativo: container.querySelector('#mis-on').checked,
         guiaInicial: container.querySelector('#mis-guia')
-          ? container.querySelector('#mis-guia').checked : true,
+          ? container.querySelector('#mis-guia').checked : false,
         preferirSabedoria: container.querySelector('#mis-sab').checked,
         darRecursos: container.querySelector('#mis-res').checked,
         maxRecursosPorMissao: Number(container.querySelector('#mis-max').value) || 5000,
