@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.02.0155
+// @version      2026.09.02.0230
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1059,7 +1059,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.02.0155';
+  const MAESTRO_VERSAO = '2026.09.02.0230';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -5777,6 +5777,33 @@ function makeConstrucaoModule(opts) {
 
     const guardar = container.querySelector('#con-guardar');
     if (guardar) guardar.onclick = async () => {
+      /* OS TEMPLATES MUDARAM DEBAIXO DOS PÉS?
+       *
+       * Se importaste definições com este painel aberto, o que está no ecrã
+       * é o de ANTES — e guardar escreve isso por cima do que importaste.
+       *
+       * Visto em jogo: importação às 02:09:11, Guardar às 02:09:37, e os
+       * templates do pt125 desapareceram.
+       *
+       * Compara-se com o que está guardado; se for diferente, pergunta-se. */
+      try {
+        const noDisco = (() => {
+          try { return JSON.parse(armazem.getItem(CACHE_KEY) || 'null'); }
+          catch (e) { return null; }
+        })();
+        if (noDisco && JSON.stringify(noDisco) !== JSON.stringify(templatesEdicao)) {
+          const ok = await perguntar(
+            'Os templates guardados são diferentes do que está no ecrã — '
+            + 'provavelmente importaste definições entretanto.\n\n'
+            + 'Guardar escreve por cima do que foi importado. Continuar?');
+          if (!ok) {
+            guardar.textContent = 'Guardar';
+            renderPainel(container);   // mostrar o que está guardado
+            return;
+          }
+        }
+      } catch (e) { seErroDeCodigo(e, 'Construcao'); }
+
       guardar.textContent = 'A guardar...';
       const res = await writeTemplatesGist(templatesEdicao);
       if (res.ok) {
@@ -22967,10 +22994,19 @@ function makeEncaixeModule(opts) {
             const envio = chegada - c2.dur;
             if (envio <= agora()) { passadas++; continue; }   // já passou
 
+            /* ATAQUE OU APOIO — a janela é a mesma, o botão é que muda.
+             *
+             * Antes assumia sempre ataque, e não havia forma de agendar
+             * combinações de apoio. Agora usa-se o que estiver escolhido nos
+             * botões da caixa, com o colonizador a mandar sempre. */
+            const tipoCombo = c2.unidades.colonize_ship > 0
+              ? 'colonize'
+              : ((box.querySelector('#encj-tipo-combo') || {}).value || tipoEnvio);
+
             adicionarPlano({
               origemId, alvoId: alvo.id, alvoCoords: alvo,
               unidades: c2.unidades,
-              tipo: c2.unidades.colonize_ship > 0 ? 'colonize' : 'attack',
+              tipo: tipoCombo,
               chegada,
               alvoNome: alvoNomeDetetado || undefined,
               atrasosSeguidosParaParar: conf.atrasosSeguidosParaParar,
@@ -23041,6 +23077,12 @@ function makeEncaixeModule(opts) {
                 <span style="opacity:.7">— ${c2.nome}</span>${jaPassou ? ' <i>(hora passada)</i>' : ''}
               </label>`;
             }).join('')
+            + '<div style="display:flex;gap:5px;align-items:center;margin-top:5px;font-size:11px">'
+            + '<span style="opacity:.7">enviar como</span>'
+            + '<select id="encj-tipo-combo" style="flex:1">'
+            + `<option value="attack"${tipoEnvio !== 'support' ? ' selected' : ''}>⚔ ataque</option>`
+            + `<option value="support"${tipoEnvio === 'support' ? ' selected' : ''}>🛡 apoio</option>`
+            + '</select></div>'
             + '<button id="encj-combos-go" style="cursor:pointer;width:100%;margin-top:4px;'
             + 'background:#3a6ea5;color:#fff;padding:4px;border:none;border-radius:4px;font-size:11px">'
             + 'Agendar as marcadas</button>';
