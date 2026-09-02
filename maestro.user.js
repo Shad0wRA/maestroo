@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.02.1215
+// @version      2026.09.02.1240
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1095,7 +1095,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.02.1215';
+  const MAESTRO_VERSAO = '2026.09.02.1240';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -21522,9 +21522,33 @@ function makeEncaixeModule(opts) {
   async function enviarComando(origem, alvoId, unidades, tipo) {
     const url = mUw.location.origin + '/game/town_info?town_id=' + Number(origem)
       + '&action=send_units&h=' + mUw.Game.csrfToken;
-    return post(url, Object.assign({}, unidades, {
+    const r = await post(url, Object.assign({}, unidades, {
       id: Number(alvoId), type: tipo, town_id: Number(origem), nl_init: true,
     }));
+
+    /* O IDENTIFICADOR VEM NA PRÓPRIA RESPOSTA.
+     *
+     * Procurá-lo depois — perguntando ao servidor a lista de comandos — pode
+     * falhar: a lista demora a actualizar, e sem Administrador vem vazia.
+     * Quando falha, a tentativa fora de tolerância NÃO É CANCELADA e chega na
+     * mesma.
+     *
+     * Visto em jogo: dois ataques na mesma cidade, um às 08:00:00 (o certo) e
+     * outro às 07:59:53 (a tentativa que devia ter sido cancelada).
+     *
+     * A resposta do envio traz o comando nas notificações — é a fonte mais
+     * fiável que há, porque é o próprio servidor a confirmar o que criou. */
+    try {
+      const notas = ((r && r.json && r.json.notifications) || []);
+      for (const n of notas) {
+        const txt = String(n.param_str || '');
+        const m = txt.match(/"Commands?"\s*:\s*\{[^}]*"id"\s*:\s*(\d+)/)
+               || txt.match(/"id"\s*:\s*(\d+)[^}]*"arrival_at"/);
+        if (m) { r.__commandId = Number(m[1]); break; }
+      }
+    } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
+
+    return r;
   }
 
   async function cancelar(commandId, townId) {
@@ -21901,6 +21925,22 @@ function makeEncaixeModule(opts) {
           }
           cmd = null;
         }
+
+        /* O ENVIO DEVOLVEU O IDENTIFICADOR?
+         *
+         * Quando a procura falha — e falha, porque a lista do servidor demora
+         * a actualizar — fica-se sem forma de cancelar, e o comando segue
+         * viagem com o desvio errado.
+         *
+         * Visto em jogo: dois ataques na mesma cidade, o certo às 08:00:00 e
+         * a tentativa por cancelar às 07:59:53.
+         *
+         * O identificador que o servidor devolveu no envio serve para
+         * cancelar, mesmo sem se saber a hora de chegada. */
+        if ((!cmd || !cmd.command_id) && r && r.__commandId) {
+          cmd = Object.assign({}, cmd || {}, { command_id: r.__commandId });
+        }
+
         if (!cmd || !cmd.arrival_at) {
           // NÃO deixar o comando à solta: se não se consegue verificar a hora
           // de chegada, não se sabe se acertou — e um ataque fora de horas pode
@@ -21911,7 +21951,19 @@ function makeEncaixeModule(opts) {
             + `servidor: ${diag.servidor} comando(s) devolvido(s)`);
           /* Aqui já se desistiu da rajada, portanto pode-se insistir: deixar
            * um comando à solta é o pior resultado possível. */
+          /* PRIMEIRO O IDENTIFICADOR QUE O ENVIO DEVOLVEU.
+           *
+           * É o mais fiável: veio do próprio servidor, no momento em que
+           * criou o comando. Só se ele não vier é que se vai à procura —
+           * e essa procura pode falhar, deixando um comando à solta.
+           *
+           * Visto em jogo: dois ataques na mesma cidade, o certo às 08:00:00
+           * e o que devia ter sido cancelado às 07:59:53. */
           let ult = null;
+          if (r && r.__commandId) {
+            ult = { command_id: r.__commandId };
+          }
+
           for (let tent = 0; tent < 5 && !ult; tent++) {
             if (tent) await new Promise((res) => setTimeout(res, 600));
             ult = ultimoComandoEnviado(plano.origemId, plano.alvoId, conhecidos);
