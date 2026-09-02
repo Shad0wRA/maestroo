@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.02.2110
+// @version      2026.09.02.2130
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1102,7 +1102,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.02.2110';
+  const MAESTRO_VERSAO = '2026.09.02.2130';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -27735,8 +27735,22 @@ function makeApoioModule(opts) {
    * nada — fazia, mas não durava. */
   const NOMES_KEY = 'grepoApoio_nomes_v1';
 
+  /* Os nomes valem 24 horas. Depois disso perguntam-se outra vez — as
+   * cidades mudam de dono e de nome. */
+  const VALIDADE_NOMES = 24 * 3600;
+
   const cacheCidades = (() => {
-    try { return JSON.parse(armazem.getItem(NOMES_KEY) || '{}'); } catch (e) { return {}; }
+    try {
+      const c = JSON.parse(armazem.getItem(NOMES_KEY) || '{}');
+      /* Deitar fora os velhos ao arrancar: assim voltam a ser procurados. */
+      const limite = Math.floor(Date.now() / 1000) - VALIDADE_NOMES;
+      for (const k of Object.keys(c)) {
+        const v = c[k];
+        /* Sem hora é de uma versão antiga: também expira. */
+        if (!v || !v.visto || Number(v.visto) < limite) delete c[k];
+      }
+      return c;
+    } catch (e) { return {}; }
   })();
 
   function gravarNomes() {
@@ -27842,7 +27856,11 @@ function makeApoioModule(opts) {
       for (const k of Object.keys(mods)) {
         const a = mods[k].attributes || {};
         const em = Number(a.current_town_id);
-        if (!em || cacheCidades[em]) continue;
+        /* Já tenho e ainda é fresco? Salta. Senão, actualiza-se. */
+        if (!em) continue;
+        const jaTenho = cacheCidades[em];
+        if (jaTenho && Number(jaTenho.visto)
+            && (Math.floor(Date.now() / 1000) - Number(jaTenho.visto)) < VALIDADE_NOMES) continue;
         const nome = String(a.current_town_name || '').trim();
         if (!nome) continue;
 
@@ -27852,6 +27870,15 @@ function makeApoioModule(opts) {
           minha: !!mUw.ITowns.towns[em],
           ilha: (Number(a.island_x) && Number(a.island_y))
             ? { x: Number(a.island_x), y: Number(a.island_y) } : undefined,
+          /* QUANDO É QUE ISTO FOI VISTO.
+           *
+           * Os nomes eram guardados para sempre. Uma cidade que muda de dono
+           * — conquista, mudança de nome — ficava com o dono antigo no painel
+           * até ao fim dos tempos.
+           *
+           * Visto em jogo: cidades do Alamar a aparecerem como do Godfather,
+           * que era o dono anterior. */
+          visto: Math.floor(Date.now() / 1000),
         };
         n++;
       }
@@ -28827,6 +28854,16 @@ function makeApoioModule(opts) {
        * faltam. */
       btN.disabled = true;
       btN.textContent = 'a actualizar...';
+
+      /* O BOTÃO FORÇA A RELEITURA DOS NOMES.
+       *
+       * Não faz sentido carregar em "actualizar" e continuar a ver um dono
+       * antigo à espera que as 24 h passem. Deitam-se fora os nomes dos
+       * alvos, para serem procurados de novo. */
+      try {
+        for (const id of alvos) delete cacheCidades[Number(id)];
+        gravarNomes();
+      } catch (e) {}
 
       let atuais = alvos;
       try {
