@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.02.1330
+// @version      2026.09.02.1350
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1095,7 +1095,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.02.1330';
+  const MAESTRO_VERSAO = '2026.09.02.1350';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -12795,14 +12795,46 @@ function makeFabricaNCModule(opts) {
          * ficarem sem nada.
          *
          * E nunca mais do que falta: mandar 5000 a mais é desperdício. */
+        /* REPARTIR A CAPACIDADE PELOS TRÊS RECURSOS.
+         *
+         * Dar o máximo do primeiro e só depois passar ao seguinte enchia a
+         * madeira até ao topo e deixava a prata a meio — e o colonizador
+         * precisa dos três em partes iguais.
+         *
+         * Simulado: com o método antigo, 20000 de madeira e 7000 de prata
+         * davam uma ordem de UM. Repartindo, davam quatro.
+         *
+         * Cada recurso leva a fatia da capacidade proporcional ao que falta
+         * dele. */
         const carga = {};
         let soma = 0;
-        for (const k of RES) {
-          if (falta[k] <= 0) continue;
-          const tem = Number(r[k]) || 0;
-          if (tem <= 0) continue;
-          const dar = Math.min(tem, falta[k], Math.max(0, cap - soma));
-          if (dar > 0) { carga[k] = dar; soma += dar; }
+
+        const totalFaltaAgora = RES.reduce((x, k) => x + Math.max(0, falta[k]), 0);
+        if (totalFaltaAgora > 0) {
+          for (const k of RES) {
+            if (falta[k] <= 0) continue;
+            const tem = Number(r[k]) || 0;
+            if (tem <= 0) continue;
+
+            /* A fatia desta cidade para este recurso. */
+            const fatia = Math.floor(cap * (falta[k] / totalFaltaAgora));
+            const dar = Math.min(tem, falta[k], fatia);
+            if (dar > 0) { carga[k] = dar; soma += dar; }
+          }
+
+          /* Sobrou capacidade? Usa-se no que ainda falta mais. */
+          let sobra = cap - soma;
+          if (sobra > 0) {
+            const porFalta = RES.slice()
+              .filter((k) => falta[k] > (carga[k] || 0))
+              .sort((a, b) => (falta[b] - (carga[b] || 0)) - (falta[a] - (carga[a] || 0)));
+            for (const k of porFalta) {
+              if (sobra <= 0) break;
+              const tem = Number(r[k]) || 0;
+              const podeMais = Math.min(tem - (carga[k] || 0), falta[k] - (carga[k] || 0), sobra);
+              if (podeMais > 0) { carga[k] = (carga[k] || 0) + podeMais; soma += podeMais; sobra -= podeMais; }
+            }
+          }
         }
 
         if (soma < 100) continue;
@@ -21297,6 +21329,19 @@ function makeTrocaCidadesModule(opts) {
        *
        * - templates cumpridos                → guarda `deixarCumprida`
        * - cumpridos mas com a fila cheia      → guarda `deixarParada` */
+      /* NÃO MEXER NA CIDADE QUE A FÁBRICA ESTÁ A ENCHER.
+       *
+       * Os dois módulos movem recursos. Se a bomba tirar de uma cidade que a
+       * fábrica está a encher para o colonizador, os dois passam a puxar em
+       * direcções opostas e nenhum consegue o que quer.
+       *
+       * A fábrica tem prioridade: enche uma cidade de cada vez e liberta-a
+       * assim que lança a ordem. */
+      try {
+        const fab = JSON.parse(localStorage.getItem(chavePorPerfil('grepoFabricaNC_estado_v1')) || '{}');
+        if (fab && Number(fab.cidade) === Number(t.id)) continue;
+      } catch (e) {}
+
       /* AS REGRAS, sem percentagens de armazém a decidir quem envia:
        *
        *   templates todos cumpridos           → guarda 10%
