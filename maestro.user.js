@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.02.1700
+// @version      2026.09.02.1715
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1095,7 +1095,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.02.1700';
+  const MAESTRO_VERSAO = '2026.09.02.1715';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -11937,7 +11937,8 @@ function makeBandidosModule(opts) {
     };
   }
 
-  return { id: 'bandidos', nome: 'Bandidos da ilha', run, painel };
+  return { id: 'bandidos', nome: 'Bandidos da ilha',
+    intervaloMin: opts.intervaloMin || 3, run, painel };
 }
 
 /* =========================================================================
@@ -12357,7 +12358,8 @@ function makeSentinelasModule(opts) {
     };
   }
 
-  return { id: 'sentinelas', nome: 'Sentinelas', run, painel };
+  return { id: 'sentinelas', nome: 'Sentinelas',
+    intervaloMin: opts.intervaloMin || 720, run, painel };
 }
 
 /* =========================================================================
@@ -12609,7 +12611,8 @@ function makeDiariaModule(opts) {
     };
   }
 
-  return { id: 'diaria', nome: 'Recompensa diária', run, painel };
+  return { id: 'diaria', nome: 'Recompensa diária',
+    intervaloMin: opts.intervaloMin || 60, run, painel };
 }
 
 /* =========================================================================
@@ -13189,7 +13192,11 @@ function makeFabricaNCModule(opts) {
     };
   }
 
-  return { id: 'fabricanc', nome: 'Fábrica de colonizadores', run, painel };
+  /* O `intervaloMin` TEM de vir aqui: é daqui que o núcleo o lê para
+   * calcular a próxima passagem. Sem ele, o painel mostra tracinhos em vez
+   * do tempo que falta. */
+  return { id: 'fabricanc', nome: 'Fábrica de colonizadores',
+    intervaloMin: opts.intervaloMin || 10, run, painel };
 }
 
 function makeAldeiasModule(opts) {
