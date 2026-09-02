@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.02.1850
+// @version      2026.09.02.1905
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1102,7 +1102,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.02.1850';
+  const MAESTRO_VERSAO = '2026.09.02.1905';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -12934,6 +12934,36 @@ function makeFabricaNCModule(opts) {
       } catch (e) { seErroDeCodigo(e, 'FabricaNC'); }
     }
 
+    /* O ARGUS JÁ VAI A CAMINHO DE ALGURES?
+     *
+     * Então é essa a próxima fábrica. Escolher outra deixava-o a viajar para
+     * uma cidade abandonada, e o desconto nunca apanhava ordem nenhuma.
+     *
+     * Visto em jogo: ordem feita na 6846 sem Argus, com ele a 143 min de
+     * chegar à 6556 — que a fábrica já tinha largado. */
+    if (!alvo) {
+      try {
+        const ph = mUw.MM.getCollections().PlayerHero;
+        const arg = ((ph && ph[0] && ph[0].models) || [])
+          .find((m) => (m.attributes || {}).type === 'argus');
+        const a = (arg && arg.attributes) || {};
+
+        if (a.town_arrival_at && Number(a.town_arrival_at) > agoraJogo() && a.home_town_id) {
+          const destino = livres.find((t) => Number(t.id) === Number(a.home_town_id));
+          if (destino) {
+            alvo = destino;
+            est.cidade = Number(destino.id);
+            est.desde = agoraJogo();
+            guardarEstado(est);
+
+            const faltam = Math.round((Number(a.town_arrival_at) - agoraJogo()) / 60);
+            rotina(`Fábrica de NC: sigo o Argus — vai para ${destino.name}, `
+              + `chega daqui a ${faltam} min.`);
+          }
+        }
+      } catch (e) { seErroDeCodigo(e, 'FabricaNC'); }
+    }
+
     if (!alvo) {
       /* A que está mais perto de conseguir uma ordem — assim começa a
        * produzir mais depressa. */
@@ -12954,9 +12984,30 @@ function makeFabricaNCModule(opts) {
     if (!rAlvo) { rotina('Fábrica de NC: não consigo ler os recursos da cidade.'); return; }
 
     const desconto = descontoDoArgus(alvo.id);
-    const etiqueta = desconto
-      ? `com Argus (-${Math.round(desconto * 100)}%)`
-      : 'sem Argus';
+
+    /* A etiqueta diz também ONDE está o Argus quando não está aqui — senão
+     * fica-se sem saber se ele existe, se vem a caminho, ou se está noutro
+     * lado. */
+    const etiqueta = (() => {
+      if (desconto) return `com Argus (-${Math.round(desconto * 100)}%)`;
+      try {
+        const ph = mUw.MM.getCollections().PlayerHero;
+        const arg = ((ph && ph[0] && ph[0].models) || [])
+          .find((m) => (m.attributes || {}).type === 'argus');
+        if (!arg) return 'sem Argus (esta conta não o tem)';
+
+        const a = arg.attributes || {};
+        if (a.town_arrival_at && Number(a.town_arrival_at) > agoraJogo()) {
+          const faltam = Math.round((Number(a.town_arrival_at) - agoraJogo()) / 60);
+          let onde = a.home_town_id;
+          try { onde = mUw.ITowns.getTown(Number(a.home_town_id)).getName(); } catch (e) {}
+          return `sem Argus (a caminho de ${onde}, ${faltam} min)`;
+        }
+        let onde = a.home_town_id;
+        try { onde = mUw.ITowns.getTown(Number(a.home_town_id)).getName(); } catch (e) {}
+        return `sem Argus (está em ${onde})`;
+      } catch (e) { return 'sem Argus'; }
+    })();
 
     /* ---- 3. AS OUTRAS ENVIAM ---- */
 
