@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.02.1745
+// @version      2026.09.02.1850
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1072,6 +1072,13 @@
       log: (msg) => log(modId, msg),
       logRotina: rotina,
       getMyTowns, switchToTown, actualizarNumeros,
+      /* Pedir uma passagem antecipada (segundos). Só antecipa, nunca adia. */
+      voltarEm: (segundos) => {
+        try {
+          const st = modState[modId];
+          if (st) st.pedidoVoltarEm = Math.max(10, Number(segundos) || 0);
+        } catch (e) {}
+      },
       lockRenew,
       avisarDiscord,
       // para os módulos que queiram verificar de propósito
@@ -1095,7 +1102,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.02.1745';
+  const MAESTRO_VERSAO = '2026.09.02.1850';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -2193,6 +2200,26 @@
           } finally {
             st.aCorrer = false;
             st.proximaExec = Date.now() + (m.intervaloMin * 60 * 1000);
+
+            /* O MÓDULO PODE PEDIR PARA VOLTAR MAIS CEDO.
+             *
+             * Alguns trabalhos têm um instante certo — a fábrica de
+             * colonizadores quer mandar recursos 5 minutos antes de o Argus
+             * chegar, e com passagens de 10 em 10 minutos essa janela
+             * escapa-se.
+             *
+             * O módulo escreve em `ctx.voltarEm(segundos)` e a próxima
+             * passagem é antecipada. Nunca ADIA — só antecipa, para não haver
+             * forma de um módulo se desligar sozinho por engano. */
+            try {
+              const pedido = Number(st.pedidoVoltarEm) || 0;
+              st.pedidoVoltarEm = 0;
+              if (pedido > 0) {
+                const quando = Date.now() + (pedido * 1000);
+                if (quando < st.proximaExec) st.proximaExec = quando;
+              }
+            } catch (e) {}
+
             atualizarPainelEstado();
           }
         }
@@ -12932,6 +12959,32 @@ function makeFabricaNCModule(opts) {
       : 'sem Argus';
 
     /* ---- 3. AS OUTRAS ENVIAM ---- */
+
+    /* SÓ QUANDO O ARGUS ESTIVER QUASE A CHEGAR.
+     *
+     * Encher o armazém duas horas antes dele é desperdício duplo: os recursos
+     * ficam parados, e se a cidade entretanto conseguir uma ordem faz-a ao
+     * preço cheio — sem o desconto que ia chegar a seguir.
+     *
+     * Visto em jogo: armazéns cheios, 18 envios numa passagem, e o Argus
+     * ainda a 1h47 de distância.
+     *
+     * Espera-se até faltarem 5 minutos. Assim ele chega, encontra os
+     * recursos a entrar, faz a ordem grande e segue viagem. */
+    let esperarPeloArgus = 0;
+    try {
+      const ph = mUw.MM.getCollections().PlayerHero;
+      const arg = ((ph && ph[0] && ph[0].models) || [])
+        .find((m) => (m.attributes || {}).type === 'argus');
+      const a = (arg && arg.attributes) || {};
+
+      if (Number(a.home_town_id) === Number(alvo.id)
+          && a.town_arrival_at && Number(a.town_arrival_at) > agoraJogo()) {
+        const faltam = Number(a.town_arrival_at) - agoraJogo();
+        if (faltam > 300) esperarPeloArgus = faltam;
+      }
+    } catch (e) { seErroDeCodigo(e, 'FabricaNC'); }
+
     const viagem = aCaminho();
     const vem = viagem[alvo.id] || { wood: 0, stone: 0, iron: 0 };
 
@@ -12945,7 +12998,19 @@ function makeFabricaNCModule(opts) {
     }
 
     let enviados = 0;
-    if (totalFalta > c.desperdicioOk) {
+    if (esperarPeloArgus) {
+      /* VOLTAR A TEMPO DA JANELA.
+       *
+       * Com passagens de 10 em 10 minutos, a janela dos 5 minutos antes da
+       * chegada escapa-se. Pede-se ao núcleo para acordar o módulo nessa
+       * altura — e outra vez quando ele chegar, para lançar a ordem. */
+      const paraAJanela = Math.max(10, esperarPeloArgus - 300);
+      ctx.voltarEm(paraAJanela);
+
+      rotina(`Fábrica de NC: ${alvo.name} — o Argus chega daqui a `
+        + `${Math.round(esperarPeloArgus / 60)} min. Mando os recursos nos últimos `
+        + `5 min; volto daqui a ${Math.round(paraAJanela / 60)} min.`);
+    } else if (totalFalta > c.desperdicioOk) {
       /* A FATIA DE CADA CIDADE.
        *
        * Pedir a cada uma tudo o que falta faz a primeira dar tudo e as
@@ -13055,7 +13120,19 @@ function makeFabricaNCModule(opts) {
     const popNC = Number(((mUw.GameData.units || {})[NC] || {}).population) || 170;
     cabem = Math.min(cabem, Math.floor((Number(agora.populacao) || 0) / popNC));
 
-    if (cabem < c.minimoPorOrdem) {
+    /* O ARMAZÉM JÁ ESTÁ CHEIO?
+     *
+     * Então não vale a pena esperar: o que entrar a mais perde-se. Faz-se a
+     * ordem com o custo de agora, mesmo sem o desconto do Argus — mais vale
+     * dois colonizadores já do que cinco daqui a duas horas com o armazém a
+     * transbordar entretanto.
+     *
+     * O Argus continua a caminho e apanha a ordem seguinte. */
+    const cheio = RES.every((k) => (Number(agora[k]) || 0) >= (agora.armazem || 0) * 0.95);
+    if (cheio && cabem >= 1 && cabem < c.minimoPorOrdem) {
+      log(`🚢 ${alvo.name}: armazém cheio — faço ${cabem} agora `
+        + `em vez de esperar (${etiqueta}).`);
+    } else if (cabem < c.minimoPorOrdem) {
       rotina(`Fábrica de NC: ${alvo.name} ${etiqueta} — dá para ${cabem}, espero por `
         + `${c.minimoPorOrdem}. Custo aqui: ${RES.map((k) => custo[k]).join('/')}`
         + (enviados ? ` · ${enviados} envio(s) nesta passagem.` : '.'));
@@ -25239,13 +25316,64 @@ function makeMissoesModule(opts) {
       if (pedeRes.total > (num(c.maxRecursosPorMissao, 5000))) {
         return { pode: false, porque: `pede ${pedeRes.total} recursos (máximo ${c.maxRecursosPorMissao})` };
       }
+      /* NÃO É PRECISO TER TUDO DE UMA VEZ.
+       *
+       * A missão dura 24 horas e a entrega é parcial — dá-se o que houver e
+       * completa-se nas passagens seguintes, à medida que a cidade produz.
+       *
+       * Exigir tudo à cabeça recusava missões perfeitamente possíveis. Visto
+       * em jogo: "Erradicação dos pobres: nenhuma variante possível (não
+       * sobra stone depois da reserva)" numa cidade que juntaria a pedra ao
+       * longo do dia.
+       *
+       * Aceita-se se houver alguma coisa para dar agora, e se o que falta for
+       * produzível no tempo da missão. */
       const r = recursosDaCidade(townId);
       const reserva = (Number(c.reservaPct) || 0) / 100 * (r.storage || 0);
+
+      let podeDarAlgo = false;
       for (const k of Object.keys(pedeRes.falta)) {
-        if ((r[k] || 0) - pedeRes.falta[k] < reserva) {
-          return { pode: false, porque: `não sobra ${k} depois da reserva` };
-        }
+        if ((r[k] || 0) - reserva > 0) { podeDarAlgo = true; break; }
       }
+
+      if (!podeDarAlgo) {
+        return { pode: false, porque: 'sem nada acima da reserva para entregar agora' };
+      }
+
+      /* E O QUE FALTA, DÁ TEMPO?
+       *
+       * Aceitar uma missão que nunca se vai completar ocupa a vaga da ilha
+       * até expirar. Compara-se o que falta com o que a cidade produz no
+       * tempo que resta.
+       *
+       * A produção vem do jogo (`getProductionPerHour`), não de uma conta
+       * minha. Sem esse dado, aceita-se — mais vale tentar do que recusar por
+       * não saber. */
+      try {
+        const t = mUw.ITowns.getTown(Number(townId));
+        const porHora = (t && t.getProductionPerHour && t.getProductionPerHour()) || null;
+        const fim = Number((missao.configuration || {}).expires_at)
+          || Number(missao.expires_at) || 0;
+
+        if (porHora && fim) {
+          const horas = Math.max(0, (fim - agoraJogo()) / 3600);
+          for (const k of Object.keys(pedeRes.falta)) {
+            const tem = Math.max(0, (r[k] || 0) - reserva);
+            const emFalta = (pedeRes.falta[k] || 0) - tem;
+            if (emFalta <= 0) continue;
+
+            const prod = Number(porHora[k]) || 0;
+            if (prod * horas < emFalta) {
+              return {
+                pode: false,
+                porque: `faltam ${Math.round(emFalta)} ${k} e só produz `
+                  + `${Math.round(prod * horas)} no tempo da missão`,
+              };
+            }
+          }
+        }
+      } catch (e) {}
+
       return { pode: true, tipo: 'recursos' };
     }
 
