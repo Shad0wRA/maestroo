@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.02.1525
+// @version      2026.09.02.1545
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1095,7 +1095,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.02.1525';
+  const MAESTRO_VERSAO = '2026.09.02.1545';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -14449,6 +14449,44 @@ function makeAlertasModule(opts) {
       if (erro && /administrador|administrator|premium/i.test(String(erro))) {
         marcarSemAdministrador();
         try { mUw.console.log('[ALERTAS] sem Administrador: uso só os dados locais.'); } catch (e) {}
+
+        /* PÔR O MODELO EM DIA E LER.
+         *
+         * Sem Administrador esta via devolve sempre vazio, e os alertas
+         * ficavam a depender de um modelo que não se actualiza — nem sequer
+         * avisavam de ataques reais.
+         *
+         * O `gpAjax` sobre a vista da cidade força o refresco, que é o que o
+         * jogo faz quando abres a cidade. */
+        try {
+          await new Promise((resolve) => {
+            try {
+              mUw.gpAjax.ajaxGet('town_info', 'index',
+                { town_id: Number(townId), nl_init: true }, true, () => resolve());
+            } catch (e2) { resolve(); }
+            setTimeout(resolve, 2500);
+          });
+
+          const mv = mUw.MM.getModels().MovementsUnits || {};
+          const out = [];
+          for (const k of Object.keys(mv)) {
+            const a = mv[k].attributes || {};
+            if (Number(a.target_town_id) !== Number(townId)) continue;
+            if (!a.arrival_at) continue;
+            out.push({
+              command_id: Number(a.id || a.command_id) || 0,
+              arrival_at: Number(a.arrival_at),
+              started_at: Number(a.started_at) || 0,
+              target_town_id: Number(a.target_town_id),
+              home_town_id: Number(a.home_town_id) || 0,
+              type: String(a.type || ''),
+              link_origin: a.link_origin || '',
+              town_name_origin: a.town_name_origin || '',
+            });
+          }
+          return out;
+        } catch (e) { seErroDeCodigo(e, 'Alertas'); }
+
         return [];
       }
       const cmds = ((r && r.json && r.json.data) || {}).commands || [];
@@ -14512,6 +14550,44 @@ function makeAlertasModule(opts) {
       if (erro && /administrador|administrator|premium/i.test(String(erro))) {
         marcarSemAdministrador();
         try { mUw.console.log('[ALERTAS] sem Administrador: uso só os dados locais.'); } catch (e) {}
+
+        /* PÔR O MODELO EM DIA E LER.
+         *
+         * Sem Administrador esta via devolve sempre vazio, e os alertas
+         * ficavam a depender de um modelo que não se actualiza — nem sequer
+         * avisavam de ataques reais.
+         *
+         * O `gpAjax` sobre a vista da cidade força o refresco, que é o que o
+         * jogo faz quando abres a cidade. */
+        try {
+          await new Promise((resolve) => {
+            try {
+              mUw.gpAjax.ajaxGet('town_info', 'index',
+                { town_id: Number(townId), nl_init: true }, true, () => resolve());
+            } catch (e2) { resolve(); }
+            setTimeout(resolve, 2500);
+          });
+
+          const mv = mUw.MM.getModels().MovementsUnits || {};
+          const out = [];
+          for (const k of Object.keys(mv)) {
+            const a = mv[k].attributes || {};
+            if (Number(a.target_town_id) !== Number(townId)) continue;
+            if (!a.arrival_at) continue;
+            out.push({
+              command_id: Number(a.id || a.command_id) || 0,
+              arrival_at: Number(a.arrival_at),
+              started_at: Number(a.started_at) || 0,
+              target_town_id: Number(a.target_town_id),
+              home_town_id: Number(a.home_town_id) || 0,
+              type: String(a.type || ''),
+              link_origin: a.link_origin || '',
+              town_name_origin: a.town_name_origin || '',
+            });
+          }
+          return out;
+        } catch (e) { seErroDeCodigo(e, 'Alertas'); }
+
         return [];
       }
       const cmds = ((r && r.json && r.json.data) || {}).commands || [];
@@ -18169,7 +18245,42 @@ function makeEsquivaModule(opts) {
          *
          * O `gpAjax` sobre a vista da cidade obriga o jogo a refrescar os
          * movimentos — é o mesmo que ele faz quando abres a cidade. */
+        /* ACTUALIZAR **E RELER**.
+         *
+         * Devolver lista vazia depois de refrescar não serve de nada: a
+         * passagem acaba a dizer "nenhum ataque a chegar" e só na seguinte é
+         * que os dados novos seriam usados — se é que chegam.
+         *
+         * Visto em jogo: "1 cidade(s) com ataques que o jogo não trouxe —
+         * pergunto ao servidor" seguido de "nenhum ataque a chegar", em
+         * cada passagem, com um ataque real a caminho.
+         *
+         * Depois de refrescar, lê-se o modelo local e devolve-se o que lá
+         * está. */
         await actualizarMovimentosLocais(townId);
+
+        try {
+          const mv = mUw.MM.getModels().MovementsUnits || {};
+          const out = [];
+          for (const k of Object.keys(mv)) {
+            const a = mv[k].attributes || {};
+            if (Number(a.target_town_id) !== Number(townId)) continue;
+            if (!/attack/i.test(String(a.type || ''))) continue;
+            if (!a.arrival_at) continue;
+            out.push({
+              command_id: Number(a.id || a.command_id) || 0,
+              arrival_at: Number(a.arrival_at),
+              started_at: Number(a.started_at) || 0,
+              target_town_id: Number(a.target_town_id),
+              home_town_id: Number(a.home_town_id) || 0,
+              type: String(a.type || ''),
+              link_origin: a.link_origin || '',
+              town_name_origin: a.town_name_origin || '',
+            });
+          }
+          return out;
+        } catch (e) { seErroDeCodigo(e, 'Esquiva'); }
+
         return [];
       }
       const cmds = ((r && r.json && r.json.data) || {}).commands || [];
@@ -18316,7 +18427,42 @@ function makeEsquivaModule(opts) {
          *
          * O `gpAjax` sobre a vista da cidade obriga o jogo a refrescar os
          * movimentos — é o mesmo que ele faz quando abres a cidade. */
+        /* ACTUALIZAR **E RELER**.
+         *
+         * Devolver lista vazia depois de refrescar não serve de nada: a
+         * passagem acaba a dizer "nenhum ataque a chegar" e só na seguinte é
+         * que os dados novos seriam usados — se é que chegam.
+         *
+         * Visto em jogo: "1 cidade(s) com ataques que o jogo não trouxe —
+         * pergunto ao servidor" seguido de "nenhum ataque a chegar", em
+         * cada passagem, com um ataque real a caminho.
+         *
+         * Depois de refrescar, lê-se o modelo local e devolve-se o que lá
+         * está. */
         await actualizarMovimentosLocais(townId);
+
+        try {
+          const mv = mUw.MM.getModels().MovementsUnits || {};
+          const out = [];
+          for (const k of Object.keys(mv)) {
+            const a = mv[k].attributes || {};
+            if (Number(a.target_town_id) !== Number(townId)) continue;
+            if (!/attack/i.test(String(a.type || ''))) continue;
+            if (!a.arrival_at) continue;
+            out.push({
+              command_id: Number(a.id || a.command_id) || 0,
+              arrival_at: Number(a.arrival_at),
+              started_at: Number(a.started_at) || 0,
+              target_town_id: Number(a.target_town_id),
+              home_town_id: Number(a.home_town_id) || 0,
+              type: String(a.type || ''),
+              link_origin: a.link_origin || '',
+              town_name_origin: a.town_name_origin || '',
+            });
+          }
+          return out;
+        } catch (e) { seErroDeCodigo(e, 'Esquiva'); }
+
         return [];
       }
       const cmds = ((r && r.json && r.json.data) || {}).commands || [];
