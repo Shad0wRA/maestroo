@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.02.1905
+// @version      2026.09.02.1915
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1102,7 +1102,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.02.1905';
+  const MAESTRO_VERSAO = '2026.09.02.1915';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -13184,9 +13184,14 @@ function makeFabricaNCModule(opts) {
       log(`🚢 ${alvo.name}: armazém cheio — faço ${cabem} agora `
         + `em vez de esperar (${etiqueta}).`);
     } else if (cabem < c.minimoPorOrdem) {
-      rotina(`Fábrica de NC: ${alvo.name} ${etiqueta} — dá para ${cabem}, espero por `
-        + `${c.minimoPorOrdem}. Custo aqui: ${RES.map((k) => custo[k]).join('/')}`
-        + (enviados ? ` · ${enviados} envio(s) nesta passagem.` : '.'));
+      /* Quando já se disse que se está à espera do Argus, não vale a pena
+       * repetir que não dá para fazer nada — é a mesma informação duas
+       * vezes. */
+      if (!esperarPeloArgus) {
+        rotina(`Fábrica de NC: ${alvo.name} ${etiqueta} — dá para ${cabem}, espero por `
+          + `${c.minimoPorOrdem}. Custo aqui: ${RES.map((k) => custo[k]).join('/')}`
+          + (enviados ? ` · ${enviados} envio(s) nesta passagem.` : '.'));
+      }
       return;
     }
 
