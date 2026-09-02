@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.02.2130
+// @version      2026.09.02.2145
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1102,7 +1102,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.02.2130';
+  const MAESTRO_VERSAO = '2026.09.02.2145';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -4633,7 +4633,15 @@ function makeConstrucaoModule(opts) {
     } catch (e) { return {}; }
   }
   function saveTemplatesLocal(tpls) {
-    try { armazem.setItem(CACHE_KEY, JSON.stringify(tpls)); } catch (e) {}
+    try {
+      /* Endireitar ANTES de gravar.
+       *
+       * Endireitar só na leitura não chega: o painel tem os blocos em memória
+       * desde que foi desenhado, e ao guardar escreve-os de volta estragados.
+       * O aninhamento sobrevivia a tudo. */
+      for (const k of Object.keys(tpls || {})) endireitarBlocos(tpls[k]);
+      armazem.setItem(CACHE_KEY, JSON.stringify(tpls));
+    } catch (e) {}
   }
   // Lê os templates do Gist (partilhado). Se falhar, usa a cache local.
   async function readTemplatesGist() {
@@ -4665,6 +4673,9 @@ function makeConstrucaoModule(opts) {
   const travaoGist = { aEsperar: false, pendente: null };
 
   async function writeTemplatesGist(tpls) {
+    /* Endireitar antes de publicar, senão o estrago viaja para as outras
+     * contas. */
+    try { for (const k of Object.keys(tpls || {})) endireitarBlocos(tpls[k]); } catch (e) {}
     saveTemplatesLocal(tpls);   // o local grava SEMPRE, mesmo quando o Gist trava
 
     /* TRAVÃO: o GitHub limita as escritas por hora e várias gravações seguidas
@@ -5890,6 +5901,10 @@ function makeConstrucaoModule(opts) {
 
     const guardar = container.querySelector('#con-guardar');
     if (guardar) guardar.onclick = async () => {
+      /* O que está em memória pode vir estragado de uma versão antiga. */
+      try { for (const k of Object.keys(templatesEdicao || {})) endireitarBlocos(templatesEdicao[k]); }
+      catch (e) {}
+
       /* OS TEMPLATES MUDARAM DEBAIXO DOS PÉS?
        *
        * Se importaste definições com este painel aberto, o que está no ecrã
