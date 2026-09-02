@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.02.2320
+// @version      2026.09.03.0040
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1102,7 +1102,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.02.2320';
+  const MAESTRO_VERSAO = '2026.09.03.0040';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -19855,6 +19855,12 @@ function makeEsquivaModule(opts) {
     const enviados = [];
     let todosMeus = [];
     for (const cmd of comandos) {
+      /* Guardar PARA ONDE foi, para reconhecer o regresso.
+       *
+       * Sem isto, o reconhecimento aceitava qualquer apoio a chegar — e numa
+       * cidade que é depósito de colonizadores chegam dezenas por hora. */
+      try { plano.destino = Number(esc.destino.id); } catch (e) {}
+
       let r = await enviarApoio(plano.townId, esc.destino.id, cmd.carga);
 
       /* SE O SERVIDOR RECUSAR, INSISTIR COM MENOS ATÉ PASSAR.
@@ -20043,13 +20049,30 @@ function makeEsquivaModule(opts) {
         volta = movs.find((a) => todosMeus.indexOf(Number(a.command_id)) >= 0);
         if (volta) break;
 
-        // 2º: um apoio a VOLTAR para esta cidade
+        /* 2º: um apoio a VOLTAR para esta cidade — mas VINDO DO SÍTIO PARA
+         * ONDE A MANDÁMOS.
+         *
+         * Antes bastava ser um apoio a chegar dentro de 5 minutos da hora
+         * prevista. Numa cidade que é depósito de colonizadores chegam
+         * dezenas de apoios por hora, e apanhava-se o errado.
+         *
+         * Visto em jogo: duas esquivas diferentes a reportarem exactamente a
+         * mesma hora de regresso — impossível, e sinal de que era um apoio de
+         * outra conta.
+         *
+         * Agora exige-se que venha da cidade de destino e que chegue dentro
+         * de 60 segundos do previsto. */
         volta = movs.find((a) => {
           if (Number(a.target_town_id) !== Number(plano.townId)) return false;
           if (!/support|regress|return/i.test(String(a.type || '') + String(a.command_name || ''))) return false;
+
+          /* Veio de onde a mandámos? */
+          const daOndeFoi = plano.destino
+            && Number(a.home_town_id) === Number(plano.destino);
+          if (plano.destino && !daOndeFoi) return false;
+
           const chega = Number(a.arrival_at) || 0;
-          // só o que chega perto da hora prevista
-          return chega > 0 && Math.abs(chega - plano.casa) < 300;
+          return chega > 0 && Math.abs(chega - plano.casa) < 60;
         });
       }
 
