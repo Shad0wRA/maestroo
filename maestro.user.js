@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.02.1935
+// @version      2026.09.02.1950
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1102,7 +1102,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.02.1935';
+  const MAESTRO_VERSAO = '2026.09.02.1950';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -8860,7 +8860,9 @@ function makeRecrutamentoModule(opts) {
            * Sem isto não se distingue "avaliei e não havia nada a fazer" de
            * "nem cheguei a olhar para ela" — e foi exactamente essa dúvida
            * que nos custou meia hora com a 55.17. */
-          rotina(`${town.name}: avaliada, sem ordens (template ${tplNome}).`);
+          /* Uma linha por cidade em cada passagem são ~40 linhas de 20 em 20
+           * minutos. Só se regista quando há alguma coisa a explicar — o
+           * diagnóstico abaixo trata disso. */
 
           const linhas = [];
           for (const uid of Object.keys(alvos)) {
@@ -12546,7 +12548,14 @@ function makeDiariaModule(opts) {
 
     /* JÁ FOI DECIDIDA? */
     if (cx.accepted_at) {
-      rotina('Diária: a de hoje já foi recolhida.');
+      /* De hora a hora a dizer o mesmo enche a caixa. Basta uma vez por dia. */
+      try {
+        const hoje = new Date().toISOString().slice(0, 10);
+        if (armazem.getItem('grepoDiaria_avisado_v1') !== hoje) {
+          armazem.setItem('grepoDiaria_avisado_v1', hoje);
+          rotina('Diária: a de hoje já foi recolhida.');
+        }
+      } catch (e) { rotina('Diária: a de hoje já foi recolhida.'); }
       return;
     }
 
@@ -18257,6 +18266,9 @@ function makeEsquivaModule(opts) {
   /* Marca que o servidor recusou pedidos (429) nesta passagem: sem isto,
    * uma lista vazia é indistinguível de "não há ataques". */
   let limitadoPeloServidor = false;
+  /* Quando se registou pela última vez que não havia nada — para não repetir
+   * a mesma linha de 45 em 45 segundos. */
+  let ultimoNadaRegistado = 0;
 
   const DEFAULTS = {
     ativo: false,             // desligado por omissão: mexe com tropas
@@ -20311,7 +20323,16 @@ function makeEsquivaModule(opts) {
         log('⚠️ Esquiva: o servidor está a limitar pedidos (429) — NÃO consegui ver '
           + 'se há ataques a chegar. Não é o mesmo que não haver nenhum.');
       } else {
+        /* "Nenhum ataque a chegar" de 45 em 45 segundos enche a caixa e apaga
+       * o que interessa — e não diz nada: o normal é não haver ataques.
+       *
+       * Só se regista quando o estado MUDA, ou de meia em meia hora para se
+       * saber que continua vivo. */
+      const agoraS = Math.floor(Date.now() / 1000);
+      if (ultimoNadaRegistado === 0 || (agoraS - ultimoNadaRegistado) > 1800) {
+        ultimoNadaRegistado = agoraS;
         rotina('Esquiva: nenhum ataque a chegar.');
+      }
       }
     } else if (!Object.keys(planos).length) {
       rotina(`Esquiva: ${nAtaques} ataque(s) a chegar, nenhum a esquivar agora.`);
