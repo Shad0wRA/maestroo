@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.02.1915
+// @version      2026.09.02.1935
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1102,7 +1102,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.02.1915';
+  const MAESTRO_VERSAO = '2026.09.02.1935';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -1953,21 +1953,35 @@
          * meio.
          *
          * Vai só o que faz sentido copiar de um mundo para outro. */
-        const NUNCA = [
-          'grepoMaestro_codigo_v1',        // a cache do próprio script
-          'grepoMaestro_codigoVersao_v1',
-          'grepoMaestro_cfgPerfis_v1',     // configurações de todos os perfis
-          'grepoMaestro_caixaNegra_v1',    // registo, não configuração
-          'grepoColonos_ultimaPartilha_v1',
-          'grepoRecruta_expandido_v1',     // calculado, refaz-se sozinho
-          'grepoRecruta_pedidos_v1',
-          'grepoRecruta_excessos_v1',
-          'grepoGruta_conteudo_v1',
-          'grepoEncaixe_falhas_v1',
-          'grepoEsquiva_historico_v1',
-          'grepoEsquiva_desmentidas_v1',
+        /* SÓ CONFIGURAÇÕES E TEMPLATES.
+         *
+         * A lista de exclusões era um jogo de apanhada: aparecia uma chave
+         * nova e passava para o outro mundo sem ninguém dar por isso. Um
+         * encaixe agendado no pt125 não faz sentido nenhum no pt127.
+         *
+         * Inverteu-se: passa o que TERMINA em `_cfg_v1` ou `_templates_v1`,
+         * mais um punhado de chaves nomeadas. Tudo o resto — planos,
+         * históricos, estados, caches — fica onde está. */
+        const ehConfiguracao = /_(cfg|templates)_v\d+$/.test(limpa);
+
+        const TAMBEM = [
+          'grepoRecruta_feiticos_v1',        // que feitiços usar
+          'grepoRecruta_voadores_on_v1',     // voadores ligados
+          'grepoRecruta_voadores_grupo_v1',  // que grupo faz voadores
+          'grepoConstru_demolir_v1',         // regras de demolição
+          'grepoConstru_indemoliveis_v1',
+          'grepoConstru_gratis_v1',
+          'grepoAldeias_trocas_v1',          // regras das trocas com aldeias
+          'grepoAldeias_evo_v1',             // regras da evolução
+          'grepoCultura_reserva_pontos_v1',
+          'grepoMaestro_firebase_v1',        // endereço partilhado
+          'grepoMaestro_gist_v1',            // identificador e chave
+          'grepoMaestro_webhooks_v1',        // avisos
+          'grepoMaestro_autostart_v1',
+          'grepoMaestro_modulos_v1',         // que módulos correm
         ];
-        if (NUNCA.indexOf(limpa) >= 0) continue;
+
+        if (!ehConfiguracao && TAMBEM.indexOf(limpa) < 0) continue;
 
         /* O estado da construção é por MUNDO (`..._pt125`) e não serve
          * noutro. */
