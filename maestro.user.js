@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.04.0015
+// @version      2026.09.04.0130
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1105,7 +1105,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.04.0015';
+  const MAESTRO_VERSAO = '2026.09.04.0130';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -13803,10 +13803,17 @@ function makeFeiticosModule(opts) {
 
   const DEFAULTS = {
     ativo: false,
-    /* Cidades a manter protegidas (identificadores, um por linha).
-     * Podem ser de outras contas — a proteção lança-se em qualquer cidade
-     * que não a tenha. */
+    /* Cidades a manter protegidas. Marcam-se no painel; as de outras contas
+     * põem-se pelo identificador — a proteção lança-se em qualquer cidade que
+     * não a tenha. */
     protegidas: [],
+    /* ATÉ QUANDO CADA UMA FICA NA LISTA: { <cidade>: <hora do jogo> }.
+     *
+     * Uma cidade marcada sai da lista sozinha ao fim de 24 horas. A proteção
+     * serve para uma ameaça concreta; sem prazo, a lista enche-se de cidades
+     * que já ninguém se lembra de ter marcado e o favor de Atena vai todo
+     * para ali. */
+    protegidasAte: {},
     /* Repor quantos segundos antes de expirar. Zero = no instante.
      * Um pouco antes não serve: o jogo recusa enquanto estiver activa. */
     reporApos: 5,
@@ -13833,6 +13840,41 @@ function makeFeiticosModule(opts) {
   }
   function guardarCfg(c) {
     try { armazem.setItem(CFG_KEY, JSON.stringify(c)); } catch (e) {}
+  }
+
+  /* ---- PRAZO DE 24 HORAS NA LISTA ------------------------------------- */
+  const PRAZO_LISTA = 24 * 3600;
+
+  /* Tira da lista as cidades cujas 24 horas acabaram. Devolve as que saíram.
+   *
+   * As cidades que vinham da versão anterior não têm prazo guardado; ganham um
+   * a contar de agora, para não haver duas regras ao mesmo tempo. */
+  function limparExpiradas() {
+    const agora = agoraJogo() || Math.floor(Date.now() / 1000);
+    const guardado = cfg();
+    const ate = Object.assign({}, guardado.protegidasAte || {});
+    const ids = (guardado.protegidas || []).map(Number).filter(Boolean);
+
+    const ficam = [], saiu = [];
+    for (const id of ids) {
+      if (!Number(ate[id])) ate[id] = agora + PRAZO_LISTA;    // vinha da versão antiga
+      if (Number(ate[id]) <= agora) { saiu.push(id); delete ate[id]; }
+      else ficam.push(id);
+    }
+    /* Datas órfãs, de cidades que já não estão na lista. */
+    for (const k2 of Object.keys(ate)) {
+      if (ficam.indexOf(Number(k2)) < 0) delete ate[k2];
+    }
+
+    const mudou = saiu.length
+      || ficam.length !== ids.length
+      || JSON.stringify(ate) !== JSON.stringify(guardado.protegidasAte || {});
+    if (mudou) {
+      guardado.protegidas = ficam;
+      guardado.protegidasAte = ate;
+      guardarCfg(guardado);
+    }
+    return saiu;
   }
   function estado() {
     try { return JSON.parse(armazem.getItem(ESTADO_KEY) || '{}'); } catch (e) { return {}; }
@@ -14101,7 +14143,15 @@ function makeFeiticosModule(opts) {
 
     if (!c.ativo) { rotina('Feitiços: está desligado.'); return; }
 
-    const alvos = (c.protegidas || []).map(Number).filter(Boolean);
+    /* As 24 horas cumpridas tiram a cidade da lista. Corre antes de decidir,
+     * para não gastar favor numa cidade que já saiu. */
+    const saiuDaLista = limparExpiradas();
+    if (saiuDaLista.length) {
+      ctx.log(`Feitiços: ${saiuDaLista.length} cidade(s) saíram da lista `
+        + '(24 horas cumpridas). Marca outra vez se ainda fizer falta.');
+    }
+
+    const alvos = (cfg().protegidas || []).map(Number).filter(Boolean);
     if (!alvos.length) {
       rotina('Feitiços: nenhuma cidade indicada para proteger.');
       return;
@@ -14366,6 +14416,17 @@ function makeFeiticosModule(opts) {
     const est = estado();
     const agora = agoraJogo();
 
+    /* Quanto falta para a cidade sair da lista. */
+    const saiEm = (id) => {
+      const t = Number((c.protegidasAte || {})[id]) || 0;
+      if (!t || !agora) return '';
+      const faltam = t - agora;
+      if (faltam <= 0) return ' · sai na próxima passagem';
+      return faltam >= 3600
+        ? ` · sai daqui a ${Math.round(faltam / 3600)}h`
+        : ` · sai daqui a ${Math.max(1, Math.round(faltam / 60))} min`;
+    };
+
     const linhas = (c.protegidas || []).map((id) => {
       let nome = id;
       try { nome = mUw.ITowns.getTown(Number(id)).getName(); } catch (e) {}
@@ -14373,8 +14434,32 @@ function makeFeiticosModule(opts) {
       const quanto = acaba > agora
         ? `protegida mais ${Math.round((acaba - agora) / 60)} min`
         : 'sem proteção conhecida';
-      return `<div style="font-size:11px;opacity:.8">${esc(String(nome))} — ${quanto}</div>`;
+      return `<div style="font-size:11px;opacity:.8">${esc(String(nome))} — ${quanto}`
+        + `<span style="opacity:.7">${saiEm(id)}</span></div>`;
     }).join('');
+
+    /* AS MINHAS CIDADES, para marcar em vez de escrever identificadores.
+     *
+     * As de OUTRAS contas continuam a pôr-se pelo identificador: a proteção
+     * lança-se em qualquer cidade, e essas não aparecem no `getMyTowns`. */
+    const marcadas = new Set((c.protegidas || []).map(Number));
+    const minhas = (ctx.getMyTowns() || []).slice()
+      .sort((x, y) => String(x.name || '').localeCompare(String(y.name || '')));
+
+    const htmlMinhas = minhas.length
+      ? minhas.map((t) => {
+        const id = Number(t.id);
+        const on = marcadas.has(id);
+        return `<label style="display:block;font-size:11px">`
+          + `<input type="checkbox" class="fei-cid" data-id="${id}"${on ? ' checked' : ''}> `
+          + `${esc(String(t.name || id))}`
+          + `<span style="opacity:.55">${on ? saiEm(id) : ''}</span></label>`;
+      }).join('')
+      : '<div style="opacity:.55;font-size:11px">Não consegui ler as tuas cidades.</div>';
+
+    /* Identificadores marcados que não são cidades minhas. */
+    const idsMinhas = new Set(minhas.map((t) => Number(t.id)));
+    const outras = (c.protegidas || []).map(Number).filter((id) => !idsMinhas.has(id));
 
     const favor = favorDe('athena');
 
@@ -14461,12 +14546,25 @@ function makeFeiticosModule(opts) {
       </div>
 
       <div style="font-size:11px">
-        Cidades a proteger (um identificador por linha)
-        <textarea id="fei-cidades" rows="4" style="width:100%;box-sizing:border-box;font-size:11px"
-          >${esc((c.protegidas || []).join('\\n'))}</textarea>
+        Cidades a proteger — marca as que queres
+        <div style="max-height:150px;overflow:auto;background:#0d141c;padding:4px 6px;border-radius:4px;margin:3px 0">
+          ${htmlMinhas}
+        </div>
+        <label style="display:block;opacity:.8;font-size:10px;margin-bottom:3px">
+          <input type="checkbox" id="fei-renovar"> dar 24 horas novas a todas as marcadas ao guardar
+        </label>
         <div style="opacity:.6;font-size:10px;margin-bottom:5px">
-          Podem ser de outras contas. Vê o identificador no diagnóstico da
-          cidade ou no endereço do jogo.
+          Uma cidade marcada sai da lista sozinha ao fim de 24 horas — a
+          proteção é para uma ameaça concreta, não para sempre. As que já
+          estavam marcadas mantêm o prazo que tinham.
+        </div>
+
+        De outras contas (identificadores, um por linha)
+        <textarea id="fei-outras" rows="2" style="width:100%;box-sizing:border-box;font-size:11px"
+          >${esc(outras.join('\n'))}</textarea>
+        <div style="opacity:.6;font-size:10px;margin-bottom:5px">
+          Vê o identificador no diagnóstico da cidade ou no endereço do jogo.
+          Contam as mesmas 24 horas.
         </div>
 
         Guardar <input type="number" id="fei-reserva" value="${c.favorMinimo}" min="0" step="10" style="width:60px">
@@ -14506,8 +14604,33 @@ function makeFeiticosModule(opts) {
     container.querySelector('#fei-guardar').onclick = () => {
       const cc = cfg();
       cc.ativo = container.querySelector('#fei-on').checked;
-      cc.protegidas = String(container.querySelector('#fei-cidades').value || '')
-        .split(/[\n,;]+/).map((x) => Number(String(x).trim())).filter(Boolean);
+      /* As marcadas, mais os identificadores de outras contas. */
+      const antes = new Set((cc.protegidas || []).map(Number));
+      const ateAntes = cc.protegidasAte || {};
+      const escolhidas = [];
+      container.querySelectorAll('.fei-cid').forEach((el) => {
+        if (el.checked) escolhidas.push(Number(el.getAttribute('data-id')));
+      });
+      String((container.querySelector('#fei-outras') || {}).value || '')
+        .split(/[\n,;]+/).map((x) => Number(String(x).trim())).filter(Boolean)
+        .forEach((id) => { if (escolhidas.indexOf(id) < 0) escolhidas.push(id); });
+
+      /* O PRAZO SÓ ARRANCA QUANDO SE MARCA.
+       *
+       * Uma cidade que já estava na lista mantém o prazo que tinha — senão
+       * guardar o painel por outra razão qualquer renovava tudo sem se
+       * querer. Para dar 24 horas novas há a caixa de renovar. */
+      const agoraG = agoraJogo() || Math.floor(Date.now() / 1000);
+      const renovar = !!(container.querySelector('#fei-renovar')
+        && container.querySelector('#fei-renovar').checked);
+      const ateNovo = {};
+      for (const id of escolhidas) {
+        ateNovo[id] = (!renovar && antes.has(id) && Number(ateAntes[id]))
+          ? Number(ateAntes[id])
+          : (agoraG + 24 * 3600);
+      }
+      cc.protegidas = escolhidas;
+      cc.protegidasAte = ateNovo;
       cc.favorMinimo = Math.max(0, Number(container.querySelector('#fei-reserva').value) || 0);
       cc.tempestades = container.querySelector('#fei-temp').checked;
       cc.maxTempestades = Math.max(1, Number(container.querySelector('#fei-maxtemp').value) || 3);
