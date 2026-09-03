@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.03.2215
+// @version      2026.09.03.2330
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -19657,6 +19657,54 @@ function makeEsquivaModule(opts) {
     } catch (e) { return new Set(); }
   }
 
+  /* AS CIDADES DO GRUPO, publicadas pelo módulo dos colonos.
+   *
+   * Na rotação dos colonizadores, quando o objectivo de NCs está atingido,
+   * uma conta da outra equipa ataca a base SÓ COM NAVIOS, para contar os
+   * colonizadores. Nunca traz colonizador e a cidade nunca muda de dono.
+   *
+   * O `ehDaMain` não reconhecia estes ataques: as cidades das outras contas
+   * chamam-se "Panados", "Cidade de Panados 2", e a lista do farm só tem o
+   * prefixo da main. Sem reconhecimento, a vaga seguia o caminho de estranho —
+   * e aí, se o `started_at` não vier (acontece sempre que a página recarrega no
+   * VPS), o `pareceNC` assume colonizador e a esquiva decide FICAR EM CASA para
+   * o matar. A tropa ficava e a limpeza da própria equipa morria contra ela.
+   *
+   * A lista vem do ficheiro `colonos_<mundo>.json`, que cada conta reescreve a
+   * cada passagem. Guarda id e nome porque o id (`home_town_id`) só vem quando
+   * os dados chegam do servidor; do modelo local vem só o nome. */
+  function cidadesDoGrupo() {
+    try {
+      const raw = armazem.getItem('grepoEsquiva_cidadesGrupo_v1');
+      if (!raw) return null;
+      const d = JSON.parse(raw) || {};
+      const ids = new Set((d.ids || []).map(Number));
+      const nomes = new Set((d.nomes || []).map((x) => String(x).trim().toLowerCase()));
+      if (!ids.size && !nomes.size) return null;
+      return { ids, nomes };
+    } catch (e) { return null; }
+  }
+
+  /* Este ataque vem de uma cidade do grupo?
+   *
+   * Não depende do `modoFarm`: é outro esquema (a rotação dos colonizadores) e
+   * pode acontecer numa conta que não tenha o farm de favores ligado.
+   *
+   * NOTA sobre o risco: se um inimigo conquistar uma cidade que está na lista,
+   * um ataque vindo dela é tratado como amigo até a lista ser reescrita. A
+   * conta que perdeu a cidade republica as suas cidades na passagem seguinte
+   * dos colonos, por isso a janela é de 30 minutos no pior caso. É por isso
+   * que estas cidades NÃO se guardam no `aprenderCidadeMain` — ficariam
+   * reconhecidas para sempre. */
+  function ehDoGrupo(ataque) {
+    const g = cidadesDoGrupo();
+    if (!g) return false;
+    if (ataque.origem_town_id && g.ids.has(Number(ataque.origem_town_id))) return true;
+    const nome = String(ataque.town_name_origin || ataque.origem_nome || '').trim().toLowerCase();
+    if (nome && g.nomes.has(nome)) return true;
+    return false;
+  }
+
   function ehDaMain(ataque, cfg) {
     if (!cfg.modoFarm) return false;
     const lista = (cfg.jogadoresFarm || []).map((x) => String(x).trim().toLowerCase());
@@ -21574,10 +21622,19 @@ function makeEsquivaModule(opts) {
 
       // Ataques da main (farm de favores): a cidade TEM de ficar vazia, e a
       // regra do colonizador não se aplica — ele não vem colonizar.
-      const daMain = impactos.every((i) => ehDaMain(i, c));
+      /* Ataques da main (farm de favores) OU do grupo (contagem de NCs na base
+       * da rotação): a cidade TEM de ficar vazia, e a regra do colonizador não
+       * se aplica — nenhum dos dois vem colonizar.
+       *
+       * Exige-se que TODOS os impactos da vaga sejam reconhecidos. Se vier um
+       * ataque de estranho pelo meio, a vaga volta a ser tratada com a regra
+       * do colonizador. */
+      const daMain = impactos.every((i) => ehDaMain(i, c) || ehDoGrupo(i));
       // aprender as cidades de origem da main, para as reconhecer no futuro
-      // mesmo quando só houver dados do modelo local (sem nome)
-      if (daMain) impactos.forEach((i) => aprenderCidadeMain(i.origem_town_id));
+      // mesmo quando só houver dados do modelo local (sem nome).
+      // As do grupo não se aprendem: vêm da lista publicada, que se corrige
+      // sozinha se a cidade mudar de dono.
+      if (daMain) impactos.forEach((i) => { if (ehDaMain(i, c)) aprenderCidadeMain(i.origem_town_id); });
       const temNC = !daMain && impactos.some((i) => i.nc);
       const tempos = calcularTempos(impactos, temNC, c);
       const nome = (cidades.find((x) => x.id === Number(townId)) || {}).name || townId;
@@ -28028,6 +28085,38 @@ function makeColonosModule(opts) {
       colonizadores: totalColonizadores(),
       atualizado: agoraServidor(),
     };
+
+    /* DAR AS CIDADES DO GRUPO À ESQUIVA.
+     *
+     * Quando o objectivo de NCs está atingido, uma conta da outra equipa
+     * ataca a base só com navios para contar os colonizadores. A esquiva tem
+     * de reconhecer esses ataques para esvaziar a cidade em vez de resistir —
+     * senão a defesa mata a limpeza da própria equipa.
+     *
+     * Escreve-se aqui, e não na esquiva, por duas razões: a esquiva corre de
+     * 30 em 30 segundos e não pode andar a ler o Gist, e este módulo já tem o
+     * ficheiro em mão. Vão TODAS as contas do ficheiro (as duas equipas nunca
+     * se atacam a não ser neste esquema).
+     *
+     * Guardam-se ids e nomes: nos ataques recebidos o id da cidade de origem
+     * só vem quando os dados chegam do servidor. */
+    try {
+      const ids = [], nomes = [];
+      for (const conta of Object.keys(todos)) {
+        if (conta === '__comum') continue;
+        const lista = (todos[conta] && todos[conta].cidades) || [];
+        for (const cid of lista) {
+          if (!cid) continue;
+          if (cid.id) ids.push(Number(cid.id));
+          if (cid.nome) nomes.push(String(cid.nome).trim().toLowerCase());
+        }
+      }
+      if (ids.length || nomes.length) {
+        armazem.setItem('grepoEsquiva_cidadesGrupo_v1', JSON.stringify({
+          ids, nomes, quando: agoraServidor(),
+        }));
+      }
+    } catch (e) {}
 
     /* AS BASES E O MODO viajam com a partilha, numa entrada própria.
      *
