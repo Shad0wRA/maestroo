@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.04.0330
+// @version      2026.09.04.0430
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -768,9 +768,11 @@
     } catch (e2) {}
   }
   try { uw.__maestroErrosDeCodigo = () => [...errosJaVistos]; } catch (e) {}
+  /* O sininho, para o módulo da frota o publicar. Cópia: ninguém mexe daqui. */
+  try { uw.__maestroErrosPainel = () => errosGuardados.slice(-15); } catch (e) {}
 
   const WEBHOOKS_KEY = 'grepoMaestro_webhooks_v1';
-  const WEBHOOKS_OMISSAO = { captcha: '', ataque: '', ataqueNC: '' };
+  const WEBHOOKS_OMISSAO = { captcha: '', ataque: '', ataqueNC: '', erro: '' };
 
   /* Canais já preenchidos, pela organização do Discord: um por mundo e por
    * perfil, mais os do captcha. Servem de ponto de partida — o que guardares
@@ -847,6 +849,7 @@
     ataqueNC: 0xd9534f,     // vermelho — colonizador a caminho
     ataque: 0xe8a33d,       // âmbar — ataque normal
     captcha: 0x9b59b6,      // roxo — verificação de bot
+    erro: 0x7d8590,         // cinzento — erro de código do próprio Maestro
     ok: 0x4fc7a1,           // verde — tudo bem
   };
 
@@ -1098,6 +1101,21 @@
   // estado de execução por módulo
   const modState = {}; // id -> { proximaExec: timestamp, ativo: bool, aCorrer: bool }
 
+  /* ESTADO DOS MÓDULOS, para o módulo da frota publicar.
+   * Só de leitura: devolve uma cópia, ninguém mexe no `modState` a partir daqui. */
+  try {
+    uw.__maestroEstadoModulos = () => {
+      const out = {};
+      try {
+        for (const m of MODULES) {
+          const st = modState[m.id] || {};
+          out[m.id] = { nome: m.nome, ativo: !!st.ativo, ultima: st.ultimaExec || 0 };
+        }
+      } catch (e) {}
+      return out;
+    };
+  } catch (e) {}
+
   /* ---- que módulos correm NESTA conta (guardado, por conta) -------------
    * Cada conta (container) tem o seu localStorage, por isso a escolha fica
    * guardada por conta. Há perfis prontos para não teres de configurar
@@ -1105,7 +1123,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.04.0330';
+  const MAESTRO_VERSAO = '2026.09.04.0430';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -2221,6 +2239,7 @@
             else log('core', `⚠️ Módulo "${m.nome}" falhou: ${e.message}`);
           } finally {
             st.aCorrer = false;
+            st.ultimaExec = Date.now();     // para o módulo da frota
             st.proximaExec = Date.now() + (m.intervaloMin * 60 * 1000);
 
             /* O MÓDULO PODE PEDIR PARA VOLTAR MAIS CEDO.
@@ -3155,6 +3174,11 @@
             <input type="text" id="wh-ataquenc" placeholder=""
               style="width:100%;box-sizing:border-box;font-size:10px">
           </label>
+          <label style="font-size:11px">
+            <span class="mEtiq">erro de código do Maestro</span><br>
+            <input type="text" id="wh-erro" placeholder=""
+              style="width:100%;box-sizing:border-box;font-size:10px">
+          </label>
         </div>
         <div style="display:flex;gap:5px;margin-top:6px">
           <button id="wh-guardar" style="flex:1">Guardar</button>
@@ -3769,9 +3793,11 @@
       const cx = document.getElementById('wh-captcha');
       const ca = document.getElementById('wh-ataque');
       const cn = document.getElementById('wh-ataquenc');
+      const ce = document.getElementById('wh-erro');
       if (cx) cx.value = w.captcha || '';
       if (ca) ca.value = w.ataque || '';
       if (cn) cn.value = w.ataqueNC || '';
+      if (ce) ce.value = w.erro || '';
 
       const bg = document.getElementById('wh-guardar');
       if (bg) bg.onclick = () => {
@@ -3779,9 +3805,10 @@
           captcha: (cx && cx.value || '').trim(),
           ataque: (ca && ca.value || '').trim(),
           ataqueNC: (cn && cn.value || '').trim(),
+          erro: (ce && ce.value || '').trim(),
         });
         const n = Object.values(webhooks()).filter(Boolean).length;
-        log('core', `Webhooks guardados (${n} de 3 preenchidos).`);
+        log('core', `Webhooks guardados (${n} de 4 preenchidos).`);
       };
 
       const bt2 = document.getElementById('wh-testar');
@@ -32604,6 +32631,279 @@ function makeRelatoriosModule(opts) {
   };
 }
 
+/* ============================================================================
+ * FROTA — quem está vivo, em que versão, e com que erros
+ *
+ * São 20 contas e dois olhos. Quando um módulo rebenta numa delas, a mensagem
+ * fica no registo e no sininho DESSA conta — e ninguém dá por ela. Foi assim
+ * que o `rotina is not defined` viveu meses no módulo dos deuses.
+ *
+ * Cada conta publica aqui, de 5 em 5 minutos, um sinal de vida no Firebase:
+ * versão, perfil, mundo, quando correu cada módulo, e os erros de código que o
+ * `seErroDeCodigo` apanhou. O painel mostra a frota inteira numa grelha, e os
+ * erros de código vão também para o Discord, uma vez por erro de 6 em 6 horas.
+ *
+ * Só publica: não decide nada nem mexe em nada no jogo.
+ *
+ * Escreve em `frota/<mundo>/<conta>`. Sem Firebase configurado, não faz nada.
+ * ========================================================================== */
+function makeFrotaModule(opts) {
+  opts = opts || {};
+  let mUw = null, mWorld = '';
+
+  /* Erros já anunciados no Discord, para não repetir o mesmo de 5 em 5 min. */
+  const AVISADOS_KEY = 'grepoFrota_avisados_v1';
+  const JANELA_AVISO = 6 * 3600;          // repetir o mesmo erro, no máximo, de 6 em 6 h
+  const SEM_SINAL = 20 * 60;              // a partir daqui a conta está calada
+
+  const armazem = (() => {
+    try {
+      const a = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroArmazem;
+      if (a) return a;
+    } catch (e) {}
+    return localStorage;
+  })();
+
+  const janela = () => (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window);
+
+  function esc(x) {
+    return String(x == null ? '' : x)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function meuNome() {
+    try { return String(mUw.Game.player_name || '') || '?'; } catch (e) { return '?'; }
+  }
+
+  /* O Firebase não aceita `.`, `#`, `$`, `[`, `]` nem `/` num caminho, e os
+   * nomes do jogo podem ter de tudo. Fica só o que é seguro. */
+  function chaveConta(nome) {
+    const s = String(nome || '').replace(/[^A-Za-z0-9 _-]/g, '_').trim();
+    return s.slice(0, 60) || 'sem_nome';
+  }
+
+  function meuPerfil() {
+    try {
+      return String(JSON.parse(localStorage.getItem('grepoMaestro_modulos_v1') || '{}').perfil || '');
+    } catch (e) { return ''; }
+  }
+
+  function haQuanto(segundos) {
+    const d = Math.max(0, Math.floor(Date.now() / 1000) - Number(segundos || 0));
+    if (d < 90) return 'agora';
+    if (d < 3600) return Math.round(d / 60) + ' min';
+    if (d < 86400) return Math.round(d / 3600) + ' h';
+    return Math.round(d / 86400) + ' d';
+  }
+
+  /* ---------------------- o que se publica ------------------------------ */
+
+  function recolher(ctx) {
+    const w = janela();
+
+    const modulos = {};
+    try {
+      const est = (w.__maestroEstadoModulos && w.__maestroEstadoModulos()) || {};
+      for (const id of Object.keys(est)) {
+        modulos[id] = {
+          a: est[id].ativo ? 1 : 0,
+          u: Math.floor((Number(est[id].ultima) || 0) / 1000),
+        };
+      }
+    } catch (e) {}
+
+    let errosCodigo = [];
+    try { errosCodigo = ((w.__maestroErrosDeCodigo && w.__maestroErrosDeCodigo()) || []).slice(-8); }
+    catch (e) {}
+
+    let erros = [];
+    try {
+      erros = ((w.__maestroErrosPainel && w.__maestroErrosPainel()) || [])
+        .slice(-5)
+        .map((x) => String(`[${x.mod}] ${x.msg}`).slice(0, 160));
+    } catch (e) {}
+
+    let captcha = 0;
+    try { captcha = (w.__maestroHaCaptcha && w.__maestroHaCaptcha()) ? 1 : 0; } catch (e) {}
+
+    let cidades = 0;
+    try { cidades = (ctx.getMyTowns() || []).length; } catch (e) {}
+
+    return {
+      conta: meuNome(),
+      perfil: meuPerfil(),
+      mundo: mWorld,
+      versao: String(w.__maestroVersao || '?'),
+      quando: Math.floor(Date.now() / 1000),
+      captcha, cidades, modulos, errosCodigo, erros,
+    };
+  }
+
+  /* ---------------------- avisos no Discord ----------------------------- */
+
+  async function avisarErrosNovos(ctx, estado) {
+    const erros = estado.errosCodigo || [];
+    if (!erros.length || !ctx.avisarDiscord) return;
+
+    let ja = {};
+    try { ja = JSON.parse(armazem.getItem(AVISADOS_KEY) || '{}'); } catch (e) {}
+    const agora = Math.floor(Date.now() / 1000);
+    let mudou = false;
+
+    for (const e of erros) {
+      const chave = String(e).slice(0, 120);
+      if (ja[chave] && (agora - Number(ja[chave])) < JANELA_AVISO) continue;
+      ja[chave] = agora; mudou = true;
+
+      await ctx.avisarDiscord('erro', {
+        titulo: '🐞 Erro de código no Maestro',
+        descricao: '```' + String(e).slice(0, 400) + '```',
+        campos: [
+          { nome: 'Conta', valor: estado.conta },
+          { nome: 'Perfil', valor: estado.perfil || '—' },
+          { nome: 'Versão', valor: estado.versao },
+        ],
+      });
+      await ctx.sleep(ctx.rand(600, 1200));
+    }
+
+    /* Deitar fora os antigos, para a lista não crescer sem fim. */
+    for (const k of Object.keys(ja)) {
+      if (agora - Number(ja[k]) > 7 * 24 * 3600) delete ja[k];
+    }
+    if (mudou) { try { armazem.setItem(AVISADOS_KEY, JSON.stringify(ja)); } catch (e) {} }
+  }
+
+  /* ---------------------- passagem -------------------------------------- */
+
+  async function run(ctx) {
+    mUw = ctx.uw; mWorld = ctx.WORLD;
+    const rotina = ctx.logRotina || ctx.log;
+
+    const w = janela();
+    const fb = w.__maestroFb;
+    let temFb = false;
+    try { temFb = !!(fb && fb.escrever && fb.url && fb.url()); } catch (e) {}
+    if (!temFb) {
+      rotina('Frota: sem Firebase configurado — não publico o sinal de vida.');
+      return;
+    }
+
+    const estado = recolher(ctx);
+    const r = await fb.escrever(`frota/${mWorld}/${chaveConta(estado.conta)}`, estado);
+    if (!r || !r.ok) {
+      rotina(`Frota: não consegui publicar o sinal de vida (${(r && r.msg) || '?'}).`);
+    } else {
+      rotina(`Frota: sinal de vida publicado (versão ${estado.versao}).`);
+    }
+
+    try { await avisarErrosNovos(ctx, estado); } catch (e) { /* nunca travar por causa de um aviso */ }
+  }
+
+  /* ---------------------- painel ---------------------------------------- */
+
+  function painel(container, ctx) {
+    mUw = ctx.uw; mWorld = ctx.WORLD;
+    container.innerHTML = '<div style="font-size:11px;opacity:.7">A ler a frota…</div>';
+    desenhar(container, ctx);
+  }
+
+  async function desenhar(container, ctx) {
+    const w = janela();
+    const fb = w.__maestroFb;
+    const minhaVersao = String(w.__maestroVersao || '?');
+
+    let temFb = false;
+    try { temFb = !!(fb && fb.ler && fb.url && fb.url()); } catch (e) {}
+    if (!temFb) {
+      container.innerHTML = '<div style="font-size:11px;opacity:.7">'
+        + 'Sem Firebase configurado. Põe o endereço da base de dados no painel do núcleo '
+        + 'e cada conta começa a dar sinal de vida.</div>';
+      return;
+    }
+
+    let dados = null;
+    try { dados = await fb.ler(`frota/${mWorld}`); } catch (e) {}
+    const contas = Object.keys(dados || {})
+      .map((k) => (dados || {})[k])
+      .filter((x) => x && x.conta)
+      .sort((a, b) => Number(a.quando || 0) - Number(b.quando || 0));
+
+    if (!contas.length) {
+      container.innerHTML = '<div style="font-size:11px;opacity:.7">'
+        + 'Ainda não há sinais de vida neste mundo. Aparecem na primeira passagem '
+        + 'de cada conta (5 em 5 minutos).</div>'
+        + '<button id="frota-rec" style="cursor:pointer;font-size:10px;margin-top:6px">🔄 actualizar</button>';
+      const b0 = container.querySelector('#frota-rec');
+      if (b0) b0.onclick = () => painel(container, ctx);
+      return;
+    }
+
+    const agora = Math.floor(Date.now() / 1000);
+    const caladas = contas.filter((x) => agora - Number(x.quando || 0) > SEM_SINAL).length;
+    const atrasadas = contas.filter((x) => String(x.versao) !== minhaVersao).length;
+    const comErros = contas.filter((x) => (x.errosCodigo || []).length).length;
+    const comCaptcha = contas.filter((x) => Number(x.captcha)).length;
+
+    const linhas = contas.map((x) => {
+      const mudo = agora - Number(x.quando || 0) > SEM_SINAL;
+      const velha = String(x.versao) !== minhaVersao;
+      const nErros = (x.errosCodigo || []).length;
+      const ultimo = nErros ? String((x.errosCodigo || [])[nErros - 1]) : '';
+
+      return `<tr style="${mudo ? 'opacity:.55' : ''}">
+        <td style="padding:2px 4px">${esc(x.conta)}
+          <span style="opacity:.5;font-size:9px">${esc(x.perfil || '')}</span></td>
+        <td style="padding:2px 4px;color:${velha ? '#e8a33d' : 'inherit'}">${esc(x.versao)}</td>
+        <td style="padding:2px 4px;color:${mudo ? '#f88' : 'inherit'}">${esc(haQuanto(x.quando))}</td>
+        <td style="padding:2px 4px;text-align:center">${Number(x.captcha) ? '🛑' : ''}</td>
+        <td style="padding:2px 4px;text-align:center;color:${nErros ? '#f88' : 'inherit'}">${nErros || ''}</td>
+        <td style="padding:2px 4px;font-size:9px;opacity:.7">${esc(ultimo.slice(0, 70))}</td>
+      </tr>`;
+    }).join('');
+
+    container.innerHTML = `
+      <div style="background:#0d141c;padding:6px 8px;border-radius:4px;margin-bottom:6px;font-size:11px">
+        <b>${contas.length}</b> conta(s) neste mundo ·
+        <span style="color:${caladas ? '#f88' : 'inherit'}">${caladas} calada(s)</span> ·
+        <span style="color:${atrasadas ? '#e8a33d' : 'inherit'}">${atrasadas} noutra versão</span> ·
+        <span style="color:${comErros ? '#f88' : 'inherit'}">${comErros} com erros</span>
+        ${comCaptcha ? ` · <span style="color:#f88">${comCaptcha} com captcha</span>` : ''}
+        <div style="opacity:.6;font-size:10px;margin-top:2px">
+          a minha versão é a ${esc(minhaVersao)} · calada = sem sinal há mais de ${Math.round(SEM_SINAL / 60)} min
+        </div>
+      </div>
+
+      <div style="max-height:260px;overflow:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:10px">
+          <tr style="opacity:.6;text-align:left">
+            <th style="padding:2px 4px">conta</th>
+            <th style="padding:2px 4px">versão</th>
+            <th style="padding:2px 4px">sinal</th>
+            <th style="padding:2px 4px">🛑</th>
+            <th style="padding:2px 4px">erros</th>
+            <th style="padding:2px 4px">último erro</th>
+          </tr>
+          ${linhas}
+        </table>
+      </div>
+
+      <button id="frota-rec" style="cursor:pointer;font-size:10px;margin-top:6px">🔄 actualizar</button>`;
+
+    const b = container.querySelector('#frota-rec');
+    if (b) b.onclick = () => painel(container, ctx);
+  }
+
+  return {
+    id: 'frota',
+    nome: 'Frota',
+    intervaloMin: opts.intervaloMin || 5,
+    autoStart: true,
+    run, painel,
+  };
+}
+
   /* ===================== REGISTO DOS MÓDULOS ==============================
    * ⚠️ Preenche GIST_ID e GIST_TOKEN para partilhar as configurações entre as
    *    contas. Cada módulo escreve no seu próprio ficheiro dentro do Gist.
@@ -32659,6 +32959,7 @@ function makeRelatoriosModule(opts) {
   registerModule(makeFeiticosModule({ intervaloMin: 5 }));
   registerModule(makeFundacaoModule({ intervaloMin: 30 }));
   registerModule(makeRelatoriosModule({ intervaloMin: 60 }));
+  registerModule(makeFrotaModule({ intervaloMin: 5 }));
 
   // (sem módulos registados ainda — adiciona os teus acima desta linha)
 
