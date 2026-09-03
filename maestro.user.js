@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.03.1650
+// @version      2026.09.03.1800
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1102,7 +1102,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.03.1650';
+  const MAESTRO_VERSAO = '2026.09.03.1800';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -12358,6 +12358,22 @@ function makeSentinelasModule(opts) {
     }
 
     const registo = lerRegisto();
+
+    /* PEDIDOS DO PAINEL.
+     *
+     * `reforçar` — envios a mais que pediste para um alvo.
+     * `repor`    — o que esta conta perdeu lá e quer mandar de novo.
+     *
+     * Ambos passam pelas regras normais: reserva, capacidade do mercado,
+     * tropa em casa. Só mudam o QUANTO, não o COMO. */
+    const reforcosPedidos = (() => {
+      try { return JSON.parse(armazem.getItem('grepoApoio_reforcar_v1') || '{}'); }
+      catch (e) { return {}; }
+    })();
+    const reposicoesPedidas = (() => {
+      try { return JSON.parse(armazem.getItem('grepoApoio_repor_v1') || '{}'); }
+      catch (e) { return {}; }
+    })();
     let enviadas = 0;
     let jaLa = 0;
     /* Para o registo dizer onde a coisa pára. */
@@ -12456,6 +12472,22 @@ function makeSentinelasModule(opts) {
     const c = cfg();
     const amigas = aliancasAmigas(c);
     const registo = lerRegisto();
+
+    /* PEDIDOS DO PAINEL.
+     *
+     * `reforçar` — envios a mais que pediste para um alvo.
+     * `repor`    — o que esta conta perdeu lá e quer mandar de novo.
+     *
+     * Ambos passam pelas regras normais: reserva, capacidade do mercado,
+     * tropa em casa. Só mudam o QUANTO, não o COMO. */
+    const reforcosPedidos = (() => {
+      try { return JSON.parse(armazem.getItem('grepoApoio_reforcar_v1') || '{}'); }
+      catch (e) { return {}; }
+    })();
+    const reposicoesPedidas = (() => {
+      try { return JSON.parse(armazem.getItem('grepoApoio_repor_v1') || '{}'); }
+      catch (e) { return {}; }
+    })();
 
     container.innerHTML = `
       <label style="display:block;margin-bottom:4px">
@@ -25037,12 +25069,88 @@ function makeEncaixeModule(opts) {
           return `<div style="border-top:1px solid #223;padding:3px 0">
             <div style="display:flex;justify-content:space-between;align-items:center">
               <b>${icone} ${lim(nomeDe(p.origemId))} → ${lim(nomeAlvo(p))}</b>
-              <a href="#" data-canc="${p.id}" style="color:#f88;text-decoration:none">✕</a>
+              <span style="white-space:nowrap">
+                <a href="#" data-editar="${p.id}" title="mudar a hora ou o tipo"
+                   style="color:#8bf;text-decoration:none;margin-right:6px">editar</a>
+                <a href="#" data-canc="${p.id}" style="color:#f88;text-decoration:none">✕</a>
+              </span>
             </div>
             <div style="opacity:.85">chega <b>${hh(p.chegada)}</b></div>
             <div style="opacity:.9;font-size:10px">${tropas || '<span style="opacity:.5">sem unidades</span>'}</div>
+
+            <div data-edicao="${p.id}" style="display:none;background:#0d141c;padding:5px 6px;border-radius:4px;margin-top:4px">
+              <div style="font-size:10px;opacity:.7;margin-bottom:3px">
+                A hora é a de CHEGADA, no relógio do jogo.
+              </div>
+              <div style="display:flex;gap:4px;align-items:center;flex-wrap:wrap">
+                <input type="text" data-hora="${p.id}" value="${hh(p.chegada)}"
+                  placeholder="hh:mm:ss" style="width:78px;font-size:11px">
+                <select data-tipo="${p.id}" style="font-size:11px">
+                  <option value="attack"${p.tipo === 'attack' ? ' selected' : ''}>⚔ ataque</option>
+                  <option value="support"${p.tipo === 'support' ? ' selected' : ''}>🛡 apoio</option>
+                  <option value="colonize"${p.tipo === 'colonize' ? ' selected' : ''}>🚢 colonização</option>
+                </select>
+                <button data-guardar="${p.id}" style="cursor:pointer;font-size:10px;background:#48d;color:#fff;border:none;border-radius:3px;padding:3px 8px">guardar</button>
+              </div>
+            </div>
           </div>`;
         }).join('');
+        /* ---- EDITAR UM AGENDAMENTO ----
+         *
+         * Mudar a hora de chegada ou o tipo sem ter de apagar e refazer. O
+         * envio é recalculado a partir da viagem que já estava guardada. */
+        cx.querySelectorAll('[data-editar]').forEach((el) => {
+          el.onclick = (ev) => {
+            ev.preventDefault();
+            const id = el.getAttribute('data-editar');
+            const caixa = cx.querySelector(`[data-edicao="${id}"]`);
+            if (caixa) caixa.style.display = caixa.style.display === 'none' ? 'block' : 'none';
+          };
+        });
+
+        cx.querySelectorAll('[data-guardar]').forEach((el) => {
+          el.onclick = () => {
+            const id = el.getAttribute('data-guardar');
+            const campoHora = cx.querySelector(`[data-hora="${id}"]`);
+            const campoTipo = cx.querySelector(`[data-tipo="${id}"]`);
+            if (!campoHora) return;
+
+            const texto = String(campoHora.value || '').trim();
+            const m = texto.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+            if (!m) {
+              diz('A hora tem de ser hh:mm:ss — por exemplo 08:00:00.');
+              return;
+            }
+
+            const planos = lerPlanos();
+            const p = planos.find((x) => String(x.id) === String(id));
+            if (!p) { diz('Esse agendamento já não existe.'); return; }
+
+            /* A HORA É NO RELÓGIO DO JOGO.
+             *
+             * O `desvioFuso` converte para o tempo interno, o mesmo que o
+             * painel usa para mostrar. */
+            const off = desvioFuso();
+            const antiga = new Date((p.chegada + off) * 1000);
+            antiga.setUTCHours(Number(m[1]), Number(m[2]), Number(m[3] || 0), 0);
+            let nova = Math.floor(antiga.getTime() / 1000) - off;
+
+            /* Se ficou no passado, é para amanhã. */
+            if (nova <= agora()) nova += 86400;
+
+            /* A viagem não muda: a hora de envio anda com a de chegada. */
+            const viagem = Number(p.chegada) - Number(p.envio || p.chegada);
+            p.chegada = nova;
+            if (viagem > 0) p.envio = nova - viagem;
+
+            if (campoTipo && campoTipo.value) p.tipo = campoTipo.value;
+
+            gravarPlanos(planos);
+            diz(`Agendamento mudado para ${hh(nova)}.`);
+            if (painelRef) painel(painelRef.container, painelRef.ctx);
+          };
+        });
+
         cx.querySelectorAll('[data-canc]').forEach((el) => {
           el.onclick = (ev) => {
             ev.preventDefault();
@@ -28880,6 +28988,104 @@ function makeApoioModule(opts) {
    * nada — fazia, mas não durava. */
   const NOMES_KEY = 'grepoApoio_nomes_v1';
 
+  /* O QUE ESTA CONTA ENVIOU PARA CADA ALVO.
+   *
+   * Serve para duas coisas: repor o que se perdeu num ataque (compara-se com
+   * o que lá está agora) e saber quanto já foi, para reforçar.
+   *
+   * É por conta: cada uma repõe o que ELA perdeu. */
+  const ENVIADO_KEY = 'grepoApoio_enviado_v1';
+
+  function lerEnviado() {
+    try { return JSON.parse(armazem.getItem(ENVIADO_KEY) || '{}'); } catch (e) { return {}; }
+  }
+  function gravarEnviado(d) {
+    try { armazem.setItem(ENVIADO_KEY, JSON.stringify(d)); } catch (e) {}
+  }
+
+  function anotarEnvio(alvoId, unidades) {
+    try {
+      const d = lerEnviado();
+      const k = String(alvoId);
+      d[k] = d[k] || {};
+      for (const u of Object.keys(unidades || {})) {
+        d[k][u] = (Number(d[k][u]) || 0) + (Number(unidades[u]) || 0);
+      }
+      gravarEnviado(d);
+    } catch (e) {}
+  }
+
+  /* O que esta conta tem AGORA em cada alvo. */
+  function tenhoEm(alvoId) {
+    const out = {};
+    try {
+      const mods = mUw.MM.getModels().Units || {};
+      for (const k of Object.keys(mods)) {
+        const a = mods[k].attributes || {};
+        if (Number(a.current_town_id) !== Number(alvoId)) continue;
+        for (const u of Object.keys(a)) {
+          if (!(mUw.GameData.units || {})[u]) continue;
+          const n = Number(a[u]) || 0;
+          if (n > 0) out[u] = (out[u] || 0) + n;
+        }
+      }
+    } catch (e) {}
+    return out;
+  }
+
+  /* QUANTAS CIDADES CONSIGO AINDA APOIAR.
+   *
+   * Soma a tropa de todas as cidades e divide pelo que cada envio leva,
+   * segundo os padrões do painel. O que manda é a unidade que primeiro
+   * acaba. */
+  function quantasPosso(c) {
+    try {
+      const porEnvio = c.unidades || {};
+      const pedidas = Object.keys(porEnvio).filter((u) => Number(porEnvio[u]) > 0);
+      if (!pedidas.length) return null;
+
+      /* Toda a tropa em casa, somada. */
+      const total = {};
+      for (const id of Object.keys(mUw.ITowns.towns)) {
+        const t = mUw.ITowns.getTown(Number(id));
+        const u = (t && t.units && t.units()) || {};
+        for (const k of Object.keys(u)) {
+          const n = Number(u[k]) || 0;
+          if (n > 0) total[k] = (total[k] || 0) + n;
+        }
+      }
+
+      /* Guardar o que a reserva manda ficar em casa. */
+      const reserva = Number(c.reservaPct) || 0;
+
+      let cabem = Infinity;
+      let limita = '';
+      for (const u of pedidas) {
+        const tem = Math.floor((Number(total[u]) || 0) * (1 - reserva / 100));
+        const n = Math.floor(tem / Number(porEnvio[u]));
+        if (n < cabem) { cabem = n; limita = u; }
+      }
+
+      return {
+        quantas: Number.isFinite(cabem) ? cabem : 0,
+        limita,
+        total,
+      };
+    } catch (e) { return null; }
+  }
+
+  /* Quanto falta para repor o que esta conta perdeu neste alvo. */
+  function faltaRepor(alvoId) {
+    const foi = (lerEnviado()[String(alvoId)]) || {};
+    const ha = tenhoEm(alvoId);
+    const falta = {};
+    for (const u of Object.keys(foi)) {
+      const d = (Number(foi[u]) || 0) - (Number(ha[u]) || 0);
+      if (d > 0) falta[u] = d;
+    }
+    return falta;
+  }
+
   /* Os nomes valem 24 horas. Depois disso perguntam-se outra vez — as
    * cidades mudam de dono e de nome. */
   const VALIDADE_NOMES = 24 * 3600;
@@ -29697,6 +29903,22 @@ function makeApoioModule(opts) {
         }
 
         const r = await enviarApoio(t.id, alvo, cargaFinal);
+
+      /* Guardar o que esta conta mandou — serve para repor o que se perder e
+       * para saber quanto já foi. */
+      if (r.ok) {
+        anotarEnvio(alvo, cargaFinal);
+
+        /* Era um reforço pedido no painel? Desconta-se um. */
+        try {
+          const extra = JSON.parse(armazem.getItem('grepoApoio_reforcar_v1') || '{}');
+          if (Number(extra[alvo]) > 0) {
+            extra[alvo] = Number(extra[alvo]) - 1;
+            if (extra[alvo] <= 0) delete extra[alvo];
+            armazem.setItem('grepoApoio_reforcar_v1', JSON.stringify(extra));
+          }
+        } catch (e) {}
+      }
         if (r.ok) {
           reg[chavePar(t.id, alvo)] = { t: Date.now(), u: cargaFinal };
           gravarRegisto(reg);
@@ -29795,6 +30017,18 @@ function makeApoioModule(opts) {
     const alvos = (lista.alvos || lista.targets || []).map(Number).filter(Boolean);
     const reg = lerRegisto();
 
+    /* ---- QUANTAS CIDADES CONSIGO APOIAR ----
+     *
+     * Soma a tropa toda desta conta e divide pelo que cada envio leva. */
+    const podem = quantasPosso(c);
+    const htmlPodem = podem ? `
+      <div style="background:#0d141c;padding:5px 7px;border-radius:4px;margin-bottom:6px;font-size:11px">
+        Cidades apoiadas: <b>${alvos.length}</b>
+        · esta conta ainda consegue apoiar <b>${podem.quantas}</b>
+        ${podem.limita ? `<span style="opacity:.6">(limitada por ${
+          esc((mUw.GameData.units[podem.limita] || {}).name || podem.limita)})</span>` : ''}
+      </div>` : '';
+
     const linhas = alvos.length ? alvos.map((id) => {
       const info = cacheCidades[id] || { nome: '#' + id, jogador: '…' };
       const t = tropasEnviadasPara(id, reg);
@@ -29803,13 +30037,17 @@ function makeApoioModule(opts) {
         <td style="padding:2px 3px">${esc(info.nome)}</td>
         <td style="padding:2px 3px;opacity:.75">${esc(info.jogador)}</td>
         <td style="padding:2px 3px;opacity:.85">${t.total ? esc(det) + ` <span style="opacity:.6">(${t.cidades} cidade(s))</span>` : '<span style="opacity:.5">nada ainda</span>'}</td>
-        <td style="padding:2px 3px;text-align:right">
-          <button data-remover="${id}" style="cursor:pointer;font-size:10px;background:#733;color:#fdd;border:none;border-radius:3px;padding:2px 6px">retirar</button>
+        <td style="padding:2px 3px;text-align:right;white-space:nowrap">
+          <button data-reforcar="${id}" title="mandar mais envios para este alvo"
+            style="cursor:pointer;font-size:10px;background:#364;color:#dfd;border:none;border-radius:3px;padding:2px 5px">reforçar</button>
+          <button data-repor="${id}" title="repor o que esta conta perdeu aqui"
+            style="cursor:pointer;font-size:10px;background:#446;color:#ddf;border:none;border-radius:3px;padding:2px 5px">repor</button>
+          <button data-remover="${id}" style="cursor:pointer;font-size:10px;background:#733;color:#fdd;border:none;border-radius:3px;padding:2px 5px">retirar</button>
         </td>
       </tr>`;
     }).join('') : '<tr><td colspan="4" style="opacity:.6;padding:4px">Nenhum alvo na lista.</td></tr>';
 
-    container.innerHTML = `
+    container.innerHTML = htmlPodem + `
       <div style="font-size:11px;line-height:1.7">
         <label><input type="checkbox" id="ap-on"${c.ativo ? ' checked' : ''}> <b>Apoio distribuído</b></label><br>
 
@@ -29925,6 +30163,78 @@ function makeApoioModule(opts) {
      * fala com o jogo, não com o GitHub. */
     let paraRemover = new Set();
     let gravarRemocoes = null;
+
+    /* Perguntar um número, com a caixa do jogo se houver. */
+    const pedirNumero = async (texto, omissao) => {
+      try {
+        const v = mUw.prompt(texto, String(omissao));
+        if (v == null) return 0;
+        return Math.max(0, Number(String(v).trim()) || 0);
+      } catch (e) { return 0; }
+    };
+
+    /* ---- REFORÇAR: mais envios para um alvo que já está na lista ---- */
+    container.querySelectorAll('[data-reforcar]').forEach((b) => {
+      b.onclick = async () => {
+        const id = Number(b.getAttribute('data-reforcar'));
+        const info = cacheCidades[id] || { nome: '#' + id };
+        const podem = quantasPosso(c);
+
+        const quantos = await pedirNumero(
+          `Reforçar ${info.nome}\n\n`
+          + (podem ? `Esta conta consegue fazer ${podem.quantas} envio(s) `
+              + `(limitada por ${(mUw.GameData.units[podem.limita] || {}).name || podem.limita}).\n\n` : '')
+          + 'Quantos envios a mais desta conta?', 1);
+
+        if (!(quantos > 0)) return;
+
+        b.disabled = true; b.textContent = '...';
+
+        /* Marca-se e o módulo trata na passagem seguinte — assim usa as
+         * mesmas regras de sempre (reserva, capacidade, tropa em casa). */
+        try {
+          const extra = JSON.parse(armazem.getItem('grepoApoio_reforcar_v1') || '{}');
+          extra[id] = (Number(extra[id]) || 0) + Number(quantos);
+          armazem.setItem('grepoApoio_reforcar_v1', JSON.stringify(extra));
+          ctx.log(`Apoio: ${info.nome} vai receber mais ${quantos} envio(s) desta conta.`);
+        } catch (e) {}
+
+        b.disabled = false; b.textContent = 'reforçar';
+      };
+    });
+
+    /* ---- REPOR: o que ESTA conta perdeu neste alvo ---- */
+    container.querySelectorAll('[data-repor]').forEach((b) => {
+      b.onclick = async () => {
+        const id = Number(b.getAttribute('data-repor'));
+        const info = cacheCidades[id] || { nome: '#' + id };
+
+        const falta = faltaRepor(id);
+        const nomes = Object.keys(falta);
+
+        if (!nomes.length) {
+          ctx.log(`Apoio: ${info.nome} não perdeu nada do que esta conta enviou.`);
+          return;
+        }
+
+        const lista = nomes
+          .map((u) => `${falta[u]} ${(mUw.GameData.units[u] || {}).name || u}`)
+          .join(', ');
+
+        if (!await perguntar(`Repor em ${info.nome}?\n\n`
+          + `Esta conta enviou mais do que lá está agora — falta: ${lista}.\n\n`
+          + 'Vou mandar essa diferença das cidades que tiverem tropa.')) return;
+
+        b.disabled = true; b.textContent = '...';
+        try {
+          armazem.setItem('grepoApoio_repor_v1', JSON.stringify(
+            Object.assign(JSON.parse(armazem.getItem('grepoApoio_repor_v1') || '{}'),
+              { [id]: falta })));
+          ctx.log(`Apoio: ${info.nome} — vou repor ${lista}.`);
+        } catch (e) {}
+        b.disabled = false; b.textContent = 'repor';
+      };
+    });
 
     container.querySelectorAll('[data-remover]').forEach((b) => {
       b.onclick = async () => {
