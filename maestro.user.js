@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.03.2035
+// @version      2026.09.03.2215
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1105,7 +1105,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.03.2035';
+  const MAESTRO_VERSAO = '2026.09.03.2215';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -12526,21 +12526,6 @@ function makeSentinelasModule(opts) {
 
     const registo = lerRegisto();
 
-    /* PEDIDOS DO PAINEL.
-     *
-     * `reforçar` — envios a mais que pediste para um alvo.
-     * `repor`    — o que esta conta perdeu lá e quer mandar de novo.
-     *
-     * Ambos passam pelas regras normais: reserva, capacidade do mercado,
-     * tropa em casa. Só mudam o QUANTO, não o COMO. */
-    const reforcosPedidos = (() => {
-      try { return JSON.parse(armazem.getItem('grepoApoio_reforcar_v1') || '{}'); }
-      catch (e) { return {}; }
-    })();
-    const reposicoesPedidas = (() => {
-      try { return JSON.parse(armazem.getItem('grepoApoio_repor_v1') || '{}'); }
-      catch (e) { return {}; }
-    })();
     let enviadas = 0;
     let jaLa = 0;
     /* Para o registo dizer onde a coisa pára. */
@@ -12640,17 +12625,9 @@ function makeSentinelasModule(opts) {
     const amigas = aliancasAmigas(c);
     const registo = lerRegisto();
 
-    /* ============ TRANSPORTES A MAIS VOLTAM SOZINHOS ==================
-     *
-     * Quando parte da tropa morre num ataque, os transportes que a levaram
-     * ficam lá sem carga — e fazem falta em casa para outros apoios.
-     *
-     * Não é preciso pedir: assim que se vê que sobram, voltam.
-     *
-     * Com 120 de população e transportes de 16 foram 8; se ficarem 80,
-     * bastam 5 e três voltam já. */
-    
 
+
+    
     /* PEDIDOS DO PAINEL.
      *
      * `reforçar` — envios a mais que pediste para um alvo.
@@ -17762,7 +17739,26 @@ function makeDeusesModule(opts) {
      * os pesos. Não precisa de ilha de farm nem do limite de favor: o critério
      * é só a distribuição. */
     if (c.perfil === PERFIS.MAIN) {
-      await equilibrarPorPesos(ctx, c, towns);
+      /* O EQUILÍBRIO NÃO PRECISA DE CORRER TÃO DEPRESSA.
+       *
+       * O módulo passou a correr de 5 em 5 minutos para o farm de favores
+       * apanhar as cidades assim que elas têm tropa. Mas o equilíbrio troca
+       * deuses, e trocar de deus PERDE o favor acumulado — não é coisa para
+       * se fazer três vezes mais vezes.
+       *
+       * Fica de 15 em 15 minutos, como era. */
+      const ULTIMO_EQ = 'grepoDeuses_ultimoEquilibrio_v1';
+      const agoraEq = Math.floor(Date.now() / 1000);
+      const antesEq = Number(armazem.getItem(ULTIMO_EQ)) || 0;
+
+      if (agoraEq - antesEq < 15 * 60) {
+        rotina('Deuses: equilíbrio já foi há pouco; nesta passagem só o farm.');
+      } else {
+        armazem.setItem(ULTIMO_EQ, String(agoraEq));
+        await equilibrarPorPesos(ctx, c, towns);
+      }
+
+      /* O farm corre SEMPRE — é para isso que a passagem é de 5 em 5. */
       if (Object.keys(c.cidadesFarm || {}).length) await farmarFavor(ctx, c, towns);
 
     /* ============ PEDIDOS URGENTES DE FAVOR ===========================
@@ -27473,10 +27469,20 @@ function makeMissoesModule(opts) {
              * Agora só se diz isso quando há mesmo um tempo a decorrer. O
              * resto é dito como é: não sei o que falta. */
             const acaba = Number(conf.expires_at) || Number(m.expires_at) || 0;
-            const comeca = Number(conf.starts_at) || Number(m.created_at) || 0;
-            const temTempo = Number(conf.duration) || Number(conf.wait_until) || 0;
 
-            if (temTempo) return `${nome}: à espera do tempo passar`;
+            /* O CAMPO CHAMA-SE `time_to_wait`.
+             *
+             * Visto em jogo: "Uma questão de matemática" com
+             * `time_to_wait: 43200` — doze horas. É mesmo só esperar, e o
+             * diagnóstico dizia "NÃO SEI o que falta" porque eu procurava
+             * `duration` e `wait_until`, que não existem. */
+            const temTempo = Number(conf.time_to_wait)
+              || Number(conf.duration) || Number(conf.wait_until) || 0;
+
+            if (temTempo) {
+              const horas = Math.round(temTempo / 3600);
+              return `${nome}: à espera do tempo passar (${horas} h)`;
+            }
 
             const faltam = acaba ? Math.round((acaba - agoraJogo()) / 3600) : null;
             return `${nome}: NÃO SEI o que falta`
@@ -28972,6 +28978,73 @@ function makeApoioModule(opts) {
    * e a primeira escrita passa a lista para lá. Não é preciso fazer nada. */
   const fbCaminhoApoio = () => `apoio/${mWorld}`;
 
+  /* PEDIDOS QUE VIAJAM ENTRE CONTAS.
+   *
+   * O pedido é feito UMA VEZ na principal e todas as contas o vêem. Mas cada
+   * uma calcula o que lhe toca:
+   *   • repor    — cada conta repõe o que ELA perdeu naquela cidade
+   *   • reforçar — cada conta faz os envios a mais que conseguir
+   *
+   * Guarda-se a hora: um pedido velho deixa de valer, senão as contas que
+   * arrancassem dali a uma semana fariam tudo outra vez. */
+  const fbCaminhoPedidos = () => `apoioPedidos/${mWorld}`;
+  const VALIDADE_PEDIDO = 6 * 3600;   // 6 horas
+
+  async function publicarPedido(tipo, alvoId, quanto) {
+    try {
+      if (typeof fbEscreverM !== 'function' || !fbUrlM || !fbUrlM()) return false;
+
+      const atuais = (await fbLerM(fbCaminhoPedidos())) || {};
+      const k = `${tipo}_${alvoId}`;
+      atuais[k] = {
+        tipo, alvo: Number(alvoId),
+        quanto: Number(quanto) || 1,
+        quando: Math.floor(Date.now() / 1000),
+      };
+      await fbEscreverM(fbCaminhoPedidos(), atuais);
+      return true;
+    } catch (e) { return false; }
+  }
+
+  /* Os pedidos que esta conta ainda não atendeu. */
+  async function pedidosPorAtender() {
+    try {
+      if (typeof fbLerM !== 'function' || !fbUrlM || !fbUrlM()) return [];
+
+      const todos = (await fbLerM(fbCaminhoPedidos())) || {};
+      const feitos = (() => {
+        try { return JSON.parse(armazem.getItem('grepoApoio_pedidosFeitos_v1') || '{}'); }
+        catch (e) { return {}; }
+      })();
+
+      const agora = Math.floor(Date.now() / 1000);
+      const out = [];
+
+      for (const k of Object.keys(todos)) {
+        const p = todos[k];
+        if (!p || !p.quando) continue;
+        if (agora - Number(p.quando) > VALIDADE_PEDIDO) continue;   // velho
+        if (feitos[k]) continue;                                    // já tratado aqui
+        out.push(Object.assign({ chave: k }, p));
+      }
+      return out;
+    } catch (e) { return []; }
+  }
+
+  function marcarPedidoFeito(chave) {
+    try {
+      const f = JSON.parse(armazem.getItem('grepoApoio_pedidosFeitos_v1') || '{}');
+      f[chave] = Math.floor(Date.now() / 1000);
+
+      /* Limpar os antigos. */
+      const agora = Math.floor(Date.now() / 1000);
+      for (const k of Object.keys(f)) {
+        if (agora - Number(f[k]) > 2 * VALIDADE_PEDIDO) delete f[k];
+      }
+      armazem.setItem('grepoApoio_pedidosFeitos_v1', JSON.stringify(f));
+    } catch (e) {}
+  }
+
   /* JÁ MIGRÁMOS PARA O FIREBASE?
    *
    * Depois da primeira escrita, o Firebase é a fonte — mesmo que a lista
@@ -29969,6 +30042,46 @@ function makeApoioModule(opts) {
 
     if (!c.ativo) { log('Apoio: está DESLIGADO (liga a caixa no painel e guarda).'); return; }
 
+    /* ============ PEDIDOS VINDOS DA CONTA PRINCIPAL ===================
+     *
+     * O pedido é feito uma vez no painel da principal e chega a todas as
+     * contas pelo Firebase. Mas cada uma calcula o que lhe toca: repõe o que
+     * ELA perdeu, e reforça com a tropa que ELA tem.
+     *
+     * Um pedido vale 6 horas — passado isso deixa de contar, senão uma conta
+     * que arrancasse dias depois faria tudo outra vez.
+     * ================================================================== */
+    try {
+      const pedidos = await pedidosPorAtender();
+
+      for (const p of pedidos) {
+        if (p.tipo === 'repor') {
+          const falta = faltaRepor(p.alvo);
+          if (Object.keys(falta).length) {
+            const r = JSON.parse(armazem.getItem('grepoApoio_repor_v1') || '{}');
+            r[p.alvo] = falta;
+            armazem.setItem('grepoApoio_repor_v1', JSON.stringify(r));
+
+            const lista = Object.keys(falta)
+              .map((u) => `${falta[u]} ${(mUw.GameData.units[u] || {}).name || u}`).join(', ');
+            log(`🔁 Pedido da principal: reponho ${lista} em ${p.alvo}.`);
+          } else {
+            rotina(`Apoio: pediram para repor em ${p.alvo}, mas esta conta não perdeu nada lá.`);
+          }
+        } else if (p.tipo === 'reforcar') {
+          const extra = JSON.parse(armazem.getItem('grepoApoio_reforcar_v1') || '{}');
+          extra[p.alvo] = (Number(extra[p.alvo]) || 0) + (Number(p.quanto) || 1);
+          armazem.setItem('grepoApoio_reforcar_v1', JSON.stringify(extra));
+          log(`🔁 Pedido da principal: mais ${p.quanto} envio(s) para ${p.alvo}.`);
+        }
+
+        marcarPedidoFeito(p.chave);
+      }
+    } catch (e) { seErroDeCodigo(e, 'Apoio'); }
+
+
+
+
     /* Aprender nomes e donos da tropa que já está estacionada — de graça, e
      * a cada passagem. Assim o painel enche-se sozinho, sem ter de carregar
      * em "obter nomes". */
@@ -30022,6 +30135,37 @@ function makeApoioModule(opts) {
 
 
     const alvos = (lista.alvos || lista.targets || []).map(Number).filter(Boolean);
+
+    /* ============ TRANSPORTES A MAIS VOLTAM SOZINHOS ==================
+     *
+     * Quando parte da tropa morre num ataque, os transportes que a levaram
+     * ficam lá sem carga — e fazem falta em casa para outros apoios.
+     *
+     * Não é preciso pedir: assim que se vê que sobram, voltam.
+     *
+     * Com 120 de população e transportes de 16 foram 8; se ficarem 80,
+     * bastam 5 e três voltam já — deixando sempre os que a tropa restante
+     * precisa para poder regressar.
+     *
+     * Usa o `send_back_part`, que devolve só o que se indicar. */
+    try {
+      for (const alvoT of alvos) {
+        const sobram = transportesASobrar(alvoT);
+        if (sobram < 1) continue;
+
+        const meu = meuApoioEm(alvoT);
+        if (!meu || !meu.unitsId) continue;
+
+        const rv = await mandarDeVolta(meu.unitsId, meu.de, { small_transporter: sobram });
+        if (rv.ok) {
+          const inf = cacheCidades[alvoT] || { nome: '#' + alvoT };
+          log(`🚤 ${inf.nome}: ${sobram} transporte(s) a mais voltaram para casa.`);
+        } else {
+          rotina(`Apoio: não consegui trazer os transportes de ${alvoT} — ${rv.msg}`);
+        }
+        await ctx.sleep(ctx.rand(700, 1400));
+      }
+    } catch (e) { seErroDeCodigo(e, 'Apoio'); }
 
     /* ============ TRANSPORTES A MAIS VOLTAM SOZINHOS ==================
      *
@@ -30526,13 +30670,16 @@ function makeApoioModule(opts) {
 
         b.disabled = true; b.textContent = '...';
 
-        /* Marca-se e o módulo trata na passagem seguinte — assim usa as
-         * mesmas regras de sempre (reserva, capacidade, tropa em casa). */
+        /* O pedido viaja para as outras contas; cada uma faz o que
+         * conseguir com a tropa que tem. */
         try {
           const extra = JSON.parse(armazem.getItem('grepoApoio_reforcar_v1') || '{}');
           extra[id] = (Number(extra[id]) || 0) + Number(quantos);
           armazem.setItem('grepoApoio_reforcar_v1', JSON.stringify(extra));
-          ctx.log(`Apoio: ${info.nome} vai receber mais ${quantos} envio(s) desta conta.`);
+
+          const foi = await publicarPedido('reforcar', id, quantos);
+          ctx.log(`Apoio: ${info.nome} vai receber mais ${quantos} envio(s)`
+            + (foi ? ' de CADA conta.' : ' desta conta (não consegui avisar as outras).'));
         } catch (e) {}
 
         b.disabled = false; b.textContent = 'reforçar';
@@ -30566,7 +30713,11 @@ function makeApoioModule(opts) {
           armazem.setItem('grepoApoio_repor_v1', JSON.stringify(
             Object.assign(JSON.parse(armazem.getItem('grepoApoio_repor_v1') || '{}'),
               { [id]: falta })));
-          ctx.log(`Apoio: ${info.nome} — vou repor ${lista}.`);
+
+          /* O pedido viaja; cada conta repõe o que ELA perdeu ali. */
+          const foi = await publicarPedido('repor', id, 1);
+          ctx.log(`Apoio: ${info.nome} — vou repor ${lista}`
+            + (foi ? ', e as outras contas repõem o que perderam.' : '.'));
         } catch (e) {}
         b.disabled = false; b.textContent = 'repor';
       };
@@ -32199,7 +32350,7 @@ function makeRelatoriosModule(opts) {
   registerModule(makeAldeiasModule({ intervaloMin: 10 }));
   registerModule(makeCulturaModule({ intervaloMin: 30 }));
   registerModule(makeAlertasModule({ intervaloMin: 1 }));
-  registerModule(makeDeusesModule({ intervaloMin: 15, gistId: GIST_ID, gistToken: GIST_TOKEN }));
+  registerModule(makeDeusesModule({ intervaloMin: 5, gistId: GIST_ID, gistToken: GIST_TOKEN }));
   registerModule(makeEsquivaModule({ intervaloMin: 0.5 }));
   registerModule(makeMissoesModule({ intervaloMin: 60 }));
   registerModule(makeColonosModule({ intervaloMin: 30, gistId: GIST_ID, gistToken: GIST_TOKEN }));
