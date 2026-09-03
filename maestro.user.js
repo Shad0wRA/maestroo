@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.04.0130
+// @version      2026.09.04.0330
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1105,7 +1105,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.04.0130';
+  const MAESTRO_VERSAO = '2026.09.04.0330';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -4669,7 +4669,7 @@ function makeConstrucaoModule(opts) {
       let __txt = file.content;
       if ((!__txt || file.truncated) && file.raw_url) {
         try {
-          const __rr = await (mUw || uw).fetch(file.raw_url, { headers: { Accept: 'text/plain' } });
+          const __rr = await uw.fetch(file.raw_url, { headers: { Accept: 'text/plain' } });
           if (__rr.ok) __txt = await __rr.text();
         } catch (e) {}
       }
@@ -6600,9 +6600,11 @@ function makePesquisaModule(opts) {
   function loadTemplatesLocal() {
     try {
       const t = JSON.parse(armazem.getItem(CACHE_KEY) || '{}');
-      /* Endireitar blocos aninhados de versões antigas — ver
-       * `endireitarBlocos`. */
-      for (const k of Object.keys(t)) endireitarBlocos(t[k]);
+      /* Esta linha chamava `endireitarBlocos`, que existe no módulo da
+       * CONSTRUÇÃO e nunca existiu aqui — veio no copia-e-cola, junto com o
+       * comentário. Rebentava sempre, e o catch devolvia `{}`: os templates
+       * locais nunca chegavam a carregar. Os blocos aninhados eram um
+       * problema dos templates de construção, não destes. A chamada sai. */
       return t;
     } catch (e) { return {}; }
   }
@@ -7080,14 +7082,14 @@ function makePesquisaModule(opts) {
     if (bCop) bCop.onclick = async () => {
       const sel = container.querySelector('#pes-copiar-de');
       const de = sel && sel.value;
-      if (!de) { if (pCtx) pCtx.log('Escolhe primeiro o grupo a copiar.'); return; }
+      if (!de) { if (painelCtx) painelCtx.log('Escolhe primeiro o grupo a copiar.'); return; }
       const origem = templatesEdicao[de];
       if (!origem) return;
       if (templatesEdicao[grupoSelecionado] && !await perguntar(`Substituir o template de "${grupoSelecionado}" pelo de "${de}"?`)) return;
 
       // cópia profunda: senão os dois grupos partilhavam os mesmos objectos
       templatesEdicao[grupoSelecionado] = JSON.parse(JSON.stringify(origem));
-      if (pCtx) pCtx.log(`Copiei o template de "${de}" para "${grupoSelecionado}". Ajusta e guarda.`);
+      if (painelCtx) painelCtx.log(`Copiei o template de "${de}" para "${grupoSelecionado}". Ajusta e guarda.`);
       renderPainel(container);
     };
 
@@ -15219,6 +15221,8 @@ function makeAldeiasModule(opts) {
 
   async function correrTrocas(ctx, cfg) {
     const log = ctx.log;
+    // Sem esta linha, "rotina is not defined" rebentava a troca a meio.
+    const rotina = ctx.logRotina || ctx.log;
     const towns = ctx.getMyTowns();
     let totalTrades = 0;
 
@@ -16207,7 +16211,7 @@ function makeAlertasModule(opts) {
         link_origin: c.link_origin || '',
         town_name_origin: c.town_name_origin || '',
       })).filter((c) => c.command_id && c.arrival_at);
-      cacheServidor = { t: agoraMs, dados: saida };
+      cacheServidor = { t: Date.now(), dados: saida };
       return saida;
     } catch (e) { return []; }
   }
@@ -29679,6 +29683,14 @@ function makeApoioModule(opts) {
   }
 
   /* O apoio desta conta numa cidade, com o seu `units_id`. */
+  /* As minhas cidades, para distinguir o MEU apoio do de outras contas.
+   * Faltava neste módulo: o `meuApoioEm` rebentava com "minhasCidades is not
+   * defined" e o catch devolvia null sempre — logo os transportes a mais
+   * nunca voltavam para casa. */
+  function minhasCidades() {
+    try { return new Set(Object.keys(mUw.ITowns.towns).map(Number)); } catch (e) { return new Set(); }
+  }
+
   function meuApoioEm(alvoId) {
     try {
       const mods = mUw.MM.getModels().Units || {};
