@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.03.2345
+// @version      2026.09.04.0015
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1105,7 +1105,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.03.2345';
+  const MAESTRO_VERSAO = '2026.09.04.0015';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -15774,6 +15774,10 @@ function makeAlertasModule(opts) {
    * ==================================================================== */
   const VISTOS_ALERTAS = 'grepoAlertas_vistosEm_v1';
   const ARRANQUE_ALERTAS = 'grepoAlertas_arranque_v1';
+  /* Hora da última passagem completa. Serve para saber se houve um INTERVALO
+   * sem olhar para os ataques: um comando visto pela primeira vez depois de um
+   * intervalo pode já vir a caminho há muito, e a hora registada não presta. */
+  const ULTIMA_PASSAGEM_ALERTAS = 'grepoAlertas_ultimaPassagem_v1';
   let arranqueAlertas = null;
 
   /* Devolve { quando, novo }: `novo` diz se é a primeira vez que se vê. */
@@ -15803,7 +15807,7 @@ function makeAlertasModule(opts) {
        * Sem esta marca, a hora errada ficava guardada para sempre e um
        * colonizador de 7 horas visto a meio aparecia como navio incendiário
        * em todas as passagens seguintes. */
-      const duvidosa = vistoAoArrancar(t);
+      const duvidosa = horaNaoFiavel(t);
       l[id] = duvidosa ? { t, duvidosa: true } : t;
 
       // limpar os antigos, para não crescer sem fim
@@ -15825,6 +15829,31 @@ function makeAlertasModule(opts) {
     }
     if (!arranqueAlertas || !quando) return false;
     return Math.abs(Number(quando) - arranqueAlertas) < 90;
+  }
+
+  /* A HORA A QUE VIMOS ESTE COMANDO É DE CONFIANÇA?
+   *
+   * A janela de 90 s a contar do arranque só cobre o recarregamento da página.
+   * Mas o módulo também fica cego noutras situações: as abas travadas pelo
+   * Firefox no VPS, o servidor a limitar pedidos (429), o núcleo a parar tudo
+   * por causa de um captcha. Depois do intervalo, um comando visto pela
+   * primeira vez era registado como se tivesse partido naquele instante — e um
+   * colonizador que já vinha a meio caminho aparecia como navio de guerra.
+   *
+   * Aqui compara-se com a última passagem: se houve mais de 3 minutos sem
+   * olhar, a hora não presta. Uma passagem normal é de 1 em 1 minuto, por isso
+   * a folga não gera ruído.
+   *
+   * 3 minutos de atraso não estragam a medição: num colonizador de 45 min dão
+   * uma velocidade de 11,1 em vez de 10,4, e o limite é 12,5. */
+  function horaNaoFiavel(quando) {
+    if (vistoAoArrancar(quando)) return true;
+    try {
+      const ult = Number(armazem.getItem(ULTIMA_PASSAGEM_ALERTAS)) || 0;
+      if (!ult) return true;                                  // primeira passagem
+      if (Number(quando) - ult > 180) return true;             // houve intervalo
+    } catch (e) { return false; }
+    return false;
   }
 
   // Constante de calibração: velocidade_equivalente = K × distância ÷ duração(s).
@@ -16687,6 +16716,29 @@ function makeAlertasModule(opts) {
       } else if (dist > 0 && viagem > 0) {
         vel = (c.K * dist) / viagem;
         cls = classificar(vel, false);
+
+        /* O QUE FALTA DA VIAGEM É UMA PROVA, NÃO UMA ESTIMATIVA.
+         *
+         * A viagem medida conta desde que VIMOS o comando, por isso é um
+         * mínimo: visto tarde, a velocidade sai alta e um colonizador passa
+         * por navio de guerra. Foi assim que um NC foi anunciado como normal.
+         *
+         * O tempo que FALTA não depende de quando o vimos. A partida foi antes
+         * de agora, logo a viagem real é maior do que o que falta, e a
+         * velocidade real é MENOR do que `K × distância ÷ falta`. Se esse
+         * máximo já é lento demais para tudo menos o colonizador, então é
+         * colonizador.
+         *
+         * Isto só pode tornar um aviso mais grave, nunca menos. */
+        try {
+          const velMax = (falta > 0) ? (c.K * dist) / falta : null;
+          if (velMax != null && velMax <= 12.5 && !(cls && cls.nc)) {
+            cls = {
+              cat: '🚨 NAVIO COLONIZADOR (o que falta da viagem já não dá para mais nada)',
+              grave: true, nc: true, certo: true,
+            };
+          }
+        } catch (e) {}
       }
       return { a, origem, alvo, falta, dist, vel, cls };
     }
@@ -16833,6 +16885,13 @@ function makeAlertasModule(opts) {
       }
       if (mudou) gravarReforcos(r);
     }
+
+    /* Marcar que esta passagem chegou ao fim. A próxima usa isto para saber
+     * se houve um intervalo sem olhar para os ataques. Fica aqui, depois de
+     * todos os comandos terem sido registados, e NÃO nas saídas por erro ou
+     * por 429 — nessas o módulo esteve cego e a passagem seguinte deve
+     * desconfiar da hora. */
+    try { armazem.setItem(ULTIMA_PASSAGEM_ALERTAS, String(agoraJogo())); } catch (e) { seErroDeCodigo(e, 'Alertas'); }
 
     gravarVistos(vistos);
     if (!novos) {
