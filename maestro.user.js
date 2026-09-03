@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.05.0230
+// @version      2026.09.05.0330
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1159,7 +1159,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.05.0230';
+  const MAESTRO_VERSAO = '2026.09.05.0330';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -1591,6 +1591,30 @@
 
     /* As CREDENCIAIS do Gist são de cada conta e nunca viajam no perfil. */
     'grepoMaestro_gist_v1',
+
+    /* ---- REGISTOS DO QUE CADA CONTA FEZ --------------------------------
+     *
+     * O perfil publica TUDO o que começa por `grepo` e não esteja nesta
+     * lista. É por exclusão, não por escolha — por isso qualquer chave nova
+     * viaja para as 20 multis a menos que se diga o contrário aqui.
+     *
+     * Estes quatro são registos do que ESTA conta fez. Partilhá-los faria as
+     * outras acreditarem em coisas que nunca aconteceram. */
+
+    /* O que esta conta enviou para cada alvo do apoio. É contra isto que o
+     * "repor" mede as baixas — com o registo de outra conta, media contra
+     * tropa que nunca mandou. */
+    'grepoApoio_enviado_v1',
+
+    /* Onde esta conta pôs sentinelas, e quando. */
+    'grepoSentinelas_enviadas_v1',
+
+    /* Erros já anunciados no Discord. Se viajasse, a segunda conta a ter o
+     * mesmo erro ficava calada por já constar como anunciado. */
+    'grepoFrota_avisados_v1',
+
+    /* Pedidos de recrutamento em voo, à espera de aparecerem na fila. */
+    'grepoRecruta_pedidos_v1',
   ];
 
   const ficheiroPerfil = (nome) => `perfil-${nome}-${WORLD}.json`;
