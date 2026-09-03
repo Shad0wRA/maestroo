@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.05.0130
+// @version      2026.09.05.0230
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -294,7 +294,20 @@
   function servidorTravado() {
     return Date.now() < travadoAte;
   }
+  /* QUANTAS VEZES O SERVIDOR NOS TRAVOU, com carimbo. O módulo da frota
+   * publica o número da última hora: sem ele, saber se um arranque correu
+   * bem ou mal é opinião. Fica na memória de propósito — interessa a hora
+   * corrente, não o histórico. */
+  let travoes = [];
+  function contarTravao() {
+    const agora = Date.now();
+    travoes.push(agora);
+    travoes = travoes.filter((t) => agora - t < 3600 * 1000);
+  }
+  try { uw.__maestroTravoes = () => travoes.length; } catch (e) {}
+
   function marcarTravado(quantosMin) {
+    contarTravao();
     const ate = Date.now() + (Number(quantosMin) || 2) * 60 * 1000;
     if (ate > travadoAte) {
       travadoAte = ate;
@@ -1146,7 +1159,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.05.0130';
+  const MAESTRO_VERSAO = '2026.09.05.0230';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -32859,6 +32872,10 @@ function makeFrotaModule(opts) {
     let captcha = 0;
     try { captcha = (w.__maestroHaCaptcha && w.__maestroHaCaptcha()) ? 1 : 0; } catch (e) { seErroDeCodigo(e, 'Frota'); }
 
+    /* Quantas vezes o servidor travou esta conta na última hora. */
+    let travoes = 0;
+    try { travoes = Number(w.__maestroTravoes && w.__maestroTravoes()) || 0; } catch (e) { seErroDeCodigo(e, 'Frota'); }
+
     let cidades = 0;
     try { cidades = (ctx.getMyTowns() || []).length; } catch (e) { seErroDeCodigo(e, 'Frota'); }
 
@@ -32868,7 +32885,7 @@ function makeFrotaModule(opts) {
       mundo: mWorld,
       versao: String(w.__maestroVersao || '?'),
       quando: Math.floor(Date.now() / 1000),
-      captcha, cidades, modulos, errosCodigo, erros,
+      captcha, cidades, travoes, modulos, errosCodigo, erros,
     };
   }
 
@@ -32990,6 +33007,7 @@ function makeFrotaModule(opts) {
         <td style="padding:2px 4px;color:${velha ? '#e8a33d' : 'inherit'}">${esc(x.versao)}</td>
         <td style="padding:2px 4px;color:${mudo ? '#f88' : 'inherit'}">${esc(haQuanto(x.quando))}</td>
         <td style="padding:2px 4px;text-align:center">${Number(x.captcha) ? '🛑' : ''}</td>
+        <td style="padding:2px 4px;text-align:center;color:${Number(x.travoes) ? '#e8a33d' : 'inherit'}">${Number(x.travoes) || ''}</td>
         <td style="padding:2px 4px;text-align:center;color:${nErros ? '#f88' : 'inherit'}">${nErros || ''}</td>
         <td style="padding:2px 4px;font-size:9px;opacity:.7">${esc(ultimo.slice(0, 70))}</td>
       </tr>`;
@@ -33014,6 +33032,7 @@ function makeFrotaModule(opts) {
             <th style="padding:2px 4px">versão</th>
             <th style="padding:2px 4px">sinal</th>
             <th style="padding:2px 4px">🛑</th>
+            <th style="padding:2px 4px" title="429 na última hora">429</th>
             <th style="padding:2px 4px">erros</th>
             <th style="padding:2px 4px">último erro</th>
           </tr>
