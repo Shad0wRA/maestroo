@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.03.0120
+// @version      2026.09.03.1230
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1102,7 +1102,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.03.0120';
+  const MAESTRO_VERSAO = '2026.09.03.1230';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -19942,6 +19942,8 @@ function makeEsquivaModule(opts) {
 
     const enviados = [];
     let todosMeus = [];
+    /* A que horas saiu cada comando — para cancelar cada um na sua hora. */
+    const horaDoComando = {};
     for (const cmd of comandos) {
       /* Guardar PARA ONDE foi, para reconhecer o regresso.
        *
@@ -20000,7 +20002,20 @@ function makeEsquivaModule(opts) {
           if (r2.ok) {
             saiuAlguma = true;
             r = r2;
-            if (r2.comando && r2.comando.commandId) todosMeus.push(Number(r2.comando.commandId));
+            if (r2.comando && r2.comando.commandId) {
+              todosMeus.push(Number(r2.comando.commandId));
+              /* A HORA DE CADA PARTE.
+               *
+               * As partes saem em momentos diferentes. Uma tropa cancelada
+               * volta pelo caminho que já percorreu — quem saiu mais tarde
+               * viajou menos e volta MAIS CEDO.
+               *
+               * Cancelar todas à mesma hora fazia as últimas chegarem a casa
+               * antes do impacto, e morrerem. Visto em jogo: 2 de 4 comandos
+               * "já a caminho de casa" antes da hora planeada, com o ataque a
+               * bater 2 segundos depois. */
+              try { horaDoComando[Number(r2.comando.commandId)] = agora(); } catch (e) {}
+            }
             log(`↗️ Esquiva ${nome}: saíram `
               + `${Object.keys(fatia).map((u) => fatia[u] + ' ' + u).join(', ')}.`);
             /* Tirar o que saiu e tentar levar o resto. */
@@ -20103,13 +20118,35 @@ function makeEsquivaModule(opts) {
     log(`⏱️ ${nome}: cancelo ${todosMeus.length > 1 ? todosMeus.length + ' comandos' : ''} `
       + `daqui a ${Math.round(esperar / 1000)}s (regresso às ${horaJogo(plano.casa)}).`);
 
+    /* CADA COMANDO NA SUA HORA.
+     *
+     * Uma tropa cancelada volta pelo caminho que já percorreu: se saiu em S e
+     * se cancela em C, chega a casa em C + (C − S).
+     *
+     * Portanto, para todas chegarem à MESMA hora, cada uma tem de ser
+     * cancelada na sua: C = (casa + S) / 2.
+     *
+     * Cancelar todas ao mesmo tempo fazia as que saíram mais tarde voltarem
+     * mais cedo — e morrerem no impacto. */
+    const quandoCancelar = (cid) => {
+      const S = Number(horaDoComando[cid]) || plano.S || agora();
+      return Math.round((plano.casa + S) / 2);
+    };
+
     setTimeout(async () => {
       let algumOk = false;
-      for (const cid of todosMeus) {
+
+      /* Do que sai mais cedo para o que sai mais tarde. */
+      const porOrdem = todosMeus.slice().sort((a, b) => quandoCancelar(a) - quandoCancelar(b));
+
+      for (const cid of porOrdem) {
+        /* Esperar até à hora deste comando. */
+        const faltam = quandoCancelar(cid) - agora();
+        if (faltam > 0) await ctx.sleep(Math.min(faltam * 1000, 120000));
+
         const c1 = await cancelarComando(cid, plano.townId);
         if (c1.ok) algumOk = true;
         else log(`⚠️ ${nome}: cancelamento de um comando falhou (${c1.msg}).`);
-        if (todosMeus.length > 1) await ctx.sleep(200);
       }
       const cr = { ok: algumOk, msg: algumOk ? '' : 'nenhum cancelado' };
       if (!cr.ok) { log(`⚠️ ${nome}: cancelamento falhou (${cr.msg}).`); return; }
@@ -23169,6 +23206,47 @@ function makeEncaixeModule(opts) {
    * da janela. Vê-se com `__maestroEncaixeFalhas()`. */
   const FALHAS_KEY = 'grepoEncaixe_falhas_v1';
 
+  /* ============ CAIXA NEGRA DO ENCAIXE ==================================
+   *
+   * O registo de falhas guarda só o resultado. Para perceber PORQUE é que
+   * uma rajada falhou é preciso ver o que ela fez: cada tentativa, o desvio
+   * medido, o que foi cancelado, quanto tempo cada ciclo demorou.
+   *
+   * Isso passa pelo ecrã e perde-se. Aqui fica.
+   *
+   * Vê-se com `__maestroEncaixeLog()` — ou `__maestroEncaixeLog(200)` para
+   * mais linhas. */
+  const RAJADA_KEY = 'grepoEncaixe_rajadas_v1';
+  const RAJADA_MAX = 600;
+
+  function anotarRajada(texto) {
+    try {
+      const lista = JSON.parse(armazem.getItem(RAJADA_KEY) || '[]');
+      lista.push({ t: Math.floor(Date.now() / 1000), x: String(texto).slice(0, 200) });
+      while (lista.length > RAJADA_MAX) lista.shift();
+      armazem.setItem(RAJADA_KEY, JSON.stringify(lista));
+    } catch (e) {}
+  }
+
+  try {
+    const alvoR = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window);
+    alvoR.__maestroEncaixeLog = (quantas) => {
+      try {
+        const lista = JSON.parse(armazem.getItem(RAJADA_KEY) || '[]');
+        if (!lista.length) { console.log('Sem registo de rajadas.'); return; }
+        const fim = lista.slice(-(Number(quantas) || 60));
+        console.log(`Encaixe — ${fim.length} de ${lista.length} linha(s):`);
+        for (const l of fim) {
+          console.log(`  ${new Date(l.t * 1000).toLocaleString()}  ${l.x}`);
+        }
+      } catch (e) { console.log('erro:', e.message); }
+    };
+    alvoR.__maestroEncaixeLogLimpar = () => {
+      try { armazem.setItem(RAJADA_KEY, '[]'); console.log('Registo do encaixe limpo.'); }
+      catch (e) {}
+    };
+  } catch (e) {}
+
   function anotarFalha(f) {
     try {
       const lista = JSON.parse(armazem.getItem(FALHAS_KEY) || '[]');
@@ -23280,6 +23358,7 @@ function makeEncaixeModule(opts) {
       // TRAVA: nunca enviar muito antes ou muito depois do previsto.
       const desfasado = agora() - envioPrevisto;
       if (desfasado > 60) {
+        anotarRajada(`ABORTADA: o instante de envio já passou há ${desfasado}s`);
         log(`🛑 Encaixe: o instante de envio já passou há ${desfasado}s. Não envio nada.`);
         return;
       }
@@ -23377,10 +23456,12 @@ function makeEncaixeModule(opts) {
             /* Mostrar a mensagem EXACTA do servidor: "tropas ainda a regressar"
              * é a minha interpretação, e pode estar errada. Sem o texto real
              * não se distingue tropa fora de casa de outro problema qualquer. */
-            log(`   tentativa ${tentativa}: "${r.msg}" — espero mais ${folgaExtra} ms e repito.`);
+            anotarRajada(`tentativa ${tentativa}: recusado — ${r.msg} · folga agora ${folgaExtra} ms`);
+          log(`   tentativa ${tentativa}: "${r.msg}" — espero mais ${folgaExtra} ms e repito.`);
             await new Promise((res) => setTimeout(res, 250 + folgaExtra));
             continue;
           }
+          anotarRajada(`envio falhou: ${r.msg}`);
           log(`⚠️ Encaixe: envio falhou (${r.msg}).`);
           return;
         }
@@ -23435,6 +23516,7 @@ function makeEncaixeModule(opts) {
           // NÃO deixar o comando à solta: se não se consegue verificar a hora
           // de chegada, não se sabe se acertou — e um ataque fora de horas pode
           // ser pior do que nenhum. Tenta cancelar o que acabou de sair.
+          anotarRajada('não consegui ler a chegada — cancelo por segurança');
           log('⚠️ Encaixe: não consegui ler a chegada. A cancelar o comando por segurança.');
           log(`   [diagnóstico] ${diag.tentativas} tentativa(s) · modelo local: `
             + `${diag.local ? 'devolveu comando sem hora' : 'vazio'} · `
@@ -23499,6 +23581,7 @@ function makeEncaixeModule(opts) {
         const aceite = desvio >= limInf && desvio <= limSup;
 
         if (aceite) {
+          anotarRajada(`=== CONSEGUIDO à ${tentativa}ª tentativa · desvio ${desvio >= 0 ? '+' : ''}${desvio}s`);
           log(`✅ Encaixe conseguido à ${tentativa}ª tentativa: chega às ${horaJogo(cmd.arrival_at)} (${desvio >= 0 ? '+' : ''}${desvio}s).`);
           return;
         }
@@ -23518,7 +23601,8 @@ function makeEncaixeModule(opts) {
         // É esse que demoram a regressar, a contar do cancelamento.
         const tCancelamento = Date.now();
         registarDesvio(desvio);
-        log(`   tentativa ${tentativa}: ${desvio >= 0 ? '+' : ''}${desvio}s (ciclo ${cicloMs} ms)`);
+        anotarRajada(`tentativa ${tentativa}: desvio ${desvio >= 0 ? '+' : ''}${desvio}s · ciclo ${cicloMs} ms`);
+          log(`   tentativa ${tentativa}: ${desvio >= 0 ? '+' : ''}${desvio}s (ciclo ${cicloMs} ms)`);
 
         const cr = await cancelar(cmd.command_id, plano.origemId);
         if (!cr.ok) {
@@ -23534,6 +23618,7 @@ function makeEncaixeModule(opts) {
             desvio, motivo: 'não consegui cancelar: ' + cr.msg,
             cmd: cmd.command_id,
           });
+          anotarRajada(`FICOU: desvio ${desvio}s fora da tolerância e o cancelamento falhou — ${cr.msg}`);
           log(`⚠️ Encaixe: chegada ${desvio}s fora e não consegui cancelar (${cr.msg}).`);
           return;
         }
@@ -23556,6 +23641,7 @@ function makeEncaixeModule(opts) {
             origem: plano.origemId, alvo: plano.alvoId,
             desvio, motivo: `${c.maxTentativas} tentativas sem acertar`,
           });
+          anotarRajada(`DESISTO: ${c.maxTentativas} tentativas, último desvio ${desvio}s`);
           log(`🛑 Encaixe: ${c.maxTentativas} tentativas sem acertar (último desvio ${desvio}s). Desisto.`);
           return;
         }
@@ -23661,7 +23747,8 @@ function makeEncaixeModule(opts) {
           delete temporizadores[plano.id];
           executar(ctx, plano).catch(() => {});
         }, esperarMs);
-        ctx.log(`⏳ Encaixe: rajada armada para daqui a ${Math.round(esperarMs / 1000)}s `
+        ctx.anotarRajada(`=== ARMADA para daqui a ${Math.round(esperarMs / 1000)}s`);
+      log(`⏳ Encaixe: rajada armada para daqui a ${Math.round(esperarMs / 1000)}s `
           + `(envio às ${horaJogo(envioPrevisto)}).`);
       }
     }
