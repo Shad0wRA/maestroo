@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.03.2330
+// @version      2026.09.03.2345
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1105,7 +1105,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.03.2330';
+  const MAESTRO_VERSAO = '2026.09.03.2345';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -17728,6 +17728,10 @@ function makeDeusesModule(opts) {
   async function run(ctx) {
     mUw = ctx.uw; mWorld = ctx.WORLD;
     const log = ctx.log;
+    /* O `rotina` do topo de `distribuirNasMultis` está noutro âmbito e não
+     * chega aqui. Sem esta linha, "rotina is not defined" rebentava o módulo
+     * inteiro — e com ele o farm de favores da mesma passagem. */
+    const rotina = ctx.logRotina || ctx.log;
 
     const c = await lerGist();
     // Nenhuma saída deve ser silenciosa: se o módulo corre e não faz nada,
@@ -18105,6 +18109,8 @@ function makeDeusesModule(opts) {
 
   async function equilibrarPorPesos(ctx, c, towns) {
     const log = ctx.log;
+    // Mesma razão do `run`: o `rotina` do módulo está noutro âmbito.
+    const rotina = ctx.logRotina || ctx.log;
 
     /* Arrumar as Afrodites mal colocadas antes de contar os pesos. */
     try { await arrumarAfrodites(ctx, c, towns); } catch (e) { seErroDeCodigo(e, 'Deuses'); }
