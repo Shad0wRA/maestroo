@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.03.1510
+// @version      2026.09.03.1530
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1102,7 +1102,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.03.1510';
+  const MAESTRO_VERSAO = '2026.09.03.1530';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -26894,10 +26894,62 @@ function makeMissoesModule(opts) {
             if (pedeTropa) return `${nome}: precisa de ${pedeTropa} de população estacionada`;
             if (res) return `${nome}: faltam recursos`;
             if (unid && unid.length) return `${nome}: precisa de unidades`;
-            return `${nome}: à espera do tempo passar`;
+
+            /* NÃO DIZER "À ESPERA DO TEMPO" AO QUE NÃO SE PERCEBE.
+             *
+             * Este era o caso por omissão: tudo o que o módulo não reconhecia
+             * aparecia como se fosse só esperar. Uma missão com uma exigência
+             * por cumprir ficava assim durante um dia inteiro e expirava.
+             *
+             * Visto em jogo: "Renegados!" durante 24 h a dizer "à espera do
+             * tempo passar", e depois "a missão expirou".
+             *
+             * Agora só se diz isso quando há mesmo um tempo a decorrer. O
+             * resto é dito como é: não sei o que falta. */
+            const acaba = Number(conf.expires_at) || Number(m.expires_at) || 0;
+            const comeca = Number(conf.starts_at) || Number(m.created_at) || 0;
+            const temTempo = Number(conf.duration) || Number(conf.wait_until) || 0;
+
+            if (temTempo) return `${nome}: à espera do tempo passar`;
+
+            const faltam = acaba ? Math.round((acaba - agoraJogo()) / 3600) : null;
+            return `${nome}: NÃO SEI o que falta`
+              + (faltam != null ? ` — expira em ${faltam} h` : '')
+              + ` (tarefa: ${JSON.stringify(conf).slice(0, 120)})`;
           });
         rotina(`Missões: ${emCurso} a decorrer, ${porDecidirN} por decidir. `
           + (detalhes.length ? detalhes.join(' · ') : 'nada a fazer agora.'));
+
+        /* AVISAR ANTES DE EXPIRAR.
+         *
+         * Uma missão aceite que não avança perde-se em silêncio. Se faltarem
+         * menos de 2 horas e ela ainda estiver a decorrer, vale a pena
+         * dizê-lo — dá tempo de a cumprir à mão.
+         *
+         * Visto em jogo: "Renegados!" a expirar depois de 24 h sem nada
+         * acontecer. */
+        try {
+          for (const m of todas) {
+            if (String(m.state) !== 'running') continue;
+            const conf = m.configuration || {};
+            const acaba = Number(conf.expires_at) || Number(m.expires_at) || 0;
+            if (!acaba) continue;
+
+            const faltam = acaba - agoraJogo();
+            if (faltam <= 0 || faltam > 7200) continue;
+
+            const nome = (m.static_data || {}).name || m.progressable_id;
+            const chave = `aviso_${m.progressable_id}`;
+            const ja = JSON.parse(armazem.getItem('grepoMissoes_avisadas_v1') || '{}');
+            if (ja[chave]) continue;
+
+            ja[chave] = 1;
+            armazem.setItem('grepoMissoes_avisadas_v1', JSON.stringify(ja));
+
+            log(`⏳ Missão "${nome}" expira em ${Math.round(faltam / 60)} min e ainda `
+              + 'não está cumprida. Se quiseres, trata dela à mão.');
+          }
+        } catch (e) { seErroDeCodigo(e, 'Missoes'); }
       } else {
         log('Missões: nenhuma missão activa.');
       }
