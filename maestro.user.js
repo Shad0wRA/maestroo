@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.05.0030
+// @version      2026.09.05.0130
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1099,6 +1099,29 @@
   uw.__maestroRegister = registerModule;
 
   // estado de execução por módulo
+  /* HORA DA ÚLTIMA PASSAGEM DE CADA MÓDULO, guardada no disco.
+   *
+   * O agendador vive na memória e recomeça do zero em cada carregamento de
+   * página. Como as abas recarregam de hora a hora, os módulos de intervalo
+   * longo corriam a cada arranque em vez de ao seu ritmo.
+   *
+   * Guarda-se em bruto no localStorage e não pelo `armazem`, que só existe
+   * mais abaixo. A chave leva o perfil e o mundo à mão. */
+  const ULTIMA_EXEC_KEY = 'grepoMaestro_ultimaExec_v1';
+
+  function lerUltimasExec() {
+    try { return JSON.parse(localStorage.getItem(ULTIMA_EXEC_KEY) || '{}') || {}; }
+    catch (e) { return {}; }
+  }
+
+  function guardarUltimaExec(modId, quando) {
+    try {
+      const d = lerUltimasExec();
+      d[modId] = Number(quando) || Date.now();
+      localStorage.setItem(ULTIMA_EXEC_KEY, JSON.stringify(d));
+    } catch (e) {}
+  }
+
   const modState = {}; // id -> { proximaExec: timestamp, ativo: bool, aCorrer: bool }
 
   /* ESTADO DOS MÓDULOS, para o módulo da frota publicar.
@@ -1123,7 +1146,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.05.0030';
+  const MAESTRO_VERSAO = '2026.09.05.0130';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -2240,6 +2263,11 @@
           } finally {
             st.aCorrer = false;
             st.ultimaExec = Date.now();     // para o módulo da frota
+            /* E também no disco: o `modState` morre com a página, e sem isto
+             * um módulo de 12 em 12 horas voltava a correr a cada arranque.
+             * Com as abas a recarregar de hora a hora, corria 12 vezes mais
+             * do que devia — foi assim que as sentinelas se empilharam. */
+            guardarUltimaExec(m.id, st.ultimaExec);
             st.proximaExec = Date.now() + (m.intervaloMin * 60 * 1000);
 
             /* O MÓDULO PODE PEDIR PARA VOLTAR MAIS CEDO.
@@ -2697,6 +2725,27 @@
     }
     // inicializar estado dos módulos
     const escolhas = lerEscolhas();
+    /* QUANDO É QUE ESTE MÓDULO DEVE CORRER A SEGUIR.
+     *
+     * Arranque escalonado: atraso próprio do módulo mais um desvio próprio da
+     * conta, senão as 21 contas arrancavam na mesma janela ao reiniciar a VPS
+     * e faziam um pico de pedidos.
+     *
+     * E respeita-se o intervalo do módulo entre carregamentos: se ele correu
+     * há 10 minutos e é de 12 em 12 horas, não corre outra vez agora só
+     * porque a página foi recarregada.
+     *
+     * Módulos de intervalo curto não notam diferença: o teto é sempre o
+     * arranque escalonado. */
+    const ultimas = lerUltimasExec();
+    function proximaDoArranque(m) {
+      const escalonado = Date.now() + desvioDaConta() + rand(3000, 30000);
+      const ultima = Number(ultimas[m.id]) || 0;
+      if (!ultima) return escalonado;
+      const devido = ultima + (Number(m.intervaloMin) || 0) * 60 * 1000;
+      return Math.max(escalonado, devido);
+    }
+
     for (const m of MODULES) {
       if (!modState[m.id]) {
         const guardado = escolhas && escolhas.ativos && (m.id in escolhas.ativos)
@@ -2707,7 +2756,7 @@
           // Atraso próprio de cada módulo, MAIS um desvio próprio da conta
           // (ver desvioDaConta): sem o segundo, as 20 contas arrancavam todas
           // na mesma janela ao reiniciar a VPS e faziam um pico de pedidos.
-          proximaExec: Date.now() + desvioDaConta() + rand(3000, 30000),
+          proximaExec: proximaDoArranque(m),
           aCorrer: false,
         };
       }
@@ -12332,6 +12381,8 @@ function makeBandidosModule(opts) {
  *  tropa outra vez.
  * ========================================================================= */
 function makeSentinelasModule(opts) {
+  /* Quanto se espera antes de repor uma sentinela que não se vê. */
+  const ESPERA_REPOR = 12 * 3600;
   let mUw = null;
   let mWorld = '';
 
@@ -12637,7 +12688,27 @@ function makeSentinelasModule(opts) {
 
       for (const al of aliadas) {
         /* Já lá tenho tropa? Então a sentinela está viva. */
-        if (tenhoTropaEm(al.id)) { jaLa++; continue; }
+        /* Já lá tenho tropa? Então a sentinela está viva. */
+        if (tenhoTropaEm(al.id)) {
+          jaLa++;
+          registo[al.id] = { quando: Math.floor(Date.now() / 1000), quantas: c.quantas };
+          continue;
+        }
+
+        /* MANDEI HÁ POUCO?
+         *
+         * O `tenhoTropaEm` lê os modelos do jogo, e logo a seguir a um
+         * recarregamento eles ainda não têm o apoio que está fora. Sem esta
+         * guarda, cada arranque concluía que a cidade estava a descoberto e
+         * mandava mais três — foi assim que cidades aliadas ficaram com nove.
+         *
+         * Espera-se um intervalo inteiro antes de repor. Se a sentinela
+         * morreu mesmo, é reposta na passagem seguinte a esse prazo. */
+        const jaMandei = registo[al.id];
+        if (jaMandei && (Math.floor(Date.now() / 1000) - (Number(jaMandei.quando) || 0)) < ESPERA_REPOR) {
+          jaLa++;
+          continue;
+        }
 
         /* Tenho tropa em casa para mandar? */
         let disp = 0;
