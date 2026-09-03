@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.04.0830
+// @version      2026.09.05.0030
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1123,7 +1123,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.04.0830';
+  const MAESTRO_VERSAO = '2026.09.05.0030';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -9367,6 +9367,34 @@ function makeRecrutamentoModule(opts) {
           /* Requisitos por cumprir não é erro: é o edifício ainda não ter
            * nível para essa unidade. Passa a rotina, como as filas cheias. */
           const rotineiro = /requisit|prerequisit|ainda n[ãa]o foram preenchidos/i.test(String(r.msg));
+
+          /* "Não pode recrutar mais do que N" não é avaria: é o jogo a dizer
+           * quantos cabem, e o número vem na própria mensagem. Pedia-se de
+           * mais, desistia-se da cidade, e na passagem seguinte pedia-se de
+           * mais outra vez — a cidade ficava sem recrutar e a linha ia parar
+           * ao sininho como se fosse um erro.
+           *
+           * Agora aproveita-se o número e pede-se logo o que cabe. */
+          const cabem = (() => {
+            const m = String(r.msg || '').match(/mais do que\s+(\d+)|more than\s+(\d+)/i);
+            const n = m ? Number(m[1] || m[2]) : 0;
+            return (Number.isFinite(n) && n > 0 && n < a.amount) ? n : 0;
+          })();
+
+          if (cabem) {
+            const r2 = await recrutar(town.id, a.unitId, cabem, a.isNaval);
+            if (r2.ok) {
+              fezAlgo = true;
+              registarPedido(town.id, a.unitId, cabem);
+              log(`⚔️ ${town.name}: +${cabem} ${a.nome}${a.isNaval ? ' (porto)' : ''}`
+                + ` — o jogo só deixou ${cabem} dos ${a.amount} que pedi.`);
+              await ctx.sleep(ctx.rand(600, 1200));
+              continue;
+            }
+            rotina(`${town.name}: cabiam ${cabem} ${a.nome} e mesmo assim recusou (${r2.msg}).`);
+            break;
+          }
+
           if (rotineiro) rotina(`${town.name}: ainda não dá para recrutar ${a.nome} (${r.msg}).`);
           else log(`⚠️ ${town.name}: falha a recrutar ${a.nome} (${r.msg}).`);
           break; // não insistir nesta cidade nesta ronda
