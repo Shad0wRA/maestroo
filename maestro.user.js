@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.04.0430
+// @version      2026.09.04.0530
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1123,7 +1123,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.04.0430';
+  const MAESTRO_VERSAO = '2026.09.04.0530';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -30882,6 +30882,7 @@ function makeApoioModule(opts) {
         <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px">
           <b style="font-size:11px">Alvos apoiados</b>
           <button id="ap-nomes" style="cursor:pointer;font-size:10px" title="traz a lista partilhada e procura os nomes que faltam">🔄 actualizar</button>
+          <button id="ap-adoptar" style="cursor:pointer;font-size:10px" title="regista o apoio que já está nos alvos, para o repor passar a saber o que se perde">📌 adoptar</button>
           <span style="opacity:.55;font-size:10px">“retirar” tira o alvo da lista e manda o apoio de volta</span>
         </div>
         <div style="max-height:180px;overflow-y:auto">
@@ -31100,6 +31101,35 @@ function makeApoioModule(opts) {
     });
 
     /* ---- actualizar a lista ---- */
+    /* ---- ADOPTAR o apoio que já lá está --------------------------------
+     *
+     * O `repor` compara o que esta conta REGISTOU ter enviado com o que está
+     * no alvo. O registo só existe desde que o `anotarEnvio` passou a correr,
+     * por isso o apoio antigo não tem linha nenhuma — e o botão respondia
+     * sempre "não perdeu nada".
+     *
+     * Este botão escreve, para cada alvo SEM registo, o que lá está agora.
+     * A partir daí qualquer baixa passa a ser vista. Não mexe nos alvos que
+     * já têm registo, para não apagar o que se sabe de verdade. */
+    const btAd = container.querySelector('#ap-adoptar');
+    if (btAd) btAd.onclick = () => {
+      const reg = lerEnviado();
+      let adoptados = 0, saltados = 0;
+      for (const id of alvos) {
+        const k2 = String(id);
+        if (reg[k2] && Object.keys(reg[k2]).length) { saltados++; continue; }
+        const ha = tenhoEm(id);
+        if (!Object.keys(ha).length) continue;
+        reg[k2] = ha;
+        adoptados++;
+      }
+      gravarEnviado(reg);
+      ctx.log(`Apoio: adoptei o apoio de ${adoptados} alvo(s)`
+        + (saltados ? ` (${saltados} já tinham registo)` : '')
+        + '. A partir de agora o "repor" vê o que se perder.');
+      comRolamento(() => painel(container, ctx));
+    };
+
     const btN = container.querySelector('#ap-nomes');
     if (btN) btN.onclick = async () => {
       /* TRAZER A LISTA PRIMEIRO.
