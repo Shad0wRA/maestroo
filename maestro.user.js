@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.03.1230
+// @version      2026.09.03.1510
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1102,7 +1102,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.03.1230';
+  const MAESTRO_VERSAO = '2026.09.03.1510';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -3993,6 +3993,7 @@
             sentinelas: 'grepoSentinelas_cfg_v1',
             diaria: 'grepoDiaria_cfg_v1',
             fabricanc: 'grepoFabricaNC_cfg_v1',
+            feiticos: 'grepoFeiticos_cfg_v1',
           };
           const nomeChave = CHAVE_DO_MODULO[m.id];
           if (!nomeChave) throw new Error('sem chave');
@@ -13584,6 +13585,482 @@ function makeFabricaNCModule(opts) {
     intervaloMin: opts.intervaloMin || 10, run, painel };
 }
 
+/* =========================================================================
+ *  MÓDULO: AUTO-FEITIÇOS
+ *
+ *  Mantém feitiços sempre activos em cidades escolhidas, repondo-os assim
+ *  que expiram.
+ *
+ *  DEFESA — a Proteção de Cidade (Atena, 130 de favor) impede que lancem
+ *  feitiços na cidade, e a Purificação NÃO a remove. É a única defesa real
+ *  contra o narcisismo, que baixa a defesa em 10% durante horas.
+ *
+ *  Mas só se pode lançar numa cidade que ainda não a tenha. Por isso o que
+ *  interessa é repor no instante em que expira — e é aí que o adversário
+ *  tentaria entrar.
+ *
+ *  A duração vem do jogo (`finished_at` na resposta), não de uma tabela: no
+ *  pt126 são 6 h, a wiki diz 12 h para velocidade 1.
+ *
+ *  ATAQUE — repor feitiços de ataque que o adversário purifique.
+ *
+ *  As multis podem ajudar: várias contas a tentar a mesma cidade aumentam a
+ *  hipótese de uma apanhar a janela.
+ * ========================================================================= */
+function makeFeiticosModule(opts) {
+  let mUw = null;
+  let mWorld = '';
+
+  const CFG_KEY = 'grepoFeiticos_cfg_v1';
+  const ESTADO_KEY = 'grepoFeiticos_estado_v1';
+
+  const DEFAULTS = {
+    ativo: false,
+    /* Cidades a manter protegidas (identificadores, um por linha).
+     * Podem ser de outras contas — a proteção lança-se em qualquer cidade
+     * que não a tenha. */
+    protegidas: [],
+    /* Repor quantos segundos antes de expirar. Zero = no instante.
+     * Um pouco antes não serve: o jogo recusa enquanto estiver activa. */
+    reporApos: 5,
+    /* Guardar favor para outras coisas. */
+    favorMinimo: 0,
+
+    /* Tempestades do mar contra colonizadores que vêm a caminho. */
+    tempestades: false,
+    maxTempestades: 3,      // por ataque; cada uma custa 280 de favor
+  };
+
+  const armazem = {
+    getItem: (k) => localStorage.getItem(chavePorPerfil(k)),
+    setItem: (k, v) => localStorage.setItem(chavePorPerfil(k), v),
+  };
+
+  function cfg() {
+    try { return Object.assign({}, DEFAULTS, JSON.parse(armazem.getItem(CFG_KEY) || '{}')); }
+    catch (e) { return Object.assign({}, DEFAULTS); }
+  }
+  function guardarCfg(c) {
+    try { armazem.setItem(CFG_KEY, JSON.stringify(c)); } catch (e) {}
+  }
+  function estado() {
+    try { return JSON.parse(armazem.getItem(ESTADO_KEY) || '{}'); } catch (e) { return {}; }
+  }
+  function guardarEstado(e) {
+    try { armazem.setItem(ESTADO_KEY, JSON.stringify(e)); } catch (e2) {}
+  }
+
+  function agoraJogo() {
+    try { return Math.floor(Number(mUw.Timestamp.now())); }
+    catch (e) { return Math.floor(Date.now() / 1000); }
+  }
+
+  /* Escapar texto vindo do jogo, para o painel. */
+  function esc(t) {
+    return String(t == null ? '' : t)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  async function lerResposta(resposta) {
+    try {
+      const txt = await resposta.text();
+      if (!txt || !txt.trim()) return { json: { error: `HTTP ${resposta.status}` } };
+      try { return JSON.parse(txt); }
+      catch (e) { return { json: { error: `resposta ilegível (HTTP ${resposta.status})` } }; }
+    } catch (e) { return { json: { error: e.message } }; }
+  }
+
+  /* ============ FEITIÇOS NUM ATAQUE ====================================
+   *
+   * Capturado do jogo:
+   *   Commands · cast · { id: <comando>, power_id: 'sea_storm' }
+   *   Commands · cast · { id: <comando>, power_id: 'cleanse' }
+   *
+   * SÓ CABE UM FEITIÇO POR ATAQUE. Se já lá houver um — do atacante, para
+   * reforçar — o jogo responde "Já foi lançado um poder divino sobre este
+   * ataque". Nesse caso purifica-se primeiro e lança-se a seguir.
+   *
+   * A purificação devolve `report_id`: há relatório do que foi limpo.
+   * ==================================================================== */
+  async function lancarNoAtaque(powerId, comandoId, deCidade) {
+    try {
+      const url = mUw.location.origin + '/game/frontend_bridge?town_id=' + Number(deCidade)
+        + '&action=execute&h=' + mUw.Game.csrfToken;
+      const r = await mUw.fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                   'x-requested-with': 'XMLHttpRequest' },
+        credentials: 'include',
+        body: 'json=' + encodeURIComponent(JSON.stringify({
+          model_url: 'Commands',
+          action_name: 'cast',
+          captcha: null,
+          arguments: { id: Number(comandoId), power_id: String(powerId) },
+          town_id: Number(deCidade),
+          nl_init: true,
+        })),
+      }).then(lerResposta);
+
+      const j = (r && r.json) || {};
+      return {
+        ok: !j.error,
+        msg: j.error || j.success || 'ok',
+        /* "Já foi lançado um poder divino sobre este ataque" — é preciso
+         * purificar antes. */
+        ocupado: /j[áa] foi lan[çc]ado|already.*cast/i.test(String(j.error || '')),
+        relatorio: Number(j.report_id) || 0,
+      };
+    } catch (e) { return { ok: false, msg: e.message, ocupado: false }; }
+  }
+
+  /* Capturado do jogo:
+   *   CastedPowers · cast · { power_id: 'town_protection', target_id: <id> }
+   * A resposta traz `finished_at` — a hora a que o efeito acaba. */
+  async function lancar(powerId, alvoId, deCidade) {
+    try {
+      const url = mUw.location.origin + '/game/frontend_bridge?town_id=' + Number(deCidade)
+        + '&action=execute&h=' + mUw.Game.csrfToken;
+      const r = await mUw.fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                   'x-requested-with': 'XMLHttpRequest' },
+        credentials: 'include',
+        body: 'json=' + encodeURIComponent(JSON.stringify({
+          model_url: 'CastedPowers',
+          action_name: 'cast',
+          captcha: null,
+          arguments: { power_id: String(powerId), target_id: Number(alvoId) },
+          town_id: Number(deCidade),
+          nl_init: true,
+        })),
+      }).then(lerResposta);
+
+      const j = (r && r.json) || {};
+      return {
+        ok: !j.error,
+        msg: j.error || j.success || 'ok',
+        acaba: Number(j.finished_at) || 0,
+      };
+    } catch (e) { return { ok: false, msg: e.message, acaba: 0 }; }
+  }
+
+  /* ============ PEDIR FAVOR AO FARM ====================================
+   *
+   * As cidades de farm atacam aldeias para ganhar favor, mas só na sua
+   * passagem. Quando um feitiço gasta muito — e as tempestades custam 280
+   * cada — pode faltar favor no momento seguinte, que é precisamente quando
+   * ele faz falta.
+   *
+   * Deixa-se um pedido; o módulo dos deuses lê-o e ataca já com as cidades
+   * desse deus.
+   *
+   * O pedido dura 30 minutos: passado isso, ou já foi atendido, ou deixou de
+   * fazer sentido.
+   * ==================================================================== */
+  function pedirFavor(deus, quanto) {
+    try {
+      if (!deus || !(quanto > 0)) return;
+      const p = JSON.parse(localStorage.getItem(chavePorPerfil('grepoFavor_pedidos_v1')) || '{}');
+      p[String(deus)] = {
+        quanto: Math.round(quanto),
+        quando: Math.floor(Date.now() / 1000),
+      };
+      localStorage.setItem(chavePorPerfil('grepoFavor_pedidos_v1'), JSON.stringify(p));
+    } catch (e) {}
+  }
+
+  /* Favor disponível de um deus. */
+  function favorDe(deus) {
+    try {
+      const pg = mUw.MM.getModels().PlayerGods || {};
+      const k = Object.keys(pg)[0];
+      const a = (pg[k] && pg[k].attributes) || {};
+      const prod = a.production_overview || {};
+      return Math.floor(Number((prod[deus] || {}).current) || 0);
+    } catch (e) { return 0; }
+  }
+
+  /* Uma cidade minha que venere este deus — é de lá que se lança. */
+  function cidadeCom(deus, towns) {
+    try {
+      for (const t of towns) {
+        const g = mUw.ITowns.getTown(Number(t.id));
+        if (g && g.god && String(g.god()) === deus) return t;
+      }
+    } catch (e) {}
+    return null;
+  }
+
+  async function run(ctx) {
+    mUw = ctx.uw; mWorld = ctx.WORLD;
+    const log = ctx.log;
+    const rotina = ctx.logRotina || ctx.log;
+    const c = cfg();
+
+    try {
+      const doPainel = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroLigado;
+      if (doPainel) {
+        const v = doPainel('feiticos');
+        if (v === true) c.ativo = true;
+        if (v === false) c.ativo = false;
+      }
+    } catch (e) {}
+
+    if (!c.ativo) { rotina('Feitiços: está desligado.'); return; }
+
+    const alvos = (c.protegidas || []).map(Number).filter(Boolean);
+    if (!alvos.length) {
+      rotina('Feitiços: nenhuma cidade indicada para proteger.');
+      return;
+    }
+
+    const towns = ctx.getMyTowns() || [];
+    const daAtena = cidadeCom('athena', towns);
+    if (!daAtena) {
+      rotina('Feitiços: nenhuma cidade minha venera Atena — sem ela não há Proteção de Cidade.');
+      return;
+    }
+
+    const favor = favorDe('athena');
+    const CUSTO = 130;
+
+    if (favor < CUSTO + (c.favorMinimo || 0)) {
+      rotina(`Feitiços: favor de Atena a ${favor}; preciso de ${CUSTO}`
+        + (c.favorMinimo ? ` mais ${c.favorMinimo} de reserva` : '') + '.');
+      return;
+    }
+
+    const est = estado();
+    const agora = agoraJogo();
+    let feitos = 0;
+    let proximo = 0;      // quando volta a fazer falta
+
+    for (const alvo of alvos) {
+      /* Sei quando expira? Então só tento quando chegar a hora. */
+      const acaba = Number((est.protecao || {})[alvo]) || 0;
+      if (acaba && acaba > agora) {
+        const faltam = acaba - agora;
+        if (!proximo || faltam < proximo) proximo = faltam;
+        continue;
+      }
+
+      if (favorDe('athena') < CUSTO + (c.favorMinimo || 0)) break;
+
+      const r = await lancar('town_protection', alvo, daAtena.id);
+
+      if (r.ok) {
+        feitos++;
+        est.protecao = est.protecao || {};
+        est.protecao[alvo] = r.acaba || (agora + 6 * 3600);
+        guardarEstado(est);
+
+        let nome = alvo;
+        try { nome = mUw.ITowns.getTown(Number(alvo)).getName(); } catch (e) {}
+        const dura = r.acaba ? Math.round((r.acaba - agora) / 60) : '?';
+        log(`🛡️ Proteção de Cidade em ${nome} — dura ${dura} min.`);
+      } else if (/j[áa] est[áa]|already|protec/i.test(String(r.msg))) {
+        /* Já está protegida, mas por alguém ou por mim antes de o maestro
+         * saber. Não sabemos quando acaba: tenta-se outra vez daqui a pouco.
+         *
+         * O jogo não diz quanto falta a um efeito de outra pessoa. */
+        est.protecao = est.protecao || {};
+        est.protecao[alvo] = agora + 600;   // volta a tentar daqui a 10 min
+        guardarEstado(est);
+        rotina(`Feitiços: ${alvo} já está protegida — volto a tentar daqui a 10 min.`);
+      } else {
+        rotina(`Feitiços: não consegui proteger ${alvo} — ${r.msg}`);
+      }
+
+      await ctx.sleep(ctx.rand(800, 1600));
+    }
+
+    /* ============ TEMPESTADES CONTRA COLONIZADORES =====================
+     *
+     * O maestro já sabe quando um colonizador vem a caminho — o módulo dos
+     * alertas classifica-o pela velocidade. A Tempestade do Mar destrói
+     * 10-30% dos navios, portanto podem ser precisas várias.
+     *
+     * Só cabe UM feitiço por ataque. Se o atacante já lá pôs um, purifica-se
+     * primeiro (a purificação limpa tudo menos a Proteção de Cidade) e
+     * lança-se a seguir — foi assim que resultou em jogo.
+     *
+     * Lança-se uma por passagem e por ataque: o resultado vê-se no relatório,
+     * e não vale a pena esvaziar o favor todo de uma vez.
+     * ================================================================== */
+    if (c.tempestades) {
+      try {
+        const dePoseidon = cidadeCom('poseidon', towns);
+        const deArtemis = cidadeCom('artemis', towns);
+
+        if (dePoseidon) {
+          const mv = mUw.MM.getModels().MovementsUnits || {};
+          const minhas = new Set(towns.map((t) => Number(t.id)));
+
+          for (const k of Object.keys(mv)) {
+            const a = mv[k].attributes || {};
+            if (!minhas.has(Number(a.target_town_id))) continue;
+            if (!/attack/i.test(String(a.type || ''))) continue;
+
+            const cmdId = Number(a.id || a.command_id) || 0;
+            if (!cmdId) continue;
+
+            /* É colonizador? A classificação vem do módulo dos alertas, pelo
+             * aviso publicado no Firebase ou pela marca local. */
+            const ehNC = (() => {
+              try {
+                const marcas = JSON.parse(armazem.getItem('grepoAlertas_nc_v1') || '{}');
+                return !!marcas[cmdId];
+              } catch (e) { return false; }
+            })();
+            if (!ehNC) continue;
+
+            /* Já gastei tempestades neste? */
+            est.tempestades = est.tempestades || {};
+            const jaFoi = Number(est.tempestades[cmdId]) || 0;
+            if (jaFoi >= (c.maxTempestades || 3)) continue;
+
+            if (favorDe('poseidon') < 280) {
+              rotina(`Feitiços: favor de Poseidon a ${favorDe('poseidon')}; a tempestade custa 280.`);
+              pedirFavor('poseidon', 280);
+              break;
+            }
+
+            let r = await lancarNoAtaque('sea_storm', cmdId, dePoseidon.id);
+
+            /* Ocupado por um feitiço do atacante: purificar e repetir. */
+            if (r.ocupado && deArtemis && favorDe('artemis') >= 200) {
+              const rp = await lancarNoAtaque('cleanse', cmdId, deArtemis.id);
+              if (rp.ok) {
+                log(`✨ Purifiquei o feitiço que vinha no ataque ${cmdId}.`);
+                await ctx.sleep(ctx.rand(600, 1200));
+                r = await lancarNoAtaque('sea_storm', cmdId, dePoseidon.id);
+              }
+            }
+
+            if (r.ok) {
+              est.tempestades[cmdId] = jaFoi + 1;
+              guardarEstado(est);
+
+              /* Gastei 280 e posso precisar de mais: pedir ao farm que ataque
+               * já, em vez de esperar pela passagem seguinte. */
+              pedirFavor('poseidon', 280 * Math.max(0, (c.maxTempestades || 3) - jaFoi - 1));
+              let nome = a.target_town_id;
+              try { nome = mUw.ITowns.getTown(Number(a.target_town_id)).getName(); } catch (e) {}
+              log(`🌊 Tempestade do mar no colonizador que vem para ${nome} `
+                + `(${jaFoi + 1}ª). Vê o relatório para saber o que afundou.`);
+              /* Voltar antes de ele chegar, para lançar outra. */
+              const falta = Number(a.arrival_at) - agora;
+              if (falta > 120 && ctx.voltarEm) ctx.voltarEm(Math.min(falta - 60, 600));
+            } else if (r.ocupado) {
+              rotina(`Feitiços: o ataque ${cmdId} já tem um feitiço e não consegui purificar.`);
+            } else {
+              rotina(`Feitiços: tempestade falhou no ${cmdId} — ${r.msg}`);
+            }
+
+            await ctx.sleep(ctx.rand(800, 1600));
+          }
+        }
+      } catch (e) { seErroDeCodigo(e, 'Feiticos'); }
+    }
+
+    /* Voltar quando a primeira expirar — é aí que a janela abre e o
+     * adversário tentaria entrar. */
+    if (proximo && ctx.voltarEm) {
+      ctx.voltarEm(Math.max(30, proximo + (c.reporApos || 5)));
+    }
+
+    if (!feitos && !proximo) {
+      rotina('Feitiços: nada a fazer nesta passagem.');
+    }
+  }
+
+  function painel(container, ctx) {
+    mUw = ctx.uw; mWorld = ctx.WORLD;
+    const c = cfg();
+    const est = estado();
+    const agora = agoraJogo();
+
+    const linhas = (c.protegidas || []).map((id) => {
+      let nome = id;
+      try { nome = mUw.ITowns.getTown(Number(id)).getName(); } catch (e) {}
+      const acaba = Number((est.protecao || {})[id]) || 0;
+      const quanto = acaba > agora
+        ? `protegida mais ${Math.round((acaba - agora) / 60)} min`
+        : 'sem proteção conhecida';
+      return `<div style="font-size:11px;opacity:.8">${esc(String(nome))} — ${quanto}</div>`;
+    }).join('');
+
+    const favor = favorDe('athena');
+
+    container.innerHTML = `
+      <label style="display:block;margin-bottom:4px">
+        <input type="checkbox" id="fei-on"${c.ativo ? ' checked' : ''}>
+        <b>Auto-feitiços — Proteção de Cidade</b>
+      </label>
+      <div style="opacity:.6;font-size:10px;margin:0 0 8px 18px">
+        Mantém a Proteção de Cidade sempre activa nas cidades indicadas,
+        repondo-a assim que expira. É a única defesa contra o narcisismo: a
+        Purificação não a remove, mas também não a pode lançar quem já a tem.
+      </div>
+
+      <div style="background:#0d141c;padding:6px 8px;border-radius:4px;margin-bottom:6px;font-size:11px">
+        <div>favor de Atena: <b>${favor}</b> · cada proteção custa <b>130</b></div>
+        ${linhas || '<div style="opacity:.6">nenhuma cidade indicada</div>'}
+      </div>
+
+      <div style="font-size:11px">
+        Cidades a proteger (um identificador por linha)
+        <textarea id="fei-cidades" rows="4" style="width:100%;box-sizing:border-box;font-size:11px"
+          >${esc((c.protegidas || []).join('\\n'))}</textarea>
+        <div style="opacity:.6;font-size:10px;margin-bottom:5px">
+          Podem ser de outras contas. Vê o identificador no diagnóstico da
+          cidade ou no endereço do jogo.
+        </div>
+
+        Guardar <input type="number" id="fei-reserva" value="${c.favorMinimo}" min="0" step="10" style="width:60px">
+        de favor de Atena para outras coisas
+      </div>
+
+      <div style="border-top:1px solid #234;margin:8px 0 6px;padding-top:6px">
+        <label style="display:block">
+          <input type="checkbox" id="fei-temp"${c.tempestades ? ' checked' : ''}>
+          <b>Tempestades contra colonizadores</b>
+        </label>
+        <div style="opacity:.6;font-size:10px;margin:2px 0 4px 18px">
+          Quando um colonizador vem a caminho, lança a Tempestade do Mar
+          (Poseidon, 280) para afundar navios. Se o atacante já lá pôs um
+          feitiço, purifica primeiro com Artemis (200) — só cabe um por
+          ataque.<br>
+          O resultado vê-se nos relatórios do jogo.
+        </div>
+        <div style="margin-left:18px;font-size:11px">
+          No máximo <input type="number" id="fei-maxtemp" value="${c.maxTempestades}" min="1" max="10" style="width:44px">
+          por ataque
+          <span style="opacity:.6;font-size:10px">(cada uma destrói 10-30%)</span>
+        </div>
+      </div>
+
+      <button id="fei-guardar" style="cursor:pointer;width:100%;margin-top:8px;background:#48d;color:#fff;padding:6px;border:none;border-radius:4px">Guardar</button>`;
+
+    container.querySelector('#fei-guardar').onclick = () => {
+      const cc = cfg();
+      cc.ativo = container.querySelector('#fei-on').checked;
+      cc.protegidas = String(container.querySelector('#fei-cidades').value || '')
+        .split(/[\n,;]+/).map((x) => Number(String(x).trim())).filter(Boolean);
+      cc.favorMinimo = Math.max(0, Number(container.querySelector('#fei-reserva').value) || 0);
+      cc.tempestades = container.querySelector('#fei-temp').checked;
+      cc.maxTempestades = Math.max(1, Number(container.querySelector('#fei-maxtemp').value) || 3);
+      guardarCfg(cc);
+      ctx.log('Feitiços: definições guardadas.');
+      painel(container, ctx);
+    };
+  }
+
+  return { id: 'feiticos', nome: 'Auto-feitiços',
+    intervaloMin: opts.intervaloMin || 5, run, painel };
+}
+
 function makeAldeiasModule(opts) {
   /* A caixa de confirmação do núcleo — o `confirm()` do navegador deixa de
    * funcionar se o utilizador marcar "não voltar a perguntar". */
@@ -15789,6 +16266,33 @@ function makeAlertasModule(opts) {
       const infos = vaga.map(analisar);
       const primeiro = infos[0];
       const temNC = infos.some((i) => i.cls && i.cls.nc);
+
+      /* MARCAR OS COLONIZADORES PARA O MÓDULO DOS FEITIÇOS.
+       *
+       * Ele precisa de saber que ataques trazem colonizador, para lhes lançar
+       * tempestades do mar. A classificação é feita aqui — não vale a pena
+       * repeti-la lá.
+       *
+       * Guarda-se por comando, com a hora de chegada; o que já passou é
+       * deitado fora para a lista não crescer sem fim. */
+      try {
+        const marcas = JSON.parse(armazem.getItem('grepoAlertas_nc_v1') || '{}');
+        let mexeu = false;
+
+        for (const i of infos) {
+          if (!(i.cls && i.cls.nc)) continue;
+          const cid = Number(i.a && (i.a.command_id || i.a.id)) || 0;
+          if (!cid) continue;
+          marcas[cid] = Number(i.a.arrival_at) || 0;
+          mexeu = true;
+        }
+
+        const agoraS = agoraJogo();
+        for (const k of Object.keys(marcas)) {
+          if (Number(marcas[k]) && Number(marcas[k]) < agoraS - 600) { delete marcas[k]; mexeu = true; }
+        }
+        if (mexeu) armazem.setItem('grepoAlertas_nc_v1', JSON.stringify(marcas));
+      } catch (e) { seErroDeCodigo(e, 'Alertas'); }
       const alvoNome = primeiro.alvo ? `${primeiro.alvo.nome} (${primeiro.alvo.x}:${primeiro.alvo.y})` : primeiro.a.target_town_id;
       /* Se o nome não veio (é o caso sem Administrador), usa-se o que foi
        * procurado no mapa antes desta passagem — ver `preencherDonos`. */
@@ -16770,6 +17274,64 @@ function makeDeusesModule(opts) {
     if (c.perfil === PERFIS.MAIN) {
       await equilibrarPorPesos(ctx, c, towns);
       if (Object.keys(c.cidadesFarm || {}).length) await farmarFavor(ctx, c, towns);
+
+    /* ============ PEDIDOS URGENTES DE FAVOR ===========================
+     *
+     * O módulo dos feitiços deixa um pedido quando gasta muito favor — uma
+     * tempestade custa 280, e podem ser precisas várias no mesmo colonizador.
+     *
+     * Aqui atende-se: se houver pedido de um deus, as cidades de farm desse
+     * deus atacam JÁ, sem esperar pelo limiar normal.
+     * ================================================================== */
+    try {
+      const CH = chavePorPerfil('grepoFavor_pedidos_v1');
+      const pedidos = JSON.parse(localStorage.getItem(CH) || '{}');
+      const agoraS = Math.floor(Date.now() / 1000);
+      let mexeu = false;
+
+      for (const deus of Object.keys(pedidos)) {
+        const p = pedidos[deus] || {};
+
+        /* Velho? Deita-se fora. */
+        if (!p.quando || (agoraS - Number(p.quando)) > 1800) {
+          delete pedidos[deus]; mexeu = true; continue;
+        }
+
+        /* Já tem o que pediu? Também se deita fora. */
+        const tem = (favorPorDeus()[deus] || 0);
+        if (tem >= Number(p.quanto)) {
+          delete pedidos[deus]; mexeu = true; continue;
+        }
+
+        /* As cidades de farm deste deus atacam já. */
+        const doDeus = towns.filter((t) => {
+          const f = (c.cidadesFarm || {})[t.id];
+          return f && String(f.deus) === String(deus);
+        });
+
+        if (!doDeus.length) {
+          rotina(`Deuses: pediram favor de ${NOMES[deus] || deus} mas não há cidade `
+            + 'de farm desse deus.');
+          delete pedidos[deus]; mexeu = true; continue;
+        }
+
+        log(`⚡ Pedido urgente: falta favor de ${NOMES[deus] || deus} `
+          + `(tenho ${tem}, preciso de ${p.quanto}) — ${doDeus.length} cidade(s) a atacar já.`);
+
+        await farmarFavor(ctx, Object.assign({}, c, {
+          /* Só as deste deus, e sem o limiar normal. */
+          cidadesFarm: doDeus.reduce((acc, t) => {
+            acc[t.id] = (c.cidadesFarm || {})[t.id];
+            return acc;
+          }, {}),
+          favorParaAtacar: 0,
+        }), doDeus);
+
+        delete pedidos[deus]; mexeu = true;
+      }
+
+      if (mexeu) localStorage.setItem(CH, JSON.stringify(pedidos));
+    } catch (e) { seErroDeCodigo(e, 'Deuses'); }
       return;
     }
 
@@ -23747,7 +24309,7 @@ function makeEncaixeModule(opts) {
           delete temporizadores[plano.id];
           executar(ctx, plano).catch(() => {});
         }, esperarMs);
-        ctx.anotarRajada(`=== ARMADA para daqui a ${Math.round(esperarMs / 1000)}s`);
+        anotarRajada(`=== ARMADA para daqui a ${Math.round(esperarMs / 1000)}s`);
       log(`⏳ Encaixe: rajada armada para daqui a ${Math.round(esperarMs / 1000)}s `
           + `(envio às ${horaJogo(envioPrevisto)}).`);
       }
@@ -30687,6 +31249,8 @@ function makeRelatoriosModule(opts) {
   registerModule(makeDiariaModule({ intervaloMin: 60 }));
   /* 10 min: enquanto enche precisa de passar muitas vezes. */
   registerModule(makeFabricaNCModule({ intervaloMin: 10 }));
+  /* 5 min: a proteção tem de ser reposta no instante em que expira. */
+  registerModule(makeFeiticosModule({ intervaloMin: 5 }));
   registerModule(makeFundacaoModule({ intervaloMin: 30 }));
   registerModule(makeRelatoriosModule({ intervaloMin: 60 }));
 
