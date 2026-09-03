@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.04.0630
+// @version      2026.09.04.0830
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -77,18 +77,18 @@
         const raw = uw.Timestamp.serverGMTOffset;
         const d = (typeof raw === 'function') ? Number(raw.call(uw.Timestamp)) : Number(raw);
         if (Number.isFinite(d)) desvio = d;
-      } catch (e) {}
+      } catch (e) { seErroDeCodigo(e, 'núcleo'); }
       if (!desvio) {
         try {
           const d2 = Number(uw.Game && uw.Game.server_gmt_offset);
           if (Number.isFinite(d2)) desvio = d2;
-        } catch (e) {}
+        } catch (e) { seErroDeCodigo(e, 'núcleo'); }
       }
 
       return new Date((t + desvio) * 1000).toISOString().slice(11, 19);
     } catch (e) { return '?'; }
   }
-  try { uw.__maestroHoraJogo = horaDoJogo; } catch (e) {}
+  try { uw.__maestroHoraJogo = horaDoJogo; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ SININHO DE ERROS ========================================
    * Guarda as mensagens que parecem erros e mostra-as num sininho no canto do
@@ -154,7 +154,7 @@
       errosGuardados.push({ hora, mod: modId, msg: String(msg).slice(0, 200) });
       if (errosGuardados.length > 40) errosGuardados = errosGuardados.slice(-40);
       actualizarSininho();
-    } catch (e) {}
+    } catch (e) {}   /* cadeia do registo: não chamar o detector, daria volta */
   }
 
   function actualizarSininho() {
@@ -165,7 +165,7 @@
       el.textContent = n ? `🔔${n}` : '🔕';
       el.style.color = n ? '#f66' : '#556';
       el.title = n ? `${n} erro(s) — clica para ver` : 'sem erros';
-    } catch (e) {}
+    } catch (e) {}   /* cadeia do registo: não chamar o detector, daria volta */
   }
 
   /* Enquanto o sininho está a escrever os erros, não se regista nada — senão
@@ -186,7 +186,7 @@
 
     /* Guardar na caixa negra — camada à parte, só escreve. O que aparece no
      * ecrã não muda. */
-    try { guardarNaCaixa(modId, String(msg)); } catch (e) {}
+    try { guardarNaCaixa(modId, String(msg)); } catch (e) {}   /* cadeia do registo: não chamar o detector, daria volta */
 
     const box = document.getElementById('maestro-log');
     if (box) { box.textContent = logLines.slice(-50).join('\n'); box.scrollTop = box.scrollHeight; }
@@ -234,7 +234,7 @@
   function pedirFora(url, opcoes) {
     const op = opcoes || {};
     let ponte = null;
-    try { ponte = uw.__maestroPonte; } catch (e) {}
+    try { ponte = uw.__maestroPonte; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
     /* Sem ponte: o fetch normal. */
     if (!ponte || !ponte.pedir) return uw.fetch(url, op);
@@ -279,7 +279,7 @@
       }
     });
   }
-  try { uw.__maestroPedirFora = pedirFora; } catch (e) {}
+  try { uw.__maestroPedirFora = pedirFora; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ TRAVÃO DO SERVIDOR (429) ================================
    * Quando o Grepolis responde 429 — "pedidos a mais" — insistir só piora.
@@ -304,7 +304,7 @@
   try {
     uw.__maestroTravado = servidorTravado;
     uw.__maestroTravar = marcarTravado;
-  } catch (e) {}
+  } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ FIREBASE ================================================
    * O Gist do GitHub tem um limite secundário de escritas que não aparece no
@@ -367,7 +367,7 @@
 
   try {
     uw.__maestroFb = { ler: fbLer, escrever: fbEscrever, apagar: fbApagar, url: firebaseUrl };
-  } catch (e) {}
+  } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ CONFIRMAÇÃO PRÓPRIA =====================================
    * O `confirm()` do navegador tem uma armadilha: se o utilizador marcar
@@ -409,7 +409,7 @@
           + 'background:#48d;color:#fff;font-weight:bold;font-size:12px';
 
         const fechar = (r) => {
-          try { fundo.remove(); } catch (e) {}
+          try { fundo.remove(); } catch (e) { seErroDeCodigo(e, 'núcleo'); }
           resolve(r);
         };
         nao.onclick = () => fechar(false);
@@ -426,11 +426,11 @@
       }
     });
   }
-  try { uw.__maestroPerguntar = perguntar; } catch (e) {}
+  try { uw.__maestroPerguntar = perguntar; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
   try {
     uw.__maestroHaCaptcha = haVerificacaoDeBot;
     uw.__maestroAvisarDiscord = avisarDiscord;
-  } catch (e) {}
+  } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* O MÓDULO ESTÁ LIGADO NO PAINEL?
    *
@@ -447,7 +447,7 @@
       return v === true ? true : (v === false ? false : null);
     } catch (e) { return null; }
   }
-  try { uw.__maestroLigado = moduloLigadoNoPainel; } catch (e) {}
+  try { uw.__maestroLigado = moduloLigadoNoPainel; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ CAIXA NEGRA ============================================
    *
@@ -490,7 +490,7 @@
     if (!novas.length) return;
     try {
       let lista = [];
-      try { lista = JSON.parse(localStorage.getItem(chave) || '[]'); } catch (e) {}
+      try { lista = JSON.parse(localStorage.getItem(chave) || '[]'); } catch (e) { seErroDeCodigo(e, 'núcleo'); }
       for (const l of novas) lista.push(l);
       while (lista.length > tecto) lista.shift();
       localStorage.setItem(chave, JSON.stringify(lista));
@@ -511,7 +511,7 @@
   }
 
   /* Não perder o que está pendente se a página fechar. */
-  try { uw.addEventListener('beforeunload', descarregarCaixa); } catch (e) {}
+  try { uw.addEventListener('beforeunload', descarregarCaixa); } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   function guardarNaCaixa(modulo, texto, ehRotina) {
     try {
@@ -524,7 +524,7 @@
       else caixaPendente.push(linha);
       if (!caixaTemporizador) caixaTemporizador = setTimeout(descarregarCaixa, 3000);
       return;
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
     /* Se algo falhar acima, grava-se à moda antiga. */
     try {
@@ -534,7 +534,7 @@
         x: String(texto || '').slice(0, 300),
       };
       let lista = [];
-      try { lista = JSON.parse(localStorage.getItem(CAIXA_NEGRA_KEY) || '[]'); } catch (e) {}
+      try { lista = JSON.parse(localStorage.getItem(CAIXA_NEGRA_KEY) || '[]'); } catch (e) { seErroDeCodigo(e, 'núcleo'); }
       lista.push(linha);
 
       /* Cortar pelo mais antigo. 800 linhas são uns 200 KB no pior caso — o
@@ -595,9 +595,9 @@
         localStorage.removeItem(CAIXA_NEGRA_KEY);
         localStorage.removeItem(CAIXA_ROTINA_KEY);
         console.log('Caixas limpas.');
-      } catch (e) {}
+      } catch (e) { seErroDeCodigo(e, 'núcleo'); }
     };
-  } catch (e) {}
+  } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ DIAGNÓSTICO DE UMA CIDADE ==============================
    *
@@ -621,7 +621,7 @@
           for (const k of Object.keys(uw.ITowns.towns)) {
             try {
               if (uw.ITowns.getTown(k).getName() === String(qual)) { id = Number(k); break; }
-            } catch (e) {}
+            } catch (e) { seErroDeCodigo(e, 'núcleo'); }
           }
         }
         if (!id) id = Number(uw.Game.townId);
@@ -656,7 +656,7 @@
             const a = m.attributes || {};
             if (Number(a.town_id) === id && nomes[a.group_id]) grupos.push(nomes[a.group_id]);
           }
-        } catch (e) {}
+        } catch (e) { seErroDeCodigo(e, 'núcleo'); }
         console.log('grupos:', grupos.join(', ') || '(nenhum)');
 
         /* ---- recursos e população ---- */
@@ -700,7 +700,7 @@
             });
           console.log(`fila de construção: ${nObras}/7${nObras >= 7 ? ' (CHEIA)' : ''}`);
           console.log('fila de tropa:', naFila.join(', ') || '(vazia)');
-        } catch (e) {}
+        } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
         /* ---- construção: está marcada como cumprida? ---- */
         const estC = ler('grepoConstrucao_estado_v1') || {};
@@ -714,10 +714,10 @@
             .map((m) => m.attributes || {})
             .find((a) => Number(a.home_town_id) === id);
           console.log('herói:', meu ? meu.type : '(nenhum)');
-        } catch (e) {}
+        } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
         /* ---- deus ---- */
-        try { console.log('deus:', (t.god && t.god()) || '(nenhum)'); } catch (e) {}
+        try { console.log('deus:', (t.god && t.god()) || '(nenhum)'); } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
         /* ---- ataques a chegar ---- */
         try {
@@ -731,14 +731,14 @@
               console.log(`   chega em ${Math.round(falta / 60)} min`);
             }
           }
-        } catch (e) {}
+        } catch (e) { seErroDeCodigo(e, 'núcleo'); }
       } catch (e) { console.log('erro no diagnóstico:', e.message); }
     };
-  } catch (e) {}
+  } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ ERROS DE PROGRAMAÇÃO ESCONDIDOS =========================
    *
-   * O ficheiro tem centenas de `try { ... } catch (e) {}` — e são precisos:
+   * O ficheiro tem centenas de `try { ... } catch (e) { seErroDeCodigo(e, 'núcleo'); }` — e são precisos:
    * o jogo devolve modelos vazios, a rede falha, um campo não existe. Essas
    * falhas são normais e não se quer barulho por causa delas.
    *
@@ -767,9 +767,9 @@
       log('core', `🐞 Erro de código em ${onde}: ${msg}`);
     } catch (e2) {}
   }
-  try { uw.__maestroErrosDeCodigo = () => [...errosJaVistos]; } catch (e) {}
+  try { uw.__maestroErrosDeCodigo = () => [...errosJaVistos]; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
   /* O sininho, para o módulo da frota o publicar. Cópia: ninguém mexe daqui. */
-  try { uw.__maestroErrosPainel = () => errosGuardados.slice(-15); } catch (e) {}
+  try { uw.__maestroErrosPainel = () => errosGuardados.slice(-15); } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   const WEBHOOKS_KEY = 'grepoMaestro_webhooks_v1';
   const WEBHOOKS_OMISSAO = { captcha: '', ataque: '', ataqueNC: '', erro: '' };
@@ -824,7 +824,7 @@
       if (todos.geral) Object.assign(w, todos.geral);
       const k = chaveWebhooks();
       if (todos[k]) Object.assign(w, todos[k]);
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'núcleo'); }
     return w;
   }
   function guardarWebhooks(w) {
@@ -834,7 +834,7 @@
       delete todos.captcha; delete todos.ataque; delete todos.ataqueNC;
       todos[chaveWebhooks()] = w;
       localStorage.setItem(WEBHOOKS_KEY, JSON.stringify(todos));
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'núcleo'); }
   }
 
   /* ============ AVISOS NO DISCORD =======================================
@@ -860,7 +860,7 @@
     /* Com 20 contas no mesmo canal, uma mensagem sem dizer de quem é não serve
      * de nada. */
     let quem = '';
-    try { quem = String(uw.Game.player_name || ''); } catch (e) {}
+    try { quem = String(uw.Game.player_name || ''); } catch (e) { seErroDeCodigo(e, 'núcleo'); }
     const mundo = String(WORLD || '').toUpperCase();
 
     let corpo;
@@ -958,10 +958,10 @@
           if (el.offsetParent) return true;      // visível: a janela está aberta
         }
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'núcleo'); }
     return false;
   }
-  try { uw.__maestroEncaixeAberto = aPrepararEncaixe; } catch (e) {}
+  try { uw.__maestroEncaixeAberto = aPrepararEncaixe; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ PÔR OS NÚMEROS DO JOGO EM DIA ==========================
    *
@@ -1004,7 +1004,7 @@
       setTimeout(resolve, 2500);
     })));
   }
-  try { uw.__maestroActualizarNumeros = actualizarNumeros; } catch (e) {}
+  try { uw.__maestroActualizarNumeros = actualizarNumeros; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   function switchToTown(townId) {
     lockRenew(); // mantém o semáforo vivo durante trabalho longo
@@ -1020,7 +1020,7 @@
         try {
           const t = uw.ITowns.getCurrentTown();
           ready = Number(uw.Game?.townId) === Number(townId) && t && typeof t.units === 'function';
-        } catch (e) {}
+        } catch (e) { seErroDeCodigo(e, 'núcleo'); }
         if (ready) { clearInterval(iv); resolve(true); }
         else if (tries >= 20) { clearInterval(iv); resolve(false); }
       }, 500);
@@ -1061,7 +1061,7 @@
      *
      * Vão para a consola do navegador, para quem quiser depurar. */
     const rotina = (msg) => {
-      try { console.log('[MAESTRO/rotina]', modId, msg); } catch (e) {}
+      try { console.log('[MAESTRO/rotina]', modId, msg); } catch (e) { seErroDeCodigo(e, 'núcleo'); }
       /* GUARDAR NA CAIXA NEGRA.
        *
        * As linhas de rotina não aparecem no ecrã de propósito — mas são
@@ -1070,7 +1070,7 @@
        *
        * Sem isto, o "porque não recruta" ficava só na consola e perdia-se no
        * primeiro recarregamento. */
-      try { guardarNaCaixa(modId, String(msg), true); } catch (e) {}
+      try { guardarNaCaixa(modId, String(msg), true); } catch (e) { seErroDeCodigo(e, 'núcleo'); }
     };
 
     return {
@@ -1083,7 +1083,7 @@
         try {
           const st = modState[modId];
           if (st) st.pedidoVoltarEm = Math.max(10, Number(segundos) || 0);
-        } catch (e) {}
+        } catch (e) { seErroDeCodigo(e, 'núcleo'); }
       },
       lockRenew,
       avisarDiscord,
@@ -1111,10 +1111,10 @@
           const st = modState[m.id] || {};
           out[m.id] = { nome: m.nome, ativo: !!st.ativo, ultima: st.ultimaExec || 0 };
         }
-      } catch (e) {}
+      } catch (e) { seErroDeCodigo(e, 'núcleo'); }
       return out;
     };
-  } catch (e) {}
+  } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ---- que módulos correm NESTA conta (guardado, por conta) -------------
    * Cada conta (container) tem o seu localStorage, por isso a escolha fica
@@ -1123,8 +1123,8 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.04.0630';
-  try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
+  const MAESTRO_VERSAO = '2026.09.04.0830';
+  try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
    * O Tampermonkey só verifica o `@updateURL` de 6 em 6 horas no mínimo, o
@@ -1183,8 +1183,8 @@
 
       localStorage.setItem(ULTIMO_REFRESH_KEY, String(Date.now()));
       log('core', 'Refresh de hora a hora — a recarregar.');
-      setTimeout(() => { try { uw.location.reload(); } catch (e) {} }, 2000);
-    } catch (e) {}
+      setTimeout(() => { try { uw.location.reload(); } catch (e) { seErroDeCodigo(e, 'núcleo'); } }, 2000);
+    } catch (e) { seErroDeCodigo(e, 'núcleo'); }
   }
 
   function haPlanoIminente() {
@@ -1203,7 +1203,7 @@
           }
         }
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'núcleo'); }
     return false;
   }
 
@@ -1217,7 +1217,7 @@
      * mesmo tempo davam recarregamentos em cadeia. */
     try {
       if (uw.__maestroViaLoader) return;
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
     try {
       const r = await uw.fetch(FONTE_ATUALIZACAO + '?_=' + Date.now(), { cache: 'no-store' });
@@ -1257,7 +1257,7 @@
 
       try {
         localStorage.setItem(RECARREGADO_KEY, JSON.stringify({ versao: nova, quando: Date.now() }));
-      } catch (e) {}
+      } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
       /* PEDIR AO TAMPERMONKEY QUE VERIFIQUE.
        *
@@ -1274,8 +1274,8 @@
         + 'Se ao fim de umas tentativas continuar na antiga, reinstala a partir do '
         + 'endereço de actualização (está no cabeçalho do script).');
 
-      setTimeout(() => { try { uw.location.reload(); } catch (e) {} }, 3000);
-    } catch (e) {}
+      setTimeout(() => { try { uw.location.reload(); } catch (e) { seErroDeCodigo(e, 'núcleo'); } }, 3000);
+    } catch (e) { seErroDeCodigo(e, 'núcleo'); }
   }
 
   /* ============ CHAVES SEPARADAS POR PERFIL =============================
@@ -1296,7 +1296,7 @@
     try {
       const e = JSON.parse(localStorage.getItem('grepoMaestro_modulos_v1') || 'null');
       if (e && e.perfil) return String(e.perfil);
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'núcleo'); }
     return 'main';
   }
 
@@ -1316,12 +1316,12 @@
    * Só afecta as chaves `grepo*` que não sejam do núcleo. */
   const armazem = {
     getItem(k) { try { return localStorage.getItem(chavePorPerfil(k)); } catch (e) { return null; } },
-    setItem(k, v) { try { return localStorage.setItem(chavePorPerfil(k), v); } catch (e) {} },
-    removeItem(k) { try { return localStorage.removeItem(chavePorPerfil(k)); } catch (e) {} },
+    setItem(k, v) { try { return localStorage.setItem(chavePorPerfil(k), v); } catch (e) { seErroDeCodigo(e, 'núcleo'); } },
+    removeItem(k) { try { return localStorage.removeItem(chavePorPerfil(k)); } catch (e) { seErroDeCodigo(e, 'núcleo'); } },
     get length() { try { return localStorage.length; } catch (e) { return 0; } },
     key(i) { try { return localStorage.key(i); } catch (e) { return null; } },
   };
-  try { uw.__maestroArmazem = armazem; } catch (e) {}
+  try { uw.__maestroArmazem = armazem; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   const MODULOS_KEY = 'grepoMaestro_modulos_v1';
 
@@ -1336,7 +1336,7 @@
     } catch (e) { return true; }
   }
   function guardarAutoStart(v) {
-    try { localStorage.setItem(AUTOSTART_KEY, v ? '1' : '0'); } catch (e) {}
+    try { localStorage.setItem(AUTOSTART_KEY, v ? '1' : '0'); } catch (e) { seErroDeCodigo(e, 'núcleo'); }
   }
   /* Os perfis NÃO limitam que módulos existem — todos estão disponíveis nos
    * dois. O perfil serve para guardar QUAIS estão ligados e COM QUE definições,
@@ -1393,14 +1393,14 @@
     try { return JSON.parse(localStorage.getItem(MODULOS_KEY) || 'null'); } catch (e) { return null; }
   }
   function guardarEscolhas(obj) {
-    try { localStorage.setItem(MODULOS_KEY, JSON.stringify(obj)); } catch (e) {}
+    try { localStorage.setItem(MODULOS_KEY, JSON.stringify(obj)); } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
     /* Guardar TAMBÉM na cópia do perfil, para que voltar a ele traga os
      * mesmos módulos ligados. Sem isto, trocar de perfil ligava todos. */
     try {
       const p2 = (obj && obj.perfil) || 'main';
       localStorage.setItem(`grepoMaestro_ativos_${p2}`, JSON.stringify(obj.ativos || {}));
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'núcleo'); }
   }
   /* ============ CONFIGURAÇÕES POR PERFIL ================================
    * Os módulos guardam as suas definições em chaves próprias do localStorage
@@ -1512,9 +1512,9 @@
       const nome = String(uw.Game.player_name || '?');
       log('core', `⚠️ A conta "${nome}" não está na lista de equipas — `
         + 'a rotação de colonizadores usa o que estiver no painel.');
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'núcleo'); }
   }
-  try { uw.__maestroEquipa = equipaDestaConta; } catch (e) {}
+  try { uw.__maestroEquipa = equipaDestaConta; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   const CHAVES_LOCAIS_DO_PERFIL = [
     'grepoFundacao_estado_v1',      // o que ESTA conta enviou
@@ -1578,7 +1578,7 @@
     try {
       if (sim) localStorage.setItem(PRINCIPAL_KEY, '1');
       else localStorage.removeItem(PRINCIPAL_KEY);
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'núcleo'); }
   }
 
   /* Quando foi aplicado o perfil pela última vez, para não repetir a cada
@@ -1636,10 +1636,10 @@
           try {
             atualizarPainelEstado();
             if (redesenharPainelAberto) redesenharPainelAberto();
-          } catch (e) {}
+          } catch (e) { seErroDeCodigo(e, 'núcleo'); }
           return;
         }
-      } catch (e) {}
+      } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
       if (tentativa < 5) {
         const espera = tentativa * 20000 + Math.floor(Math.random() * 15000);
@@ -1664,7 +1664,7 @@
         const j2 = await r2.json();
         existe = !!(j2.files || {})[`perfil-${perfil}-${WORLD}.json`];
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
     if (!existe) {
       log('core', `ℹ️ Não há perfil "${perfil}" publicado para ${WORLD}. `
@@ -1728,7 +1728,7 @@
           chaves[semSufixo] = localStorage.getItem(k);
         }
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
     try {
       const body = { files: {} };
@@ -1772,7 +1772,7 @@
         try {
           const rr = await uw.fetch(f.raw_url, { headers: { Accept: 'text/plain' } });
           if (rr.ok) conteudo = await rr.text();
-        } catch (e) {}
+        } catch (e) { seErroDeCodigo(e, 'núcleo'); }
       }
       if (!conteudo) {
         return { ok: false, msg: `não consegui ler o perfil "${nome}" (ficheiro grande demais)` };
@@ -1805,7 +1805,7 @@
             localStorage.setItem(chaveReal, JSON.stringify(veio));
             n++;
             continue;
-          } catch (e) {}
+          } catch (e) { seErroDeCodigo(e, 'núcleo'); }
         }
 
         /* Escrever COM o sufixo deste perfil.
@@ -1825,7 +1825,7 @@
         const chaveFinal = /^grepoMaestro_/.test(semSufixo)
           ? semSufixo
           : chavePorPerfil(semSufixo);
-        try { localStorage.setItem(chaveFinal, dados.chaves[k]); n++; } catch (e) {}
+        try { localStorage.setItem(chaveFinal, dados.chaves[k]); n++; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
       }
 
       /* Aplicar os MÓDULOS LIGADOS que vieram no perfil.
@@ -1842,7 +1842,7 @@
           esc.ativos = ativos;
           localStorage.setItem('grepoMaestro_modulos_v1', JSON.stringify(esc));
         }
-      } catch (e) {}
+      } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
       return { ok: true, n, quando: dados.quando };
     } catch (e) { return { ok: false, msg: e.message }; }
@@ -1859,7 +1859,7 @@
         if (/^grepoMaestro_/.test(k)) continue;      // do maestro: não é do perfil
         out.push(k);
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'núcleo'); }
     return out;
   }
 
@@ -1867,7 +1867,7 @@
     try { return JSON.parse(localStorage.getItem(CFG_PERFIS_KEY) || '{}'); } catch (e) { return {}; }
   }
   function gravarCfgPerfis(o) {
-    try { localStorage.setItem(CFG_PERFIS_KEY, JSON.stringify(o)); } catch (e) {}
+    try { localStorage.setItem(CFG_PERFIS_KEY, JSON.stringify(o)); } catch (e) { seErroDeCodigo(e, 'núcleo'); }
   }
 
   // Guarda as definições actuais debaixo do perfil indicado.
@@ -1876,7 +1876,7 @@
     const todos = lerCfgPerfis();
     const meu = {};
     for (const k of chavesDosModulos()) {
-      try { meu[k] = localStorage.getItem(k); } catch (e) {}
+      try { meu[k] = localStorage.getItem(k); } catch (e) { seErroDeCodigo(e, 'núcleo'); }
     }
     todos[perfil] = meu;
     gravarCfgPerfis(todos);
@@ -1906,7 +1906,7 @@
           // o perfil novo não tem esta definição: fica vazia
           if (localStorage.getItem(k) != null) { localStorage.removeItem(k); limpas++; }
         }
-      } catch (e) {}
+      } catch (e) { seErroDeCodigo(e, 'núcleo'); }
     }
     return { repostas: n, limpas };
   }
@@ -2013,9 +2013,9 @@
          * noutro. */
         if (/_pt\d+$/.test(limpa)) continue;
 
-        try { dados.chaves[limpa] = localStorage.getItem(bruta); } catch (e) {}
+        try { dados.chaves[limpa] = localStorage.getItem(bruta); } catch (e) { seErroDeCodigo(e, 'núcleo'); }
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'núcleo'); }
     return dados;
   }
 
@@ -2030,7 +2030,7 @@
     for (const k of Object.keys(dados.chaves)) {
       if (!/^grepo/i.test(k)) continue;
       if (/__[a-z]+$/i.test(k)) continue;      // veio com sufixo: não importar
-      try { armazem.setItem(k, dados.chaves[k]); n++; } catch (e) {}
+      try { armazem.setItem(k, dados.chaves[k]); n++; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
     }
     return { ok: true, n, de: dados.mundo || '?', dePerfil: dados.perfil || '?' };
   }
@@ -2063,14 +2063,14 @@
         try {
           const r = await publicarPerfil(perfil);
           if (r && r.ok) log('core', `Perfil "${perfil}" publicado (${r.n} definição(ões)).`);
-        } catch (e) {}
+        } catch (e) { seErroDeCodigo(e, 'núcleo'); }
       }, 30 * 60 * 1000);
       // e também ao fechar a página
       uw.addEventListener('beforeunload', () => {
         const p2 = perfilAtual();
         if (p2) guardarCfgDoPerfil(p2);
       });
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'núcleo'); }
   }
 
   function aplicarPerfil(nome) {
@@ -2098,7 +2098,7 @@
         const meus = {};
         for (const m of MODULES) meus[m.id] = !!(modState[m.id] && modState[m.id].ativo);
         localStorage.setItem(`grepoMaestro_ativos_${anterior}`, JSON.stringify(meus));
-      } catch (e) {}
+      } catch (e) { seErroDeCodigo(e, 'núcleo'); }
     }
 
     const escolhas = { perfil: nome, ativos: {} };
@@ -2129,7 +2129,7 @@
       if (modState[m.id]) modState[m.id].ativo = escolhas.ativos[m.id];
     }
     guardarEscolhas(escolhas);
-    try { localStorage.setItem(`grepoMaestro_ativos_${nome}`, JSON.stringify(escolhas.ativos)); } catch (e) {}
+    try { localStorage.setItem(`grepoMaestro_ativos_${nome}`, JSON.stringify(escolhas.ativos)); } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
     /* Já NÃO é preciso copiar nem limpar nada.
      *
@@ -2186,7 +2186,7 @@
           const x = document.querySelector('.gpwindow_frame .btn_wnd.close, '
             + '.gpwindow_frame .ui-dialog-titlebar-close, .gpwindow_frame .close');
           if (x) { x.click(); fechou = true; }
-        } catch (e) {}
+        } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
         avisouEncaixeAberto = false;
         log('core', fechou
@@ -2259,7 +2259,7 @@
                 const quando = Date.now() + (pedido * 1000);
                 if (quando < st.proximaExec) st.proximaExec = quando;
               }
-            } catch (e) {}
+            } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
             atualizarPainelEstado();
           }
@@ -2356,16 +2356,16 @@
              * Não vale a pena: as notificações no ecrã são o incómodo, e isto
              * resolve-o sem mexer no que é do jogo. */
             setTimeout(() => {
-              try { if (typeof n.despawn === 'function') n.despawn(); } catch (e) {}
-              try { if (typeof n.destroy === 'function') n.destroy(); } catch (e) {}
+              try { if (typeof n.despawn === 'function') n.despawn(); } catch (e) { seErroDeCodigo(e, 'núcleo'); }
+              try { if (typeof n.destroy === 'function') n.destroy(); } catch (e) { seErroDeCodigo(e, 'núcleo'); }
               tirarDoEcra();
             }, 60);
           }
-        } catch (e) {}
+        } catch (e) { seErroDeCodigo(e, 'núcleo'); }
         return r;
       };
       vigiaLigada = true;
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'núcleo'); }
   }
 
   /* Tirar as notificações pelo ELEMENTO no ecrã.
@@ -2403,7 +2403,7 @@
         try { el.style.display = 'none'; } catch (e2) {}
         n++;
       });
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'núcleo'); }
     return n;
   }
 
@@ -2434,13 +2434,13 @@
              * O atraso dá ao jogo tempo de fazer o que tem a fazer; a seguir
              * a notificação desaparece da vista. */
             setTimeout(() => {
-              try { if (no.style) no.style.display = 'none'; } catch (e) {}
+              try { if (no.style) no.style.display = 'none'; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
             }, 1500);
           }
         }
       });
       obsNotificacoes.observe(document.body, { childList: true, subtree: true });
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'núcleo'); }
   }
 
   /* Apagar TODAS as notificações no servidor — UM pedido só.
@@ -2502,13 +2502,13 @@
       });
 
       for (const m of mortas) {
-        try { col.remove(m); } catch (e) {}
+        try { col.remove(m); } catch (e) { seErroDeCodigo(e, 'núcleo'); }
       }
       if (mortas.length) {
         log('core', `🧹 Libertei ${mortas.length} lugar(es) na fila de construção `
           + '(obras já concluídas no servidor).');
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'núcleo'); }
   }
 
   /* NÃO MEXER NAS NOTIFICAÇÕES.
@@ -2558,10 +2558,10 @@
             if (!el.offsetParent && getComputedStyle(el).position !== 'fixed') continue;
             const r = el.getBoundingClientRect();
             if (r.width > 40 && r.height > 40) return true;
-          } catch (e) {}
+          } catch (e) { seErroDeCodigo(e, 'núcleo'); }
         }
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
     /* E também nas notificações, para o caso de aparecer por lá. */
     try {
@@ -2572,7 +2572,7 @@
         try {
           const t = String((typeof notif.getType === 'function' ? notif.getType() : '') || '').toLowerCase();
           if (/bot_check|botcheck|captcha/.test(t)) achei = true;
-        } catch (e) {}
+        } catch (e) { seErroDeCodigo(e, 'núcleo'); }
       });
       return achei;
     } catch (e) { return false; }
@@ -2629,11 +2629,15 @@
           const opt = (typeof notif.getOpt === 'function') ? notif.getOpt() : null;
           const id = opt && opt.id;
           if (id) out.push(Number(id));
-        } catch (e) {}
+        } catch (e) { seErroDeCodigo(e, 'núcleo'); }
       });
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'núcleo'); }
     return out;
   }
+
+  /* NOTA: a função abaixo não é chamada por ninguém. Fica como está, mas a
+   * chave tinha de existir — sem ela rebentava à primeira linha. */
+  const ULTIMO_APAGAR_KEY = 'grepoMaestro_ultimoApagarNotif_v1';
 
   async function apagarTodasNoServidorSeHoras() {
     try {
@@ -2665,7 +2669,7 @@
       const r = await apagarTodasNoServidor();
       if (r.ok) log('core', `Notificações: apaguei ${ids.length} no servidor.`);
       else log('core', `Notificações: não consegui apagar (${r.msg}).`);
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'núcleo'); }
   }
 
   function resumoPeriodico() {
@@ -2711,7 +2715,7 @@
     if (maestroTimer) clearInterval(maestroTimer);
     // tick frequente (o "na hora" é decidido por módulo); 15s é leve
     maestroTimer = setInterval(() => { tick(); resumoPeriodico(); limparNotificacoes(); }, 15000);
-    try { if (uw.__maestroPintarToggle) uw.__maestroPintarToggle(); } catch (e) {}
+    try { if (uw.__maestroPintarToggle) uw.__maestroPintarToggle(); } catch (e) { seErroDeCodigo(e, 'núcleo'); }
     const nAtivos = MODULES.filter((m) => modState[m.id] && modState[m.id].ativo).length;
     log('core', `▶ Maestro A CORRER — ${nAtivos} de ${MODULES.length} módulo(s) ativos em ${WORLD}`
       + ` (desvio desta conta: ${Math.round(desvioDaConta() / 1000)}s).`);
@@ -2721,7 +2725,7 @@
     if (maestroTimer) clearInterval(maestroTimer);
     maestroTimer = null;
     log('core', '⏸ Maestro PARADO — nenhum módulo vai correr até carregares em Iniciar.');
-    try { if (uw.__maestroPintarToggle) uw.__maestroPintarToggle(); } catch (e) {}
+    try { if (uw.__maestroPintarToggle) uw.__maestroPintarToggle(); } catch (e) { seErroDeCodigo(e, 'núcleo'); }
   }
 
   /* ------------------------------ painel --------------------------------- */
@@ -2773,7 +2777,7 @@
     try { return Number(localStorage.getItem(ULTIMA_ESCRITA_KEY)) || 0; } catch (e) { return 0; }
   }
   function marcarEscritaGlobal() {
-    try { localStorage.setItem(ULTIMA_ESCRITA_KEY, String(Date.now())); } catch (e) {}
+    try { localStorage.setItem(ULTIMA_ESCRITA_KEY, String(Date.now())); } catch (e) { seErroDeCodigo(e, 'núcleo'); }
   }
 
   function escreverNoGistComTravao(chave, fazer) {
@@ -2801,7 +2805,7 @@
       }, (ESPERA_ENTRE_ESCRITAS - desde) + Math.floor(Math.random() * 5000));
     });
   }
-  try { uw.__maestroGistTravao = escreverNoGistComTravao; } catch (e) {}
+  try { uw.__maestroGistTravao = escreverNoGistComTravao; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   function guardarSozinho(caixa, mod) {
     if (!caixa) return;
@@ -2838,7 +2842,7 @@
       try {
         const b = acharBotao() || botao;
         if (b && b.isConnected !== false) b.click();
-      } catch (e) {}
+      } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
       /* E logo a seguir, guardar no PERFIL: de pouco serve gravar a definição
        * do módulo se ela não ficar no perfil que está aplicado. Sem isto, uma
@@ -2876,7 +2880,7 @@
     try {
       const obs = new MutationObserver(() => ligarCampos());
       obs.observe(caixa, { childList: true, subtree: true });
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'núcleo'); }
   }
 
   /* Redesenhar o módulo que está aberto no painel. Fica preenchido quando o
@@ -2954,12 +2958,12 @@
             btn.style.right = Math.round(window.innerWidth - dir) + 'px';
           }
         }
-      } catch (e) {}
+      } catch (e) { seErroDeCodigo(e, 'núcleo'); }
     };
 
     setTimeout(encostarAoLado, 1500);
     setTimeout(encostarAoLado, 5000);
-    try { window.addEventListener('resize', encostarAoLado); } catch (e) {}
+    try { window.addEventListener('resize', encostarAoLado); } catch (e) { seErroDeCodigo(e, 'núcleo'); }
     btn.onclick = async () => { const p = document.getElementById('maestro-panel'); p.style.display = p.style.display === 'none' ? 'block' : 'none'; };
     document.body.appendChild(btn);
 
@@ -2971,7 +2975,7 @@
      * e esticar-se pelo canto; a posição e o tamanho ficam guardados. */
     const POS_KEY = 'maestro_painel_pos_v1';
     let pos = null;
-    try { pos = JSON.parse(localStorage.getItem(POS_KEY) || 'null'); } catch (e) {}
+    try { pos = JSON.parse(localStorage.getItem(POS_KEY) || 'null'); } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
     // Tamanho comedido: o painel não deve tapar o jogo. Ajusta-se pelo canto
     // e o tamanho fica guardado.
@@ -3008,10 +3012,10 @@
             left: parseInt(p.style.left, 10), top: parseInt(p.style.top, 10),
             width: p.offsetWidth, height: p.offsetHeight,
           }));
-        } catch (e) {}
+        } catch (e) { seErroDeCodigo(e, 'núcleo'); }
       });
       ro.observe(p);
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'núcleo'); }
     p.innerHTML = `
       <div id="maestro-cabecalho" class="mCab">
         <span class="mNome">Maestro</span>
@@ -3363,7 +3367,7 @@
         #maestro-panel .mDica{ font-size:10px; color:var(--mFaint); line-height:1.45; }
       `;
       document.head.appendChild(est);
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
     document.body.appendChild(p);
 
@@ -3374,7 +3378,7 @@
         ev.preventDefault();
         const txt = (document.getElementById('maestro-log') || {}).textContent || '';
         let ok = false;
-        try { await navigator.clipboard.writeText(txt); ok = true; } catch (e) {}
+        try { await navigator.clipboard.writeText(txt); ok = true; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
         if (!ok) {
           // recurso alternativo para quando a área de transferência é recusada
           try {
@@ -3383,7 +3387,7 @@
             document.body.appendChild(ta); ta.select();
             ok = document.execCommand('copy');
             ta.remove();
-          } catch (e) {}
+          } catch (e) { seErroDeCodigo(e, 'núcleo'); }
         }
         elCop.textContent = ok ? 'copiado' : 'não deu';
         setTimeout(() => { elCop.textContent = 'copiar'; }, 1600);
@@ -3399,7 +3403,7 @@
         if (el) el.textContent = '';
         log('core', 'Registo limpo.');
       };
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
     // fechar
     try {
@@ -3410,7 +3414,7 @@
         elX.onmouseover = () => { elX.style.color = 'var(--mStop)'; };
         elX.onmouseout = () => { elX.style.color = 'var(--mFaint)'; };
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
     // voltar ao centro, se se perder de vista
     try {
@@ -3425,9 +3429,9 @@
             left: parseInt(p.style.left, 10), top: parseInt(p.style.top, 10),
             width: p.offsetWidth, height: p.offsetHeight,
           }));
-        } catch (e) {}
+        } catch (e) { seErroDeCodigo(e, 'núcleo'); }
       };
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
     // arrastar pelo cabeçalho
     (function () {
@@ -3453,7 +3457,7 @@
             left: parseInt(p.style.left, 10), top: parseInt(p.style.top, 10),
             width: p.offsetWidth, height: p.offsetHeight,
           }));
-        } catch (e) {}
+        } catch (e) { seErroDeCodigo(e, 'núcleo'); }
       });
     })();
 
@@ -3473,7 +3477,7 @@
       aplicarPerfil(nome);
       /* Recarregar: os módulos já leram as chaves do perfil anterior e têm-nas
        * em memória. */
-      setTimeout(() => { try { location.reload(); } catch (e) {} }, 1200);
+      setTimeout(() => { try { location.reload(); } catch (e) { seErroDeCodigo(e, 'núcleo'); } }, 1200);
     };
     /* ---- sininho de erros ---- */
     const sino = document.getElementById('maestro-sino');
@@ -3513,7 +3517,7 @@
         } else {
           localStorage.setItem(REFRESH_KEY, '0');
         }
-      } catch (e) {}
+      } catch (e) { seErroDeCodigo(e, 'núcleo'); }
       log('core', chkR.checked
         ? 'Vou recarregar a página de hora a hora.'
         : 'Deixo de recarregar a página.');
@@ -3535,7 +3539,7 @@
       const campo = document.getElementById('maestro-fb-url');
       const est = document.getElementById('maestro-fb-estado');
       const url = String(campo.value || '').trim().replace(/\/+$/, '');
-      try { localStorage.setItem(FIREBASE_KEY, url); } catch (e) {}
+      try { localStorage.setItem(FIREBASE_KEY, url); } catch (e) { seErroDeCodigo(e, 'núcleo'); }
       if (!url) { if (est) est.textContent = 'Apagado.'; return; }
       if (est) est.textContent = 'A testar...';
       const r = await fbEscrever('teste', { quando: Date.now() });
@@ -3602,7 +3606,7 @@
         n = Object.keys(todos[p2] || {}).length;
         delete todos[p2];
         gravarCfgPerfis(todos);
-      } catch (e) {}
+      } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
       /* Apagar as chaves COM O SUFIXO deste perfil, esteja ele activo ou não.
        *
@@ -3620,11 +3624,11 @@
         for (const k of aRemover) { localStorage.removeItem(k); n2++; }
         // e a lista de módulos activos deste perfil
         localStorage.removeItem(`grepoMaestro_ativos_${p2}`);
-      } catch (e) {}
+      } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
       log('core', `Perfil "${p2}": apagadas ${n2} definição(ões). Está como novo.`
         + (ativo === p2 ? ' Vou recarregar.' : ' Os outros perfis não foram tocados.'));
-      setTimeout(() => { try { location.reload(); } catch (e) {} }, 1500);
+      setTimeout(() => { try { location.reload(); } catch (e) { seErroDeCodigo(e, 'núcleo'); } }, 1500);
     };
 
     /* ---- publicar / buscar o perfil pelo Gist ---- */
@@ -3653,7 +3657,7 @@
       log('core', `Perfil "${p2}" trazido (${r.n} definições).`);
       log('core', 'Falta configurar à mão o que depende de cidades: bases dos colonos, '
         + 'alvos do apoio, cidade de encaixe e ilhas da fundação.');
-      setTimeout(() => { try { location.reload(); } catch (e) {} }, 2000);
+      setTimeout(() => { try { location.reload(); } catch (e) { seErroDeCodigo(e, 'núcleo'); } }, 2000);
     };
 
     const btnGuardarPerfil = document.getElementById('maestro-perfil-guardar');
@@ -3687,7 +3691,7 @@
         const txt = JSON.stringify(dados);
         if (cx) cx.value = txt;
         let ok = false;
-        try { await navigator.clipboard.writeText(txt); ok = true; } catch (e) {}
+        try { await navigator.clipboard.writeText(txt); ok = true; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
         const n = Object.keys(dados.chaves).length;
         log('core', `Exportadas ${n} definição(ões) do perfil "${dados.perfil}" em ${WORLD.toUpperCase()}`
           + (ok ? ' — já copiadas.' : ' — copia o texto da caixa.'));
@@ -3740,7 +3744,7 @@
           for (const chave of Object.keys(FICHEIROS)) {
             let conteudo = null;
             try { conteudo = localStorage.getItem(chave + suf) || localStorage.getItem(chave); }
-            catch (e) {}
+            catch (e) { seErroDeCodigo(e, 'núcleo'); }
             if (!conteudo) continue;
 
             const nome = `${FICHEIROS[chave]}-${perfil}-${WORLD}.json`;
@@ -3771,16 +3775,16 @@
               + '. Carrega em Publicar no painel antes de recarregar, '
               + 'senão o arranque traz as antigas.');
           }
-        } catch (e) {}
+        } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
-        setTimeout(() => { try { location.reload(); } catch (e) {} }, 3500);
+        setTimeout(() => { try { location.reload(); } catch (e) { seErroDeCodigo(e, 'núcleo'); } }, 3500);
       };
 
       const det = document.getElementById('maestro-copiar-cfg');
       if (det) {
-        try { det.open = localStorage.getItem('grepoMaestro_copiarAberto') === '1'; } catch (e) {}
+        try { det.open = localStorage.getItem('grepoMaestro_copiarAberto') === '1'; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
         det.ontoggle = () => {
-          try { localStorage.setItem('grepoMaestro_copiarAberto', det.open ? '1' : '0'); } catch (e) {}
+          try { localStorage.setItem('grepoMaestro_copiarAberto', det.open ? '1' : '0'); } catch (e) { seErroDeCodigo(e, 'núcleo'); }
         };
       }
     })();
@@ -3827,9 +3831,9 @@
       // manter aberto/fechado
       const det = document.getElementById('maestro-avisos');
       if (det) {
-        try { det.open = localStorage.getItem('grepoMaestro_avisosAberto') === '1'; } catch (e) {}
+        try { det.open = localStorage.getItem('grepoMaestro_avisosAberto') === '1'; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
         det.ontoggle = () => {
-          try { localStorage.setItem('grepoMaestro_avisosAberto', det.open ? '1' : '0'); } catch (e) {}
+          try { localStorage.setItem('grepoMaestro_avisosAberto', det.open ? '1' : '0'); } catch (e) { seErroDeCodigo(e, 'núcleo'); }
         };
       }
     })();
@@ -3839,7 +3843,7 @@
       if (!btToggle) return;
       btToggle.textContent = maestroTimer ? 'Parar' : 'Iniciar';
       btToggle.classList.toggle('aParar', !!maestroTimer);
-      try { atualizarPainelEstado(); } catch (e) {}
+      try { atualizarPainelEstado(); } catch (e) { seErroDeCodigo(e, 'núcleo'); }
     }
     if (btToggle) btToggle.onclick = () => {
       if (maestroTimer) stopMaestro(); else startMaestro();
@@ -4194,7 +4198,7 @@ function makeConstrucaoModule(opts) {
     try {
       const f = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroPerguntar;
       if (f) return f(t);
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Construcao'); }
     return Promise.resolve(true);
   };
 
@@ -4231,7 +4235,7 @@ function makeConstrucaoModule(opts) {
         const t = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroTravar;
         if (t) t(2);
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Construcao'); }
     try {
       const txt = await resposta.text();
       if (!txt || !txt.trim()) {
@@ -4263,7 +4267,7 @@ function makeConstrucaoModule(opts) {
     try {
       const a = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroArmazem;
       if (a) return a;
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Construcao'); }
     return localStorage;
   })();
 
@@ -4274,7 +4278,7 @@ function makeConstrucaoModule(opts) {
     try {
       const e = JSON.parse(armazem.getItem('grepoMaestro_modulos_v1') || 'null');
       if (e && e.perfil) perfil = String(e.perfil);
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Construcao'); }
     return `${base}-${perfil}-${mundo}.json`;
   }
 
@@ -4442,7 +4446,7 @@ function makeConstrucaoModule(opts) {
           if (item.b === edificio) alvo = Math.max(alvo, Number(item.alvo) || 0);
         }
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Construcao'); }
     return alvo;
   }
 
@@ -4472,7 +4476,7 @@ function makeConstrucaoModule(opts) {
           if (item.b === edificio) alvo = Math.max(alvo, Number(item.alvo) || 0);
         }
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Construcao'); }
     return alvo;
   }
 
@@ -4595,7 +4599,7 @@ function makeConstrucaoModule(opts) {
               else { col.add(Object.assign({ id: idNovo }, attrs)); }
               tratado = true;
             }
-          } catch (e) {}
+          } catch (e) { seErroDeCodigo(e, 'Construcao'); }
           if (tratado) continue;
 
           // 2) MODELOS: actualizar o que já existe (Town, PlayerLedger, ...)
@@ -4612,12 +4616,12 @@ function makeConstrucaoModule(opts) {
                 }
               }
             }
-          } catch (e) {}
+          } catch (e) { seErroDeCodigo(e, 'Construcao'); }
           continue;
 
         }
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Construcao'); }
   }
 
   async function buildUp(townId, buildingId) {
@@ -4653,7 +4657,7 @@ function makeConstrucaoModule(opts) {
       const all = JSON.parse(armazem.getItem(stKey()) || '{}');
       all[playerId()] = est;
       armazem.setItem(stKey(), JSON.stringify(all));
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Construcao'); }
   }
 
   /* ---------------------- templates (Gist + cache local) -------------- */
@@ -4677,12 +4681,12 @@ function makeConstrucaoModule(opts) {
        * O aninhamento sobrevivia a tudo. */
       for (const k of Object.keys(tpls || {})) endireitarBlocos(tpls[k]);
       armazem.setItem(CACHE_KEY, JSON.stringify(tpls));
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Construcao'); }
   }
   // Lê os templates do Gist (partilhado). Se falhar, usa a cache local.
   async function readTemplatesGist() {
     // não segurar o processo (importante nos testes)
-    try { if (typeof t2 !== 'undefined' && t2 && t2.unref) t2.unref(); } catch (e) {}
+    try { if (typeof t2 !== 'undefined' && t2 && t2.unref) t2.unref(); } catch (e) { seErroDeCodigo(e, 'Construcao'); }
     if (!GIST.id) return loadTemplatesLocal();
     try {
       const url = 'https://api.github.com/gists/' + GIST.id;
@@ -4698,7 +4702,7 @@ function makeConstrucaoModule(opts) {
         try {
           const __rr = await uw.fetch(file.raw_url, { headers: { Accept: 'text/plain' } });
           if (__rr.ok) __txt = await __rr.text();
-        } catch (e) {}
+        } catch (e) { seErroDeCodigo(e, 'Construcao'); }
       }
       const tpls = JSON.parse(__txt || '{}');
       saveTemplatesLocal(tpls); // atualiza cache
@@ -4711,7 +4715,7 @@ function makeConstrucaoModule(opts) {
   async function writeTemplatesGist(tpls) {
     /* Endireitar antes de publicar, senão o estrago viaja para as outras
      * contas. */
-    try { for (const k of Object.keys(tpls || {})) endireitarBlocos(tpls[k]); } catch (e) {}
+    try { for (const k of Object.keys(tpls || {})) endireitarBlocos(tpls[k]); } catch (e) { seErroDeCodigo(e, 'Construcao'); }
     saveTemplatesLocal(tpls);   // o local grava SEMPRE, mesmo quando o Gist trava
 
     /* TRAVÃO: o GitHub limita as escritas por hora e várias gravações seguidas
@@ -4730,7 +4734,7 @@ function makeConstrucaoModule(opts) {
       travaoGist.pendente = null;
       if (p != null) writeTemplatesGist(p);
     }, 30000);
-    try { if (tG && typeof tG.unref === 'function') tG.unref(); } catch (e) {}
+    try { if (tG && typeof tG.unref === 'function') tG.unref(); } catch (e) { seErroDeCodigo(e, 'Construcao'); }
 
     if (!GIST.id || !GIST.token) return { ok: false, msg: 'Sem GIST id/token (guardado só localmente).' };
     try {
@@ -4770,7 +4774,7 @@ function makeConstrucaoModule(opts) {
     } catch (e) { return true; }
   }
   function guardarCfgGratis(v) {
-    try { armazem.setItem(GRATIS_KEY, v ? '1' : '0'); } catch (e) {}
+    try { armazem.setItem(GRATIS_KEY, v ? '1' : '0'); } catch (e) { seErroDeCodigo(e, 'Construcao'); }
   }
 
   /* Edifícios que o jogo NÃO deixa demolir. A Praça de reunião é o caso
@@ -4795,7 +4799,7 @@ function makeConstrucaoModule(opts) {
         l.push(ed);
         armazem.setItem(APRENDIDOS_KEY, JSON.stringify(l));
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Construcao'); }
   }
 
   const DEMOLIR_KEY = 'grepoConstru_demolir_v1';
@@ -4807,11 +4811,11 @@ function makeConstrucaoModule(opts) {
      * vazia, um edifício esquecido no template é demolido. As Termas estavam
      * aqui por omissão por causa disso — quem quiser protegê-las põe-nas. */
     const base = { acimaDoAlvo: false, foraDoTemplate: false, simular: true, poupar: [] };
-    try { Object.assign(base, JSON.parse(armazem.getItem(DEMOLIR_KEY) || '{}')); } catch (e) {}
+    try { Object.assign(base, JSON.parse(armazem.getItem(DEMOLIR_KEY) || '{}')); } catch (e) { seErroDeCodigo(e, 'Construcao'); }
     return base;
   }
   function guardarCfgDemolir(c) {
-    try { armazem.setItem(DEMOLIR_KEY, JSON.stringify(c)); } catch (e) {}
+    try { armazem.setItem(DEMOLIR_KEY, JSON.stringify(c)); } catch (e) { seErroDeCodigo(e, 'Construcao'); }
   }
 
   function senadoChegaParaDemolir(niveis) {
@@ -4946,9 +4950,9 @@ function makeConstrucaoModule(opts) {
           n++;
           ctx.log(`🧹 ${NOMES_PT[a.building_type] || a.building_type}: já estava `
             + 'concluída no servidor — libertei o lugar na fila.');
-        } catch (e) {}
+        } catch (e) { seErroDeCodigo(e, 'Construcao'); }
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Construcao'); }
     return n;
   }
 
@@ -5050,7 +5054,7 @@ function makeConstrucaoModule(opts) {
           }
         }
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Construcao'); }
     return n;
   }
 
@@ -5526,7 +5530,7 @@ function makeConstrucaoModule(opts) {
         }
         return plano.length ? plano : [{ b: '', alvo: 1 }];
       });
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Construcao'); }
     return tpl;
   }
   function templateVazio() { return { modo: 'blocos', blocos: [novoBlocoVazio()] }; }
@@ -6085,7 +6089,7 @@ function makeConstrucaoModule(opts) {
     if (guardar) guardar.onclick = async () => {
       /* O que está em memória pode vir estragado de uma versão antiga. */
       try { for (const k of Object.keys(templatesEdicao || {})) endireitarBlocos(templatesEdicao[k]); }
-      catch (e) {}
+      catch (e) { seErroDeCodigo(e, 'Construcao'); }
 
       /* OS TEMPLATES MUDARAM DEBAIXO DOS PÉS?
        *
@@ -6241,7 +6245,7 @@ function makePesquisaModule(opts) {
     try {
       const f = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroPerguntar;
       if (f) return f(t);
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Pesquisa'); }
     return Promise.resolve(true);
   };
 
@@ -6274,7 +6278,7 @@ function makePesquisaModule(opts) {
         const t = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroTravar;
         if (t) t(2);
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Pesquisa'); }
     try {
       const txt = await resposta.text();
       if (!txt || !txt.trim()) {
@@ -6306,7 +6310,7 @@ function makePesquisaModule(opts) {
     try {
       const a = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroArmazem;
       if (a) return a;
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Pesquisa'); }
     return localStorage;
   })();
 
@@ -6317,7 +6321,7 @@ function makePesquisaModule(opts) {
     try {
       const e = JSON.parse(armazem.getItem('grepoMaestro_modulos_v1') || 'null');
       if (e && e.perfil) perfil = String(e.perfil);
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Pesquisa'); }
     return `${base}-${perfil}-${mundo}.json`;
   }
 
@@ -6446,7 +6450,7 @@ function makePesquisaModule(opts) {
         const tid = Number(a.town_id);
         (out[tid] = out[tid] || []).push(a.research_type);
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Pesquisa'); }
     return out;
   }
 
@@ -6462,7 +6466,7 @@ function makePesquisaModule(opts) {
         for (const b of Object.keys(bd)) niveis[b] = bd[b].level;
         out[Number(a.town_id)] = niveis;
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Pesquisa'); }
     return out;
   }
 
@@ -6521,7 +6525,7 @@ function makePesquisaModule(opts) {
               else { col.add(Object.assign({ id: idNovo }, attrs)); }
               tratado = true;
             }
-          } catch (e) {}
+          } catch (e) { seErroDeCodigo(e, 'Pesquisa'); }
           if (tratado) continue;
 
           // 2) MODELOS: actualizar o que já existe (Town, PlayerLedger, ...)
@@ -6538,12 +6542,12 @@ function makePesquisaModule(opts) {
                 }
               }
             }
-          } catch (e) {}
+          } catch (e) { seErroDeCodigo(e, 'Pesquisa'); }
           continue;
 
         }
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Pesquisa'); }
   }
 
 
@@ -6586,7 +6590,7 @@ function makePesquisaModule(opts) {
           if (item.b === edificio) alvo = Math.max(alvo, Number(item.alvo) || 0);
         }
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Pesquisa'); }
     return alvo;
   }
 
@@ -6618,7 +6622,7 @@ function makePesquisaModule(opts) {
       // pesquisas anteriores exigidas
       const antes = r.research_dependencies || [];
       for (const a of antes) if ((marcadas || []).indexOf(a) < 0) out.pesquisas.push(a);
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Pesquisa'); }
     return out;
   }
 
@@ -6636,11 +6640,11 @@ function makePesquisaModule(opts) {
     } catch (e) { return {}; }
   }
   function saveTemplatesLocal(t) {
-    try { armazem.setItem(CACHE_KEY, JSON.stringify(t)); } catch (e) {}
+    try { armazem.setItem(CACHE_KEY, JSON.stringify(t)); } catch (e) { seErroDeCodigo(e, 'Pesquisa'); }
   }
   async function readTemplatesGist() {
     // não segurar o processo (importante nos testes)
-    try { if (typeof t2 !== 'undefined' && t2 && t2.unref) t2.unref(); } catch (e) {}
+    try { if (typeof t2 !== 'undefined' && t2 && t2.unref) t2.unref(); } catch (e) { seErroDeCodigo(e, 'Pesquisa'); }
     if (!GIST.id) return loadTemplatesLocal();
     try {
       const r = await mUw.fetch('https://api.github.com/gists/' + GIST.id, { headers: { 'Accept': 'application/vnd.github+json' } });
@@ -6655,7 +6659,7 @@ function makePesquisaModule(opts) {
         try {
           const __rr = await (mUw || uw).fetch(file.raw_url, { headers: { Accept: 'text/plain' } });
           if (__rr.ok) __txt = await __rr.text();
-        } catch (e) {}
+        } catch (e) { seErroDeCodigo(e, 'Pesquisa'); }
       }
       const t = JSON.parse(__txt || '{}');
       saveTemplatesLocal(t);
@@ -6681,7 +6685,7 @@ function makePesquisaModule(opts) {
       travaoGist.pendente = null;
       if (p != null) writeTemplatesGist(p);
     }, 30000);
-    try { if (tG && typeof tG.unref === 'function') tG.unref(); } catch (e) {}
+    try { if (tG && typeof tG.unref === 'function') tG.unref(); } catch (e) { seErroDeCodigo(e, 'Pesquisa'); }
 
     saveTemplatesLocal(t);
     if (!GIST.id || !GIST.token) return { ok: false, msg: 'sem Gist id/token — guardado só localmente' };
@@ -6713,7 +6717,7 @@ function makePesquisaModule(opts) {
     } catch (e) { return true; }
   }
   function guardarCfgGratis(v) {
-    try { armazem.setItem(GRATIS_KEY, v ? '1' : '0'); } catch (e) {}
+    try { armazem.setItem(GRATIS_KEY, v ? '1' : '0'); } catch (e) { seErroDeCodigo(e, 'Pesquisa'); }
   }
 
   function agoraServidor() {
@@ -6767,7 +6771,7 @@ function makePesquisaModule(opts) {
           log(`⚠️ ${nomePesquisaPT(a.research_type)}: a conclusão custou ${r.custo} de ouro.`);
         }
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Pesquisa'); }
     return n;
   }
 
@@ -7248,7 +7252,7 @@ function makeRecrutamentoModule(opts) {
     try {
       const f = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroPerguntar;
       if (f) return f(t);
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Recrutamento'); }
     return Promise.resolve(true);
   };
 
@@ -7281,7 +7285,7 @@ function makeRecrutamentoModule(opts) {
         const t = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroTravar;
         if (t) t(2);
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Recrutamento'); }
     try {
       const txt = await resposta.text();
       if (!txt || !txt.trim()) {
@@ -7313,7 +7317,7 @@ function makeRecrutamentoModule(opts) {
     try {
       const a = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroArmazem;
       if (a) return a;
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Recrutamento'); }
     return localStorage;
   })();
 
@@ -7324,7 +7328,7 @@ function makeRecrutamentoModule(opts) {
     try {
       const e = JSON.parse(armazem.getItem('grepoMaestro_modulos_v1') || 'null');
       if (e && e.perfil) perfil = String(e.perfil);
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Recrutamento'); }
     return `${base}-${perfil}-${mundo}.json`;
   }
 
@@ -7356,11 +7360,11 @@ function makeRecrutamentoModule(opts) {
         const t = Math.floor(mUw.Timestamp.now());
         if (Number.isFinite(t) && t > 0) return t;
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Recrutamento'); }
     try {
       const t = Number(mUw.Game && mUw.Game.server_time);
       if (Number.isFinite(t) && t > 0) return Math.floor(t);
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Recrutamento'); }
     return null;   // sem relógio do servidor: não se inventa
   }
 
@@ -7416,7 +7420,7 @@ function makeRecrutamentoModule(opts) {
           if (!u || !Number.isFinite(n)) continue;
           out[u] = n; algum = true;
         }
-      } catch (e) {}
+      } catch (e) { seErroDeCodigo(e, 'Recrutamento'); }
     }
 
     if (!algum) return null;
@@ -7439,7 +7443,7 @@ function makeRecrutamentoModule(opts) {
           }
         }
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Recrutamento'); }
     return out;
   }
 
@@ -7463,7 +7467,7 @@ function makeRecrutamentoModule(opts) {
     try { return JSON.parse(armazem.getItem(EXCESSOS_KEY) || '{}'); } catch (e) { return {}; }
   }
   function gravarExcessos(x) {
-    try { armazem.setItem(EXCESSOS_KEY, JSON.stringify(x)); } catch (e) {}
+    try { armazem.setItem(EXCESSOS_KEY, JSON.stringify(x)); } catch (e) { seErroDeCodigo(e, 'Recrutamento'); }
   }
 
   const PEDIDOS_KEY = 'grepoRecruta_pedidos_v1';
@@ -7472,7 +7476,7 @@ function makeRecrutamentoModule(opts) {
     try { return JSON.parse(armazem.getItem(PEDIDOS_KEY) || '{}'); } catch (e) { return {}; }
   }
   function gravarPedidos(p) {
-    try { armazem.setItem(PEDIDOS_KEY, JSON.stringify(p)); } catch (e) {}
+    try { armazem.setItem(PEDIDOS_KEY, JSON.stringify(p)); } catch (e) { seErroDeCodigo(e, 'Recrutamento'); }
   }
 
   function registarPedido(townId, unitId, quantas) {
@@ -7579,7 +7583,7 @@ function makeRecrutamentoModule(opts) {
           total: Number(a.count) || 0,
         });
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Recrutamento'); }
     return out;
   }
 
@@ -7609,7 +7613,7 @@ function makeRecrutamentoModule(opts) {
           : (a.count != null ? Number(a.count) : 0);
         acc[a.unit_type] = (acc[a.unit_type] || 0) + (total || 0);
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Recrutamento'); }
     return out;
   }
 
@@ -7628,7 +7632,7 @@ function makeRecrutamentoModule(opts) {
         }
         out[Number(a.town_id)] = n;
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Recrutamento'); }
     return out;
   }
 
@@ -7756,7 +7760,7 @@ function makeRecrutamentoModule(opts) {
               else { col.add(Object.assign({ id: idNovo }, attrs)); }
               tratado = true;
             }
-          } catch (e) {}
+          } catch (e) { seErroDeCodigo(e, 'Recrutamento'); }
           if (tratado) continue;
 
           // 2) MODELOS: actualizar o que já existe (Town, PlayerLedger, ...)
@@ -7773,12 +7777,12 @@ function makeRecrutamentoModule(opts) {
                 }
               }
             }
-          } catch (e) {}
+          } catch (e) { seErroDeCodigo(e, 'Recrutamento'); }
           continue;
 
         }
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Recrutamento'); }
   }
 
   async function recrutar(townId, unitId, amount, isNaval) {
@@ -7821,7 +7825,7 @@ function makeRecrutamentoModule(opts) {
       ['zeus', 'poseidon', 'hera', 'athena', 'hades', 'artemis', 'aphrodite', 'ares'].forEach((d) => {
         out[d] = Math.floor(Number(a[d + '_favor']) || 0);
       });
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Recrutamento'); }
     return out;
   }
 
@@ -7947,7 +7951,7 @@ function makeRecrutamentoModule(opts) {
           if (item.b === edificio) alvo = Math.max(alvo, Number(item.alvo) || 0);
         }
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Recrutamento'); }
     return alvo;
   }
 
@@ -8019,7 +8023,7 @@ function makeRecrutamentoModule(opts) {
           for (const r of precisa) if (marcadas.indexOf(r) < 0) out.pesquisas.push(r);
         }
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Recrutamento'); }
     return out;
   }
 
@@ -8062,7 +8066,7 @@ function makeRecrutamentoModule(opts) {
           out[item.b] = Math.max(out[item.b] || 0, Number(item.alvo) || 0);
         }
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Recrutamento'); }
     return out;
   }
 
@@ -8083,7 +8087,7 @@ function makeRecrutamentoModule(opts) {
         out.temPesquisa = true;
         out.arado = (t.pesquisas || []).indexOf('plow') >= 0;
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Recrutamento'); }
 
     // Termas: template de construção
     try {
@@ -8097,7 +8101,7 @@ function makeRecrutamentoModule(opts) {
           }
         }
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Recrutamento'); }
 
     // já feitos? conta na mesma
     try {
@@ -8105,14 +8109,14 @@ function makeRecrutamentoModule(opts) {
       const mods = mUw.MM.getModels().Researches || {};
       const feitas = (mods[tid] && mods[tid].attributes) || {};
       if (feitas.plow) out.arado = true;
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Recrutamento'); }
     try {
       const col = mUw.MM.getCollections().BuildingBuildData[0];
       const m = col.models.find((x) => Number(x.attributes.town_id) === Number(townId));
       const bd = (m && m.attributes.building_data) || {};
       const lv = (bd.thermal || {}).level;
       if (lv && lv !== '-' && Number(lv) > 0) out.termas = true;
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Recrutamento'); }
 
     return out;
   }
@@ -8143,7 +8147,7 @@ function makeRecrutamentoModule(opts) {
           const lv = bd[k].level;
           bdAtual[k] = (lv === '-' || lv == null) ? 0 : Number(lv);
         }
-      } catch (e) {}
+      } catch (e) { seErroDeCodigo(e, 'Recrutamento'); }
 
       // consumo actual e consumo quando o template estiver completo
       const alvos = niveisDoTemplate(nomeGrupo);
@@ -8221,11 +8225,11 @@ function makeRecrutamentoModule(opts) {
       ativo: false, minPopulacao: 200,
       usar: ['fertility_improvement', 'spartan_training', 'call_of_the_ocean'],
     };
-    try { Object.assign(base, JSON.parse(armazem.getItem(FEITICOS_KEY) || '{}')); } catch (e) {}
+    try { Object.assign(base, JSON.parse(armazem.getItem(FEITICOS_KEY) || '{}')); } catch (e) { seErroDeCodigo(e, 'Recrutamento'); }
     return base;
   }
   function guardarCfgFeiticos(c) {
-    try { armazem.setItem(FEITICOS_KEY, JSON.stringify(c)); } catch (e) {}
+    try { armazem.setItem(FEITICOS_KEY, JSON.stringify(c)); } catch (e) { seErroDeCodigo(e, 'Recrutamento'); }
   }
 
   const FEITICOS = {
@@ -8470,7 +8474,7 @@ function makeRecrutamentoModule(opts) {
     const comDesconto = new Set();
     if (descontoUnidade) {
       for (const i of ids) {
-        try { if ((descontoUnidade(i) || 0) > 0) comDesconto.add(i); } catch (e) {}
+        try { if ((descontoUnidade(i) || 0) > 0) comDesconto.add(i); } catch (e) { seErroDeCodigo(e, 'Recrutamento'); }
       }
     }
 
@@ -8689,7 +8693,7 @@ function makeRecrutamentoModule(opts) {
     try { return armazem.getItem(VOADORES_GRUPO_KEY) || ''; } catch (e) { return ''; }
   }
   function guardarGrupoVoadores(g) {
-    try { armazem.setItem(VOADORES_GRUPO_KEY, g || ''); } catch (e) {}
+    try { armazem.setItem(VOADORES_GRUPO_KEY, g || ''); } catch (e) { seErroDeCodigo(e, 'Recrutamento'); }
   }
 
   // Esta cidade pertence ao grupo de voadores?
@@ -8717,7 +8721,7 @@ function makeRecrutamentoModule(opts) {
         if (Number(a.town_id) !== Number(townId)) continue;
         if (grupos[a.group_id] === g) return true;
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Recrutamento'); }
     return false;
   }
 
@@ -8726,15 +8730,15 @@ function makeRecrutamentoModule(opts) {
     try { return armazem.getItem(VOADORES_KEY) === '1'; } catch (e) { return false; }
   }
   function ligarVoadores(on) {
-    try { armazem.setItem(VOADORES_KEY, on ? '1' : '0'); } catch (e) {}
+    try { armazem.setItem(VOADORES_KEY, on ? '1' : '0'); } catch (e) { seErroDeCodigo(e, 'Recrutamento'); }
   }
 
   const CACHE_KEY = 'grepoRecruta_templates_v1';
   function loadLocal() { try { return JSON.parse(armazem.getItem(CACHE_KEY) || '{}'); } catch (e) { return {}; } }
-  function saveLocal(t) { try { armazem.setItem(CACHE_KEY, JSON.stringify(t)); } catch (e) {} }
+  function saveLocal(t) { try { armazem.setItem(CACHE_KEY, JSON.stringify(t)); } catch (e) { seErroDeCodigo(e, 'Recrutamento'); } }
   async function readGist() {
     // não segurar o processo (importante nos testes)
-    try { if (typeof t2 !== 'undefined' && t2 && t2.unref) t2.unref(); } catch (e) {}
+    try { if (typeof t2 !== 'undefined' && t2 && t2.unref) t2.unref(); } catch (e) { seErroDeCodigo(e, 'Recrutamento'); }
     if (!GIST.id) return loadLocal();
     try {
       const r = await mUw.fetch('https://api.github.com/gists/' + GIST.id, { headers: { 'Accept': 'application/vnd.github+json' } });
@@ -8749,7 +8753,7 @@ function makeRecrutamentoModule(opts) {
         try {
           const __rr = await (mUw || uw).fetch(f.raw_url, { headers: { Accept: 'text/plain' } });
           if (__rr.ok) __txt = await __rr.text();
-        } catch (e) {}
+        } catch (e) { seErroDeCodigo(e, 'Recrutamento'); }
       }
       const t = JSON.parse(__txt || '{}');
       saveLocal(t);
@@ -8775,7 +8779,7 @@ function makeRecrutamentoModule(opts) {
       travaoGist.pendente = null;
       if (p != null) writeGist(p);
     }, 30000);
-    try { if (tG && typeof tG.unref === 'function') tG.unref(); } catch (e) {}
+    try { if (tG && typeof tG.unref === 'function') tG.unref(); } catch (e) { seErroDeCodigo(e, 'Recrutamento'); }
 
     saveLocal(t);
     if (!GIST.id || !GIST.token) return { ok: false, msg: 'sem Gist id/token — guardado só localmente' };
@@ -10149,7 +10153,7 @@ function makeHeroisModule(opts) {
     try {
       const a = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroArmazem;
       if (a) return a;
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Herois'); }
     return localStorage;
   })();
 
@@ -10160,7 +10164,7 @@ function makeHeroisModule(opts) {
     try {
       const e = JSON.parse(armazem.getItem('grepoMaestro_modulos_v1') || 'null');
       if (e && e.perfil) perfil = String(e.perfil);
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Herois'); }
     return `${base}-${perfil}-${mundo}.json`;
   }
 
@@ -10194,11 +10198,11 @@ function makeHeroisModule(opts) {
         const t = Math.floor(mUw.Timestamp.now());
         if (Number.isFinite(t) && t > 0) return t;
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Herois'); }
     try {
       const t = Number(mUw.Game && mUw.Game.server_time);
       if (Number.isFinite(t) && t > 0) return Math.floor(t);
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Herois'); }
     return null;   // sem relógio do servidor: não se inventa
   }
 
@@ -10267,7 +10271,7 @@ function makeHeroisModule(opts) {
       try {
         if (j.new_offer_currency) nova[j.new_offer_currency.currency] = j.new_offer_currency.amount;
         if (j.new_demand_currency) nova[j.new_demand_currency.currency] = j.new_demand_currency.amount;
-      } catch (e) {}
+      } catch (e) { seErroDeCodigo(e, 'Herois'); }
       return { ok: true, saldos: nova };
     } catch (e) { return { ok: false, msg: e.message }; }
   }
@@ -10464,7 +10468,7 @@ function makeHeroisModule(opts) {
               else { col.add(Object.assign({ id: idNovo }, attrs)); }
               tratado = true;
             }
-          } catch (e) {}
+          } catch (e) { seErroDeCodigo(e, 'Herois'); }
           if (tratado) continue;
 
           // 2) MODELOS: actualizar o que já existe (Town, PlayerLedger, ...)
@@ -10481,12 +10485,12 @@ function makeHeroisModule(opts) {
                 }
               }
             }
-          } catch (e) {}
+          } catch (e) { seErroDeCodigo(e, 'Herois'); }
           continue;
 
         }
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Herois'); }
   }
 
 
@@ -10567,7 +10571,7 @@ function makeHeroisModule(opts) {
            * falta. */
           return null;
         }
-      } catch (e) {}
+      } catch (e) { seErroDeCodigo(e, 'Herois'); }
 
       /* SÓ NAS MULTIS.
        *
@@ -10603,7 +10607,7 @@ function makeHeroisModule(opts) {
       if (gruposNC.has('todos')) {
         try {
           for (const id of Object.keys(mUw.ITowns.towns)) candidatas.add(Number(id));
-        } catch (e) {}
+        } catch (e) { seErroDeCodigo(e, 'Herois'); }
       } else {
         const grupos = {};
         try {
@@ -10612,7 +10616,7 @@ function makeHeroisModule(opts) {
             const a = m.attributes || {};
             if (gruposNC.has(a.name)) grupos[a.id] = a.name;
           }
-        } catch (e) {}
+        } catch (e) { seErroDeCodigo(e, 'Herois'); }
 
         try {
           const gts = mUw.MM.getCollections().TownGroupTown;
@@ -10620,7 +10624,7 @@ function makeHeroisModule(opts) {
             const a = m.attributes || {};
             if (grupos[a.group_id]) candidatas.add(Number(a.town_id));
           }
-        } catch (e) {}
+        } catch (e) { seErroDeCodigo(e, 'Herois'); }
       }
 
       if (!candidatas.size) return null;
@@ -10639,7 +10643,7 @@ function makeHeroisModule(opts) {
             const a = m.attributes || {};
             return Number(a.town_id) === Number(id) && a.unit_type === 'colonize_ship';
           }).length;
-        } catch (e) {}
+        } catch (e) { seErroDeCodigo(e, 'Herois'); }
         if (naFila) continue;
 
         let r = null;
@@ -10757,11 +10761,11 @@ function makeHeroisModule(opts) {
   const PESOS_KEY = 'grepoHerois_pesos_v1';
   function pesosTipo() {
     const base = { custo: 1.0, velocidade: 0.6, ambos: 1.4, favor: 1.6 };
-    try { Object.assign(base, JSON.parse(armazem.getItem(PESOS_KEY) || '{}')); } catch (e) {}
+    try { Object.assign(base, JSON.parse(armazem.getItem(PESOS_KEY) || '{}')); } catch (e) { seErroDeCodigo(e, 'Herois'); }
     return base;
   }
   function guardarPesos(p2) {
-    try { armazem.setItem(PESOS_KEY, JSON.stringify(p2)); } catch (e) {}
+    try { armazem.setItem(PESOS_KEY, JSON.stringify(p2)); } catch (e) { seErroDeCodigo(e, 'Herois'); }
   }
 
   function tipoDoHeroi(tipo) {
@@ -10912,7 +10916,7 @@ function makeHeroisModule(opts) {
         const a = m.attributes || {};
         if (a.town_id && a.building_data) out[a.town_id] = a.building_data;
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Herois'); }
     return out;
   }
 
@@ -10927,14 +10931,14 @@ function makeHeroisModule(opts) {
         for (const b of Object.keys(bd)) n[b] = bd[b].level;
         niveis[Number(a.town_id)] = n;
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Herois'); }
     try {
       for (const t of ctx.getMyTowns()) {
         const town = mUw.ITowns.getTown(Number(t.id));
         const p = town && (town.getPoints ? town.getPoints() : (town.attributes || {}).points);
         if (p != null) pontos[Number(t.id)] = p;
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Herois'); }
     return { niveis, pontos };
   }
 
@@ -10957,7 +10961,7 @@ function makeHeroisModule(opts) {
         const blocos = tpls[nome].blocos || [];
         out[t.id] = [].concat.apply([], blocos);
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Herois'); }
     return out;
   }
 
@@ -11006,7 +11010,7 @@ function makeHeroisModule(opts) {
   // { "<townId>": { adiar: [unitIds], ate: timestamp } }
   const ADIAR_KEY = 'grepoHerois_adiar_v1';
   function lerAdiamentos() { try { return JSON.parse(armazem.getItem(ADIAR_KEY) || '{}'); } catch (e) { return {}; } }
-  function gravarAdiamentos(a) { try { armazem.setItem(ADIAR_KEY, JSON.stringify(a)); } catch (e) {} }
+  function gravarAdiamentos(a) { try { armazem.setItem(ADIAR_KEY, JSON.stringify(a)); } catch (e) { seErroDeCodigo(e, 'Herois'); } }
 
   // Quanto "trabalho" há numa cidade para as unidades que o herói beneficia.
   // Usa os alvos do módulo de recrutamento (mesmo formato) e o que já existe.
@@ -11061,7 +11065,7 @@ function makeHeroisModule(opts) {
       try {
         const exp = JSON.parse(armazem.getItem('grepoRecruta_expandido_v1') || '{}');
         for (const tid of Object.keys(exp)) alvosPorCidade[tid] = exp[tid];
-      } catch (e) {}
+      } catch (e) { seErroDeCodigo(e, 'Herois'); }
       // o que já tenho (casa + fora) e em fila
       const mods = mUw.MM.getModels().Units || {};
       for (const k of Object.keys(mods)) {
@@ -11426,10 +11430,10 @@ function makeHeroisModule(opts) {
   /* ---------------------- config (Gist + cache) ------------------------- */
   const CACHE_KEY = 'grepoHerois_config_v1';
   function loadLocal() { try { return JSON.parse(armazem.getItem(CACHE_KEY) || '{}'); } catch (e) { return {}; } }
-  function saveLocal(c) { try { armazem.setItem(CACHE_KEY, JSON.stringify(c)); } catch (e) {} }
+  function saveLocal(c) { try { armazem.setItem(CACHE_KEY, JSON.stringify(c)); } catch (e) { seErroDeCodigo(e, 'Herois'); } }
   async function readGist() {
     // não segurar o processo (importante nos testes)
-    try { if (typeof t2 !== 'undefined' && t2 && t2.unref) t2.unref(); } catch (e) {}
+    try { if (typeof t2 !== 'undefined' && t2 && t2.unref) t2.unref(); } catch (e) { seErroDeCodigo(e, 'Herois'); }
     if (!GIST.id) return loadLocal();
     try {
       const r = await mUw.fetch('https://api.github.com/gists/' + GIST.id, { headers: { 'Accept': 'application/vnd.github+json' } });
@@ -11444,7 +11448,7 @@ function makeHeroisModule(opts) {
         try {
           const __rr = await (mUw || uw).fetch(f.raw_url, { headers: { Accept: 'text/plain' } });
           if (__rr.ok) __txt = await __rr.text();
-        } catch (e) {}
+        } catch (e) { seErroDeCodigo(e, 'Herois'); }
       }
       const c = JSON.parse(__txt || '{}');
       saveLocal(c);
@@ -11470,7 +11474,7 @@ function makeHeroisModule(opts) {
       travaoGist.pendente = null;
       if (p != null) writeGist(p);
     }, 30000);
-    try { if (tG && typeof tG.unref === 'function') tG.unref(); } catch (e) {}
+    try { if (tG && typeof tG.unref === 'function') tG.unref(); } catch (e) { seErroDeCodigo(e, 'Herois'); }
 
     saveLocal(c);
     if (!GIST.id || !GIST.token) return { ok: false, msg: 'sem Gist id/token — guardado só localmente' };
@@ -11980,7 +11984,7 @@ function makeBandidosModule(opts) {
     } catch (e) { return Object.assign({}, DEFAULTS); }
   }
   function guardarCfg(c) {
-    try { armazem.setItem(CFG_KEY, JSON.stringify(c)); } catch (e) {}
+    try { armazem.setItem(CFG_KEY, JSON.stringify(c)); } catch (e) { seErroDeCodigo(e, 'Bandidos'); }
   }
 
 
@@ -12019,7 +12023,7 @@ function makeBandidosModule(opts) {
             if (!g || g.is_naval || k === 'godsent') continue;
             pop += Number(u[k]) || 0;
           }
-        } catch (e) {}
+        } catch (e) { seErroDeCodigo(e, 'Bandidos'); }
         if (pop > mais) { mais = pop; melhor = id; }
       }
       return melhor;
@@ -12340,7 +12344,7 @@ function makeSentinelasModule(opts) {
     catch (e) { return Object.assign({}, DEFAULTS); }
   }
   function guardarCfg(c) {
-    try { armazem.setItem(CFG_KEY, JSON.stringify(c)); } catch (e) {}
+    try { armazem.setItem(CFG_KEY, JSON.stringify(c)); } catch (e) { seErroDeCodigo(e, 'Sentinelas'); }
   }
 
   /* O que já enviámos: { <cidadeAliada>: { quando, quantas } } */
@@ -12348,7 +12352,7 @@ function makeSentinelasModule(opts) {
     try { return JSON.parse(armazem.getItem(REG_KEY) || '{}'); } catch (e) { return {}; }
   }
   function gravarRegisto(r) {
-    try { armazem.setItem(REG_KEY, JSON.stringify(r)); } catch (e) {}
+    try { armazem.setItem(REG_KEY, JSON.stringify(r)); } catch (e) { seErroDeCodigo(e, 'Sentinelas'); }
   }
 
   /* AS ALIANÇAS AMIGAS: a minha, mais as que têm pacto de paz. */
@@ -12382,7 +12386,7 @@ function makeSentinelasModule(opts) {
       let minhaNome = '';
       try {
         minhaNome = String(mUw.Game.alliance_name || '');
-      } catch (e) {}
+      } catch (e) { seErroDeCodigo(e, 'Sentinelas'); }
 
       if (!minhaNome) {
         try {
@@ -12393,7 +12397,7 @@ function makeSentinelasModule(opts) {
               minhaNome = String(a.alliance_name); break;
             }
           }
-        } catch (e) {}
+        } catch (e) { seErroDeCodigo(e, 'Sentinelas'); }
       }
 
       if (!minhaNome) {
@@ -12420,7 +12424,7 @@ function makeSentinelasModule(opts) {
         }
       }
       out.delete('');
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Sentinelas'); }
     return out;
   }
 
@@ -12465,7 +12469,7 @@ function makeSentinelasModule(opts) {
           if (Number(a[u]) > 0) return true;
         }
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Sentinelas'); }
     return false;
   }
 
@@ -12783,7 +12787,7 @@ function makeDiariaModule(opts) {
     catch (e) { return Object.assign({}, DEFAULTS); }
   }
   function guardarCfg(c) {
-    try { armazem.setItem(CFG_KEY, JSON.stringify(c)); } catch (e) {}
+    try { armazem.setItem(CFG_KEY, JSON.stringify(c)); } catch (e) { seErroDeCodigo(e, 'Diaria'); }
   }
 
   function caixa() {
@@ -12836,9 +12840,9 @@ function makeDiariaModule(opts) {
       if (sub) {
         try {
           if ((mUw.GameData.units || {})[sub]) return true;
-        } catch (e) {}
+        } catch (e) { seErroDeCodigo(e, 'Diaria'); }
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Diaria'); }
     return false;
   }
 
@@ -13073,7 +13077,7 @@ function makeFabricaNCModule(opts) {
     catch (e) { return Object.assign({}, DEFAULTS); }
   }
   function guardarCfg(c) {
-    try { armazem.setItem(CFG_KEY, JSON.stringify(c)); } catch (e) {}
+    try { armazem.setItem(CFG_KEY, JSON.stringify(c)); } catch (e) { seErroDeCodigo(e, 'FabricaNC'); }
   }
   function estado() {
     try { return JSON.parse(armazem.getItem(ESTADO_KEY) || '{}'); } catch (e) { return {}; }
@@ -13176,7 +13180,7 @@ function makeFabricaNCModule(opts) {
         out[d] = out[d] || { wood: 0, stone: 0, iron: 0 };
         for (const r of RES) out[d][r] += Number(a[r]) || 0;
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'FabricaNC'); }
     return out;
   }
 
@@ -13243,7 +13247,7 @@ function makeFabricaNCModule(opts) {
         if (v === true) c.ativo = true;
         if (v === false) c.ativo = false;
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'FabricaNC'); }
 
     if (!c.ativo) { rotina('Fábrica de NC: está desligada.'); return; }
 
@@ -13444,11 +13448,11 @@ function makeFabricaNCModule(opts) {
         if (a.town_arrival_at && Number(a.town_arrival_at) > agoraJogo()) {
           const faltam = Math.round((Number(a.town_arrival_at) - agoraJogo()) / 60);
           let onde = a.home_town_id;
-          try { onde = mUw.ITowns.getTown(Number(a.home_town_id)).getName(); } catch (e) {}
+          try { onde = mUw.ITowns.getTown(Number(a.home_town_id)).getName(); } catch (e) { seErroDeCodigo(e, 'FabricaNC'); }
           return `sem Argus (a caminho de ${onde}, ${faltam} min)`;
         }
         let onde = a.home_town_id;
-        try { onde = mUw.ITowns.getTown(Number(a.home_town_id)).getName(); } catch (e) {}
+        try { onde = mUw.ITowns.getTown(Number(a.home_town_id)).getName(); } catch (e) { seErroDeCodigo(e, 'FabricaNC'); }
         return `sem Argus (está em ${onde})`;
       } catch (e) { return 'sem Argus'; }
     })();
@@ -13738,7 +13742,7 @@ function makeFabricaNCModule(opts) {
             + (d ? ` (Argus -${Math.round(d * 100)}%)` : ' (sem Argus)');
         }
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'FabricaNC'); }
 
     container.innerHTML = `
       <label style="display:block;margin-bottom:4px">
@@ -13868,7 +13872,7 @@ function makeFeiticosModule(opts) {
     catch (e) { return Object.assign({}, DEFAULTS); }
   }
   function guardarCfg(c) {
-    try { armazem.setItem(CFG_KEY, JSON.stringify(c)); } catch (e) {}
+    try { armazem.setItem(CFG_KEY, JSON.stringify(c)); } catch (e) { seErroDeCodigo(e, 'Feiticos'); }
   }
 
   /* ---- PRAZO DE 24 HORAS NA LISTA ------------------------------------- */
@@ -14029,7 +14033,7 @@ function makeFeiticosModule(opts) {
         quando: Math.floor(Date.now() / 1000),
       };
       localStorage.setItem(chavePorPerfil('grepoFavor_pedidos_v1'), JSON.stringify(p));
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Feiticos'); }
   }
 
   /* ============ LER UM RELATÓRIO ======================================
@@ -14122,7 +14126,7 @@ function makeFeiticosModule(opts) {
         if (soPositivos && p.negative) continue;
         out.push(id);
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Feiticos'); }
     return out;
   }
 
@@ -14151,7 +14155,7 @@ function makeFeiticosModule(opts) {
         const g = mUw.ITowns.getTown(Number(t.id));
         if (g && g.god && String(g.god()) === deus) return t;
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Feiticos'); }
     return null;
   }
 
@@ -14168,7 +14172,7 @@ function makeFeiticosModule(opts) {
         if (v === true) c.ativo = true;
         if (v === false) c.ativo = false;
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Feiticos'); }
 
     if (!c.ativo) { rotina('Feitiços: está desligado.'); return; }
 
@@ -14227,7 +14231,7 @@ function makeFeiticosModule(opts) {
         guardarEstado(est);
 
         let nome = alvo;
-        try { nome = mUw.ITowns.getTown(Number(alvo)).getName(); } catch (e) {}
+        try { nome = mUw.ITowns.getTown(Number(alvo)).getName(); } catch (e) { seErroDeCodigo(e, 'Feiticos'); }
         const dura = r.acaba ? Math.round((r.acaba - agora) / 60) : '?';
         log(`🛡️ Proteção de Cidade em ${nome} — dura ${dura} min.`);
       } else if (/j[áa] est[áa]|already|protec/i.test(String(r.msg))) {
@@ -14410,7 +14414,7 @@ function makeFeiticosModule(opts) {
                * já, em vez de esperar pela passagem seguinte. */
               pedirFavor('poseidon', 280 * Math.max(0, (c.maxTempestades || 3) - jaFoi - 1));
               let nome = a.target_town_id;
-              try { nome = mUw.ITowns.getTown(Number(a.target_town_id)).getName(); } catch (e) {}
+              try { nome = mUw.ITowns.getTown(Number(a.target_town_id)).getName(); } catch (e) { seErroDeCodigo(e, 'Feiticos'); }
               log(`🌊 Tempestade do mar no colonizador que vem para ${nome} `
                 + `(${jaFoi + 1}ª). Vê o relatório para saber o que afundou.`);
               /* Voltar antes de ele chegar, para lançar outra. */
@@ -14458,7 +14462,7 @@ function makeFeiticosModule(opts) {
 
     const linhas = (c.protegidas || []).map((id) => {
       let nome = id;
-      try { nome = mUw.ITowns.getTown(Number(id)).getName(); } catch (e) {}
+      try { nome = mUw.ITowns.getTown(Number(id)).getName(); } catch (e) { seErroDeCodigo(e, 'Feiticos'); }
       const acaba = Number((est.protecao || {})[id]) || 0;
       const quanto = acaba > agora
         ? `protegida mais ${Math.round((acaba - agora) / 60)} min`
@@ -14687,7 +14691,7 @@ function makeAldeiasModule(opts) {
     try {
       const f = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroPerguntar;
       if (f) return f(t);
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Aldeias'); }
     return Promise.resolve(true);
   };
 
@@ -14724,7 +14728,7 @@ function makeAldeiasModule(opts) {
         const t = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroTravar;
         if (t) t(2);
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Aldeias'); }
     try {
       const txt = await resposta.text();
       if (!txt || !txt.trim()) {
@@ -14745,7 +14749,7 @@ function makeAldeiasModule(opts) {
     try {
       const a = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroArmazem;
       if (a) return a;
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Aldeias'); }
     return localStorage;
   })();
 
@@ -14753,7 +14757,7 @@ function makeAldeiasModule(opts) {
     try {
       const t = Number(mUw.Timestamp.now());
       if (Number.isFinite(t) && t > 0) return Math.floor(t) * 1000;
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Aldeias'); }
     return Date.now();
   }
 
@@ -14763,11 +14767,11 @@ function makeAldeiasModule(opts) {
         const t = Math.floor(mUw.Timestamp.now());
         if (Number.isFinite(t) && t > 0) return t;
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Aldeias'); }
     try {
       const t = Number(mUw.Game && mUw.Game.server_time);
       if (Number.isFinite(t) && t > 0) return Math.floor(t);
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Aldeias'); }
     return null;   // sem relógio do servidor: não se inventa
   }
 
@@ -14881,7 +14885,7 @@ function makeAldeiasModule(opts) {
               else { col.add(Object.assign({ id: idNovo }, attrs)); }
               tratado = true;
             }
-          } catch (e) {}
+          } catch (e) { seErroDeCodigo(e, 'Aldeias'); }
           if (tratado) continue;
 
           // 2) MODELOS: actualizar o que já existe (Town, PlayerLedger, ...)
@@ -14898,12 +14902,12 @@ function makeAldeiasModule(opts) {
                 }
               }
             }
-          } catch (e) {}
+          } catch (e) { seErroDeCodigo(e, 'Aldeias'); }
           continue;
 
         }
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Aldeias'); }
   }
 
 
@@ -14945,7 +14949,7 @@ function makeAldeiasModule(opts) {
             if (!existe) col.add(item);
           }
         }
-      } catch (e) {}
+      } catch (e) { seErroDeCodigo(e, 'Aldeias'); }
 
       jaCarregou = true;
       return colModels('FarmTownPlayerRelation').length > 0;
@@ -15035,11 +15039,11 @@ function makeAldeiasModule(opts) {
     try {
       const guardado = JSON.parse(armazem.getItem('grepoAldeias_trocas_v1') || '{}');
       Object.assign(c, guardado);
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Aldeias'); }
     return c;
   }
   function guardarTrocasCfg(c) {
-    try { armazem.setItem('grepoAldeias_trocas_v1', JSON.stringify(c)); } catch (e) {}
+    try { armazem.setItem('grepoAldeias_trocas_v1', JSON.stringify(c)); } catch (e) { seErroDeCodigo(e, 'Aldeias'); }
   }
 
   function MAP_RES(v) {
@@ -15064,7 +15068,7 @@ function makeAldeiasModule(opts) {
     try {
       if (typeof town.getStorage === 'function') return Number(town.getStorage()) || 0;
       if (typeof town.resources === 'function') return Number((town.resources() || {}).storage) || 0;
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Aldeias'); }
     return 0;
   }
 
@@ -15389,11 +15393,11 @@ function makeAldeiasModule(opts) {
   };
   function evoCfg() {
     const c = Object.assign({}, EVO_DEFAULTS);
-    try { Object.assign(c, JSON.parse(armazem.getItem('grepoAldeias_evo_v1') || '{}')); } catch (e) {}
+    try { Object.assign(c, JSON.parse(armazem.getItem('grepoAldeias_evo_v1') || '{}')); } catch (e) { seErroDeCodigo(e, 'Aldeias'); }
     return c;
   }
   function guardarEvoCfg(c) {
-    try { armazem.setItem('grepoAldeias_evo_v1', JSON.stringify(c)); } catch (e) {}
+    try { armazem.setItem('grepoAldeias_evo_v1', JSON.stringify(c)); } catch (e) { seErroDeCodigo(e, 'Aldeias'); }
   }
 
   function pontosDeCombate() {
@@ -15536,7 +15540,7 @@ function makeAldeiasModule(opts) {
   }
 
   async function tratarCaptcha(ctx, onde) {
-    try { armazem.setItem(CAPTCHA_KEY, String(agoraServidorMs())); } catch (e) {}
+    try { armazem.setItem(CAPTCHA_KEY, String(agoraServidorMs())); } catch (e) { seErroDeCodigo(e, 'Aldeias'); }
     ctx.log(`🛑 Verificação de bot detetada (${onde}). Módulo suspenso — resolve no jogo.`);
     if (ctx.avisarDiscord) {
       await ctx.avisarDiscord('captcha', {
@@ -15560,7 +15564,7 @@ function makeAldeiasModule(opts) {
       if (!st) return;
       if (typeof st.deleteOutdated === 'function') st.deleteOutdated();
       // (não se chama deleteBotCheckNotification de propósito)
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Aldeias'); }
   }
 
   let passagem = 0;
@@ -15979,7 +15983,7 @@ function makeAlertasModule(opts) {
 
   function vistoAoArrancar(quando) {
     if (arranqueAlertas == null) {
-      try { arranqueAlertas = Number(armazem.getItem(ARRANQUE_ALERTAS)) || null; } catch (e) {}
+      try { arranqueAlertas = Number(armazem.getItem(ARRANQUE_ALERTAS)) || null; } catch (e) { seErroDeCodigo(e, 'Alertas'); }
     }
     if (!arranqueAlertas || !quando) return false;
     return Math.abs(Number(quando) - arranqueAlertas) < 90;
@@ -16050,7 +16054,7 @@ function makeAlertasModule(opts) {
         const t = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroTravar;
         if (t) t(2);
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Alertas'); }
     try {
       const txt = await resposta.text();
       if (!txt || !txt.trim()) {
@@ -16071,7 +16075,7 @@ function makeAlertasModule(opts) {
     try {
       const a = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroArmazem;
       if (a) return a;
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Alertas'); }
     return localStorage;
   })();
 
@@ -16079,7 +16083,7 @@ function makeAlertasModule(opts) {
     try {
       const f = mUw.__maestroHoraJogo || uw.__maestroHoraJogo;
       if (f) return f(segundos);
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Alertas'); }
     try {
       /* serverGMTOffset é uma FUNÇÃO, não um número. */
       const w = mUw || uw;
@@ -16096,11 +16100,11 @@ function makeAlertasModule(opts) {
         const t = Math.floor(mUw.Timestamp.now());
         if (Number.isFinite(t) && t > 0) return t;
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Alertas'); }
     try {
       const t = Number(mUw.Game && mUw.Game.server_time);
       if (Number.isFinite(t) && t > 0) return Math.floor(t);
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Alertas'); }
     return null;   // sem relógio do servidor: não se inventa
   }
 
@@ -16115,7 +16119,7 @@ function makeAlertasModule(opts) {
       return { jogadores: v.jogadores || [], aliancas: v.aliancas || [] };
     } catch (e) { return { jogadores: [], aliancas: [] }; }
   }
-  function guardarIgnorados(v) { try { armazem.setItem(IGNORAR_KEY, JSON.stringify(v)); } catch (e) {} }
+  function guardarIgnorados(v) { try { armazem.setItem(IGNORAR_KEY, JSON.stringify(v)); } catch (e) { seErroDeCodigo(e, 'Alertas'); } }
   function ehIgnorado(a) {
     const ig = lerIgnorados();
     const nome = String(a.jogador || '').trim().toLowerCase();
@@ -16139,10 +16143,10 @@ function makeAlertasModule(opts) {
     // Para ataques de horas, 55 s é irrelevante; baixa-o só se receberes
     // ataques muito curtos e usares a esquiva.
     const base = { K: K_DEFAULT, avisarApoios: false, ativo: true, segundosEntreConsultas: 55 };
-    try { Object.assign(base, JSON.parse(armazem.getItem(CFG_KEY) || '{}')); } catch (e) {}
+    try { Object.assign(base, JSON.parse(armazem.getItem(CFG_KEY) || '{}')); } catch (e) { seErroDeCodigo(e, 'Alertas'); }
     return base;
   }
-  function guardarCfg(c) { try { armazem.setItem(CFG_KEY, JSON.stringify(c)); } catch (e) {} }
+  function guardarCfg(c) { try { armazem.setItem(CFG_KEY, JSON.stringify(c)); } catch (e) { seErroDeCodigo(e, 'Alertas'); } }
 
   // command_ids já avisados (para não repetir), com limpeza dos antigos.
   function lerVistos() {
@@ -16151,7 +16155,7 @@ function makeAlertasModule(opts) {
   function gravarVistos(v) {
     const agora = agoraJogo();
     for (const k of Object.keys(v)) if (v[k] < agora - 86400) delete v[k]; // esquece ao fim de 1 dia
-    try { armazem.setItem(VISTOS_KEY, JSON.stringify(v)); } catch (e) {}
+    try { armazem.setItem(VISTOS_KEY, JSON.stringify(v)); } catch (e) { seErroDeCodigo(e, 'Alertas'); }
   }
 
   /* ---------------------- leitura dos movimentos ------------------------ */
@@ -16178,7 +16182,7 @@ function makeAlertasModule(opts) {
       if (resp.status === 429) {
         // Limite de pedidos do servidor: recuar e tentar mais tarde.
         limitado429 = true;
-        try { mUw.console.log('[ALERTAS] servidor a limitar pedidos (429) — espero.'); } catch (e) {}
+        try { mUw.console.log('[ALERTAS] servidor a limitar pedidos (429) — espero.'); } catch (e) { seErroDeCodigo(e, 'Alertas'); }
         await new Promise((r2) => setTimeout(r2, 3000));
         return [];
       }
@@ -16186,7 +16190,7 @@ function makeAlertasModule(opts) {
       const erro = r && r.json && r.json.error;
       if (erro && /administrador|administrator|premium/i.test(String(erro))) {
         marcarSemAdministrador();
-        try { mUw.console.log('[ALERTAS] sem Administrador: uso só os dados locais.'); } catch (e) {}
+        try { mUw.console.log('[ALERTAS] sem Administrador: uso só os dados locais.'); } catch (e) { seErroDeCodigo(e, 'Alertas'); }
 
         /* PÔR O MODELO EM DIA E LER.
          *
@@ -16279,7 +16283,7 @@ function makeAlertasModule(opts) {
       if (resp.status === 429) {
         // Limite de pedidos do servidor: recuar e tentar mais tarde.
         limitado429 = true;
-        try { mUw.console.log('[ALERTAS] servidor a limitar pedidos (429) — espero.'); } catch (e) {}
+        try { mUw.console.log('[ALERTAS] servidor a limitar pedidos (429) — espero.'); } catch (e) { seErroDeCodigo(e, 'Alertas'); }
         await new Promise((r2) => setTimeout(r2, 3000));
         return [];
       }
@@ -16287,7 +16291,7 @@ function makeAlertasModule(opts) {
       const erro = r && r.json && r.json.error;
       if (erro && /administrador|administrator|premium/i.test(String(erro))) {
         marcarSemAdministrador();
-        try { mUw.console.log('[ALERTAS] sem Administrador: uso só os dados locais.'); } catch (e) {}
+        try { mUw.console.log('[ALERTAS] sem Administrador: uso só os dados locais.'); } catch (e) { seErroDeCodigo(e, 'Alertas'); }
 
         /* PÔR O MODELO EM DIA E LER.
          *
@@ -16369,7 +16373,7 @@ function makeAlertasModule(opts) {
       if (d && Number.isFinite(Number(d.ix))) {
         return { id: Number(d.id), ix: Number(d.ix), iy: Number(d.iy), nome: d.name };
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Alertas'); }
     return null;
   }
 
@@ -16397,7 +16401,7 @@ function makeAlertasModule(opts) {
         }
       }
       donoConhecido[co.id] = '';
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Alertas'); }
     return '';
   }
 
@@ -16480,7 +16484,7 @@ function makeAlertasModule(opts) {
   function lerReforcos() {
     try { return JSON.parse(armazem.getItem(REFORCO_KEY) || '{}'); } catch (e) { return {}; }
   }
-  function gravarReforcos(v) { try { armazem.setItem(REFORCO_KEY, JSON.stringify(v)); } catch (e) {} }
+  function gravarReforcos(v) { try { armazem.setItem(REFORCO_KEY, JSON.stringify(v)); } catch (e) { seErroDeCodigo(e, 'Alertas'); } }
 
   /* --------------------- CLASSIFICAÇÃO POR CATEGORIA ---------------------
    * Identificar a unidade exacta é impossível: não sabemos os bónus da cidade
@@ -16590,7 +16594,7 @@ function makeAlertasModule(opts) {
           });
         }
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Alertas'); }
     out.sort((a, b) => a.desvio - b.desvio);
     return out;
   }
@@ -16606,14 +16610,14 @@ function makeAlertasModule(opts) {
   function pareceColonizador(velEquivalente, compativeis) {
     try {
       if ((compativeis || []).some((c) => c.id === 'colonize_ship')) return true;
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Alertas'); }
 
     try {
       const cs = (mUw.GameData.units || {}).colonize_ship;
       const vcs = cs ? Number(cs.speed) : 9;
       // suspeita se a velocidade observada está na faixa do colonizador ou abaixo
       if (velEquivalente <= vcs * (1 + TOLERANCIA)) return true;
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Alertas'); }
     return compativeis.some((c) => c.id === 'colonize_ship');
   }
 
@@ -16632,8 +16636,8 @@ function makeAlertasModule(opts) {
    * Corre ANTES da análise, porque essa é síncrona e não pode esperar. */
   async function preencherDonos(ataques, ctx) {
     let base = null;
-    try { base = ((ctx.getMyTowns() || [])[0] || {}).id; } catch (e) {}
-    if (!base) { try { base = mUw.Game && mUw.Game.townId; } catch (e) {} }
+    try { base = ((ctx.getMyTowns() || [])[0] || {}).id; } catch (e) { seErroDeCodigo(e, 'Alertas'); }
+    if (!base) { try { base = mUw.Game && mUw.Game.townId; } catch (e) { seErroDeCodigo(e, 'Alertas'); } }
     if (!base) return;
     const vistos = new Set();
     for (const a of ataques) {
@@ -16892,7 +16896,7 @@ function makeAlertasModule(opts) {
               grave: true, nc: true, certo: true,
             };
           }
-        } catch (e) {}
+        } catch (e) { seErroDeCodigo(e, 'Alertas'); }
       }
       return { a, origem, alvo, falta, dist, vel, cls };
     }
@@ -17125,7 +17129,7 @@ function makeAlertasModule(opts) {
         bg.textContent = 'Guardado ✓';
         setTimeout(() => { bg.textContent = 'Guardar lista'; }, 1500);
       };
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Alertas'); }
 
     const g = container.querySelector('#alr-guardar');
     if (g) g.onclick = () => {
@@ -17203,7 +17207,7 @@ function makeDeusesModule(opts) {
         const t = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroTravar;
         if (t) t(2);
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Deuses'); }
     try {
       const txt = await resposta.text();
       if (!txt || !txt.trim()) {
@@ -17232,7 +17236,7 @@ function makeDeusesModule(opts) {
     try {
       const a = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroArmazem;
       if (a) return a;
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Deuses'); }
     return localStorage;
   })();
 
@@ -17264,7 +17268,7 @@ function makeDeusesModule(opts) {
     try {
       const e = JSON.parse(armazem.getItem('grepoMaestro_modulos_v1') || 'null');
       if (e && e.perfil) perfil = String(e.perfil);
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Deuses'); }
     return `${base}-${perfil}-${mundo}.json`;
   }
 
@@ -17367,10 +17371,10 @@ function makeDeusesModule(opts) {
 
   function cfgLocal() {
     const c = Object.assign({}, DEFAULTS);
-    try { Object.assign(c, JSON.parse(armazem.getItem(CFG_LOCAL) || '{}')); } catch (e) {}
+    try { Object.assign(c, JSON.parse(armazem.getItem(CFG_LOCAL) || '{}')); } catch (e) { seErroDeCodigo(e, 'Deuses'); }
     return c;
   }
-  function guardarLocal(c) { try { armazem.setItem(CFG_LOCAL, JSON.stringify(c)); } catch (e) {} }
+  function guardarLocal(c) { try { armazem.setItem(CFG_LOCAL, JSON.stringify(c)); } catch (e) { seErroDeCodigo(e, 'Deuses'); } }
 
   /* ============== GRUPO DE VOADORES: distribuir os deuses ================
    * Só cinco deuses dão unidades voadoras. Sem forçar a distribuição, o grupo
@@ -17397,7 +17401,7 @@ function makeDeusesModule(opts) {
         const a = m.attributes;
         if (grupos[a.group_id] === nomeGrupo) out.add(Number(a.town_id));
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Deuses'); }
     return out;
   }
 
@@ -17526,7 +17530,7 @@ function makeDeusesModule(opts) {
               else { col.add(Object.assign({ id: idNovo }, attrs)); }
               tratado = true;
             }
-          } catch (e) {}
+          } catch (e) { seErroDeCodigo(e, 'Deuses'); }
           if (tratado) continue;
 
           // 2) MODELOS: actualizar o que já existe (Town, PlayerLedger, ...)
@@ -17543,18 +17547,18 @@ function makeDeusesModule(opts) {
                 }
               }
             }
-          } catch (e) {}
+          } catch (e) { seErroDeCodigo(e, 'Deuses'); }
           continue;
 
         }
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Deuses'); }
   }
 
 
   async function lerGist() {
     // não segurar o processo (importante nos testes)
-    try { if (typeof t2 !== 'undefined' && t2 && t2.unref) t2.unref(); } catch (e) {}
+    try { if (typeof t2 !== 'undefined' && t2 && t2.unref) t2.unref(); } catch (e) { seErroDeCodigo(e, 'Deuses'); }
     if (!GIST.id) return cfgLocal();
     try {
       const r = await mUw.fetch('https://api.github.com/gists/' + GIST.id, { headers: { 'Accept': 'application/vnd.github+json' } });
@@ -17585,7 +17589,7 @@ function makeDeusesModule(opts) {
       travaoGist.pendente = null;
       if (p != null) escreverGist(p);
     }, 30000);
-    try { if (tG && typeof tG.unref === 'function') tG.unref(); } catch (e) {}
+    try { if (tG && typeof tG.unref === 'function') tG.unref(); } catch (e) { seErroDeCodigo(e, 'Deuses'); }
 
     guardarLocal(c);
     if (!GIST.id || !GIST.token) return { ok: false, msg: 'sem Gist id/token — guardado só localmente' };
@@ -17796,7 +17800,7 @@ function makeDeusesModule(opts) {
         const ix = mUw.ITowns.getTown(t.id).getIslandCoordinateX();
         const iy = mUw.ITowns.getTown(t.id).getIslandCoordinateY();
         if (ilhas.has(`${ix}:${iy}`)) emFarm.add(Number(t.id));
-      } catch (e) {}
+      } catch (e) { seErroDeCodigo(e, 'Deuses'); }
     }
 
     const livres = towns.filter((t) => !emFarm.has(Number(t.id)));
@@ -18211,7 +18215,7 @@ function makeDeusesModule(opts) {
         const a = m.attributes || {};
         if (Number(a.town_id) === Number(townId) && nomes[a.group_id]) out.push(nomes[a.group_id]);
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Deuses'); }
     return out;
   }
 
@@ -18223,7 +18227,7 @@ function makeDeusesModule(opts) {
         if (deusDa(t.id) !== AFRODITE) continue;
         for (const g of gruposDaCidade(t.id)) if (cont[g] != null) cont[g]++;
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Deuses'); }
     return cont;
   }
 
@@ -19236,7 +19240,7 @@ function makeDeusesModule(opts) {
     })();
     const nomesVoadores = Object.keys(DEUSES_VOADORES).map((d) => {
       let u = '';
-      try { u = (mUw.GameData.units[DEUSES_VOADORES[d]] || {}).name || ''; } catch (e) {}
+      try { u = (mUw.GameData.units[DEUSES_VOADORES[d]] || {}).name || ''; } catch (e) { seErroDeCodigo(e, 'Deuses'); }
       return `${NOMES[d]}${u ? ` (${u})` : ''}`;
     }).join(' · ');
 
@@ -19438,7 +19442,7 @@ function makeDeusesModule(opts) {
           .map((m) => m.attributes)
           .filter((a) => Number(a.id) > 0 && String(a.name).toLowerCase() !== 'todos')
           .map((a) => a.name);
-      } catch (e) {}
+      } catch (e) { seErroDeCodigo(e, 'Deuses'); }
       const atual = selVoa.value;
       if (nomes.length && selVoa.options.length - 1 !== nomes.length) {
         selVoa.innerHTML = `<option value="">(nenhum)</option>`
@@ -19446,7 +19450,7 @@ function makeDeusesModule(opts) {
       }
     };
     if (selVoa) selVoa.onchange = () => {
-      try { armazem.setItem('grepoRecruta_voadores_grupo_v1', selVoa.value || ''); } catch (e) {}
+      try { armazem.setItem('grepoRecruta_voadores_grupo_v1', selVoa.value || ''); } catch (e) { seErroDeCodigo(e, 'Deuses'); }
       ctx.log(selVoa.value
         ? `Grupo de voadores: "${selVoa.value}" — essas cidades só terão deuses com voadores.`
         : 'Grupo de voadores: nenhum.');
@@ -19537,8 +19541,8 @@ function makeDeusesModule(opts) {
           }
           /* E também no armazenamento local, que viaja no perfil. */
           localStorage.setItem('grepoEsquiva_cidadesFarm_v1', JSON.stringify(ids));
-        } catch (e) {}
-      } catch (e) {}
+        } catch (e) { seErroDeCodigo(e, 'Deuses'); }
+      } catch (e) { seErroDeCodigo(e, 'Deuses'); }
     };
 
     // ---- controlos das cidades de farm ----
@@ -19550,7 +19554,7 @@ function makeDeusesModule(opts) {
         if (tipoSel) tipoSel.disabled = !el.checked;
         if (deusSel) deusSel.disabled = !el.checked || tipoSel.value !== 'fixo';
         el.closest('tr').style.background = el.checked ? '#141d28' : '';
-        try { guardarFarmAgora(); } catch (e) {}
+        try { guardarFarmAgora(); } catch (e) { seErroDeCodigo(e, 'Deuses'); }
       };
     });
 
@@ -19629,7 +19633,7 @@ function makeDeusesModule(opts) {
       try {
         const i = ilhaDa(mUw.Game.townId);
         if (i) k = `${i.x}:${i.y}`;
-      } catch (e) {}
+      } catch (e) { seErroDeCodigo(e, 'Deuses'); }
       if (!k) { ctx.log('Não consegui saber em que ilha estás.'); return; }
       const ls = listaDeIlhasFarm(cfgLocal());
       if (ls.indexOf(k) >= 0) { ctx.log(`A ilha ${k} já está na lista.`); return; }
@@ -19823,7 +19827,7 @@ function makeEsquivaModule(opts) {
         const t = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroTravar;
         if (t) t(2);
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Esquiva'); }
     try {
       const txt = await resposta.text();
       if (!txt || !txt.trim()) {
@@ -19844,7 +19848,7 @@ function makeEsquivaModule(opts) {
     try {
       const a = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroArmazem;
       if (a) return a;
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Esquiva'); }
     return localStorage;
   })();
 
@@ -19852,7 +19856,7 @@ function makeEsquivaModule(opts) {
     try {
       const f = mUw.__maestroHoraJogo || uw.__maestroHoraJogo;
       if (f) return f(segundos);
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Esquiva'); }
     try {
       /* serverGMTOffset é uma FUNÇÃO, não um número. */
       const w = mUw || uw;
@@ -19988,7 +19992,7 @@ function makeEsquivaModule(opts) {
       if (s2.has(Number(townId))) return;
       s2.add(Number(townId));
       armazem.setItem(CIDADES_MAIN_KEY, JSON.stringify(Array.from(s2)));
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Esquiva'); }
   }
   const CAP = { small_transporter: { sem: 10, com: 16 }, big_transporter: { sem: 26, com: 32 } };
 
@@ -20005,11 +20009,11 @@ function makeEsquivaModule(opts) {
         const t = Math.floor(mUw.Timestamp.now());
         if (Number.isFinite(t) && t > 0) return t;
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Esquiva'); }
     try {
       const t = Number(mUw.Game && mUw.Game.server_time);
       if (Number.isFinite(t) && t > 0) return Math.floor(t);
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Esquiva'); }
     return null;   // sem relógio do servidor: não se inventa
   }
 
@@ -20017,12 +20021,12 @@ function makeEsquivaModule(opts) {
 
   function cfg() {
     const c = Object.assign({}, DEFAULTS);
-    try { Object.assign(c, JSON.parse(armazem.getItem(CFG_KEY) || '{}')); } catch (e) {}
+    try { Object.assign(c, JSON.parse(armazem.getItem(CFG_KEY) || '{}')); } catch (e) { seErroDeCodigo(e, 'Esquiva'); }
     return c;
   }
-  function guardarCfg(c) { try { armazem.setItem(CFG_KEY, JSON.stringify(c)); } catch (e) {} }
+  function guardarCfg(c) { try { armazem.setItem(CFG_KEY, JSON.stringify(c)); } catch (e) { seErroDeCodigo(e, 'Esquiva'); } }
   function lerPlanos() { try { return JSON.parse(armazem.getItem(PLANOS_KEY) || '{}'); } catch (e) { return {}; } }
-  function gravarPlanos(p) { try { armazem.setItem(PLANOS_KEY, JSON.stringify(p)); } catch (e) {} }
+  function gravarPlanos(p) { try { armazem.setItem(PLANOS_KEY, JSON.stringify(p)); } catch (e) { seErroDeCodigo(e, 'Esquiva'); } }
 
   /* Limpar os planos JÁ CUMPRIDOS.
    *
@@ -20049,9 +20053,9 @@ function makeEsquivaModule(opts) {
       }
       if (n) {
         gravarPlanos(p);
-        try { console.log('[MAESTRO/esquiva] limpei', n, 'plano(s) já cumpridos'); } catch (e) {}
+        try { console.log('[MAESTRO/esquiva] limpei', n, 'plano(s) já cumpridos'); } catch (e) { seErroDeCodigo(e, 'Esquiva'); }
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Esquiva'); }
   }
 
   const agora = () => agoraJogo();
@@ -20101,7 +20105,7 @@ function makeEsquivaModule(opts) {
               else { col.add(Object.assign({ id: idNovo }, attrs)); }
               tratado = true;
             }
-          } catch (e) {}
+          } catch (e) { seErroDeCodigo(e, 'Esquiva'); }
           if (tratado) continue;
 
           // 2) MODELOS: actualizar o que já existe (Town, PlayerLedger, ...)
@@ -20118,12 +20122,12 @@ function makeEsquivaModule(opts) {
                 }
               }
             }
-          } catch (e) {}
+          } catch (e) { seErroDeCodigo(e, 'Esquiva'); }
           continue;
 
         }
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Esquiva'); }
   }
 
 
@@ -20258,7 +20262,7 @@ function makeEsquivaModule(opts) {
       const lista = await fbLer(`cidadesFarm/${mWorld}`);
       if (!Array.isArray(lista)) return;
       armazem.setItem('grepoEsquiva_cidadesFarm_v1', JSON.stringify(lista.map(Number)));
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Esquiva'); }
   }
 
   async function avisosDaMain(minhasCidades) {
@@ -20299,7 +20303,7 @@ function makeEsquivaModule(opts) {
           viaAviso: true,
         });
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Esquiva'); }
     return out;
   }
 
@@ -20429,7 +20433,7 @@ function makeEsquivaModule(opts) {
         const n = Number(a.incoming) || 0;
         if (n > 0) out[String(a.town_id)] = n;
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Esquiva'); }
     return out;
   }
 
@@ -20507,7 +20511,7 @@ function makeEsquivaModule(opts) {
           out[u] = n;
           algum = true;
         }
-      } catch (e) {}
+      } catch (e) { seErroDeCodigo(e, 'Esquiva'); }
     }
 
     return algum ? out : null;
@@ -20537,7 +20541,7 @@ function makeEsquivaModule(opts) {
         const f = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window)
           .__maestroActualizarNumeros;
         if (f) return f(townId);
-      } catch (e) {}
+      } catch (e) { seErroDeCodigo(e, 'Esquiva'); }
       return Promise.resolve();
     })()];
 
@@ -20556,7 +20560,7 @@ function makeEsquivaModule(opts) {
      *
      * Para esquivar interessa só o que pode SAIR agora. */
     let out = {};
-    try { out = Object.assign({}, mUw.ITowns.getTown(Number(townId)).units() || {}); } catch (e) {}
+    try { out = Object.assign({}, mUw.ITowns.getTown(Number(townId)).units() || {}); } catch (e) { seErroDeCodigo(e, 'Esquiva'); }
 
     /* NÃO se soma o `parts_done`.
      *
@@ -20586,7 +20590,7 @@ function makeEsquivaModule(opts) {
      * contar. */
     try {
       if (ehBaseDaRotacao(townId) && out.colonize_ship) delete out.colonize_ship;
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Esquiva'); }
 
     return out;
   }
@@ -20606,7 +20610,7 @@ function makeEsquivaModule(opts) {
         if (Number(c2.baseA) === Number(townId)) return true;
         if (Number(c2.baseB) === Number(townId)) return true;
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Esquiva'); }
     return false;
   }
 
@@ -20660,7 +20664,7 @@ function makeEsquivaModule(opts) {
     catch (e) { return {}; }
   }
   function guardarRegras(r) {
-    try { armazem.setItem(REGRAS_KEY, JSON.stringify(r)); } catch (e) {}
+    try { armazem.setItem(REGRAS_KEY, JSON.stringify(r)); } catch (e) { seErroDeCodigo(e, 'Esquiva'); }
   }
   function regraDaCidade(townId) {
     const r = regrasPorCidade();
@@ -20709,12 +20713,12 @@ function makeEsquivaModule(opts) {
       });
       // guardar só os últimos 60
       armazem.setItem(HISTORICO_KEY, JSON.stringify(h.slice(-60)));
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Esquiva'); }
   }
 
   try {
     mUwGlobalHistorico();
-  } catch (e) {}
+  } catch (e) { seErroDeCodigo(e, 'Esquiva'); }
   function mUwGlobalHistorico() {
     const alvo = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window);
     alvo.__maestroHistorico = () => {
@@ -20745,7 +20749,7 @@ function makeEsquivaModule(opts) {
 
   function marcarArranque() {
     momentoArranque = agora();
-    try { armazem.setItem(ARRANQUE_KEY, String(momentoArranque)); } catch (e) {}
+    try { armazem.setItem(ARRANQUE_KEY, String(momentoArranque)); } catch (e) { seErroDeCodigo(e, 'Esquiva'); }
   }
 
   /* Foi visto logo a seguir a a página abrir? Nesse caso não se sabe quando
@@ -20879,7 +20883,7 @@ function makeEsquivaModule(opts) {
             + `· velocidade ${duracao ? ((c.K * dist) / Math.max(1, duracao - tempoPreparacao())).toFixed(2) : '?'} `
             + `· limite ${(vcs * 1.28).toFixed(2)} `
             + `→ ${ehNC ? 'COLONIZADOR' : 'normal'}`);
-        } catch (e) {}
+        } catch (e) { seErroDeCodigo(e, 'Esquiva'); }
 
         ultimaClassificacao = {
           cmd: a.command_id, dist,
@@ -20890,7 +20894,7 @@ function makeEsquivaModule(opts) {
           limite: Math.round(limite * 100) / 100,
           ehNC,
         };
-      } catch (e) {}
+      } catch (e) { seErroDeCodigo(e, 'Esquiva'); }
 
       return ehNC;
     } catch (e) { return false; }
@@ -20928,7 +20932,7 @@ function makeEsquivaModule(opts) {
           return { commandId: Number(mv.command_id), cancelavelAte: Number(mv.cancelable_until) || null };
         }
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Esquiva'); }
     return null;
   }
 
@@ -21017,7 +21021,7 @@ function makeEsquivaModule(opts) {
           out.push({ id: Number(id), name: t.getName() });
         }
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Esquiva'); }
     // 2) as dos outros jogadores, se a colecção Town as tiver
     try {
       const col = mUw.MM.getCollections().Town;
@@ -21029,7 +21033,7 @@ function makeEsquivaModule(opts) {
           if (!out.some((x) => x.id === Number(a.id))) out.push({ id: Number(a.id), name: a.name });
         }
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Esquiva'); }
 
     // 3) as que estiverem em cache do mapa (ver cacheIlha mais abaixo)
     try {
@@ -21038,7 +21042,7 @@ function makeEsquivaModule(opts) {
         if (Number(a.id) === Number(excluirId)) continue;
         if (!out.some((x) => x.id === Number(a.id))) out.push({ id: Number(a.id), name: a.name });
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Esquiva'); }
 
     return out;
   }
@@ -21118,7 +21122,7 @@ function makeEsquivaModule(opts) {
       if (n <= 0) continue;
 
       let naval = false;
-      try { naval = !!(mUw.GameData.units[k] || {}).is_naval; } catch (e) {}
+      try { naval = !!(mUw.GameData.units[k] || {}).is_naval; } catch (e) { seErroDeCodigo(e, 'Esquiva'); }
 
       if (naval) { mar[k] = n; temMar = true; }
       else { terra[k] = n; temTerra = true; }
@@ -21225,7 +21229,7 @@ function makeEsquivaModule(opts) {
     try {
       const org0 = cidades.find((x) => x.id === Number(plano.townId));
       if (org0) await carregarIlha(org0.ix, org0.iy, plano.townId);
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Esquiva'); }
     const esc = escolherDestino(plano.townId, cidades);
     if (!esc) { log(`Esquiva ${nome}: sem cidade de destino.`); return; }
     /* DOIS ENVIOS quando é preciso: um por terra, outro por mar.
@@ -21264,7 +21268,7 @@ function makeEsquivaModule(opts) {
        *
        * Sem isto, o reconhecimento aceitava qualquer apoio a chegar — e numa
        * cidade que é depósito de colonizadores chegam dezenas por hora. */
-      try { plano.destino = Number(esc.destino.id); } catch (e) {}
+      try { plano.destino = Number(esc.destino.id); } catch (e) { seErroDeCodigo(e, 'Esquiva'); }
 
       let r = await enviarApoio(plano.townId, esc.destino.id, cmd.carga);
 
@@ -21329,7 +21333,7 @@ function makeEsquivaModule(opts) {
                * antes do impacto, e morrerem. Visto em jogo: 2 de 4 comandos
                * "já a caminho de casa" antes da hora planeada, com o ataque a
                * bater 2 segundos depois. */
-              try { horaDoComando[Number(r2.comando.commandId)] = agora(); } catch (e) {}
+              try { horaDoComando[Number(r2.comando.commandId)] = agora(); } catch (e) { seErroDeCodigo(e, 'Esquiva'); }
             }
             log(`↗️ Esquiva ${nome}: saíram `
               + `${Object.keys(fatia).map((u) => fatia[u] + ' ' + u).join(', ')}.`);
@@ -21528,7 +21532,7 @@ function makeEsquivaModule(opts) {
             if (ctx.avisarDiscord) await ctx.avisarDiscord('ataqueNC',
               `Esquiva em ${nome}: a tropa regressa ${desvio}s DEPOIS do previsto. `
               + 'Pode não estar em casa quando o colonizador bater.');
-          } catch (e) {}
+          } catch (e) { seErroDeCodigo(e, 'Esquiva'); }
         }
       } else {
         /* O cancelamento correu bem — só não se conseguiu ler a hora exacta.
@@ -22107,7 +22111,7 @@ function makeEsquivaModule(opts) {
           if (fim && ag != null && ag > fim) delete p2[k];
         }
         gravarPlanos(p2);
-      } catch (e) {}
+      } catch (e) { seErroDeCodigo(e, 'Esquiva'); }
       const depois = Object.keys(lerPlanos()).length;
       ctx.log(`Esquiva: limpei ${antes - depois} plano(s) já cumpridos (ficam ${depois}).`);
       painel(container, ctx);
@@ -22203,7 +22207,7 @@ function makeCulturaModule(opts) {
         const t = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroTravar;
         if (t) t(2);
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Cultura'); }
     try {
       const txt = await resposta.text();
       if (!txt || !txt.trim()) {
@@ -22224,7 +22228,7 @@ function makeCulturaModule(opts) {
     try {
       const a = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroArmazem;
       if (a) return a;
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Cultura'); }
     return localStorage;
   })();
 
@@ -22237,7 +22241,7 @@ function makeCulturaModule(opts) {
       const m = JSON.parse(armazem.getItem(CTRL_KEY) || '{}');
       m[tipo] = ctrl;
       armazem.setItem(CTRL_KEY, JSON.stringify(m));
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Cultura'); }
   }
 
   const TIPOS = { teatro: 'theater', festa: 'party', procissao: 'triumph' };
@@ -22258,7 +22262,7 @@ function makeCulturaModule(opts) {
   // Aprendido em jogo: o jogo permite mais do que uma celebração por cidade?
   const UMA_KEY = 'grepoCultura_uma_por_cidade_v1';
   function umaPorCidade() { try { return armazem.getItem(UMA_KEY) === '1'; } catch (e) { return false; } }
-  function marcarUmaPorCidade() { try { armazem.setItem(UMA_KEY, '1'); } catch (e) {} }
+  function marcarUmaPorCidade() { try { armazem.setItem(UMA_KEY, '1'); } catch (e) { seErroDeCodigo(e, 'Cultura'); } }
   const CUSTO_KEY = 'grepoCultura_custo_procissao_v1';
   const RESERVA_KEY = 'grepoCultura_reserva_pontos_v1';
 
@@ -22285,27 +22289,27 @@ function makeCulturaModule(opts) {
         const t = Math.floor(mUw.Timestamp.now());
         if (Number.isFinite(t) && t > 0) return t;
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Cultura'); }
     try {
       const t = Number(mUw.Game && mUw.Game.server_time);
       if (Number.isFinite(t) && t > 0) return Math.floor(t);
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Cultura'); }
     return null;   // sem relógio do servidor: não se inventa
   }
 
 
   function cfg() {
     const c = Object.assign({}, DEFAULTS);
-    try { Object.assign(c, JSON.parse(armazem.getItem(CFG_KEY) || '{}')); } catch (e) {}
+    try { Object.assign(c, JSON.parse(armazem.getItem(CFG_KEY) || '{}')); } catch (e) { seErroDeCodigo(e, 'Cultura'); }
     return c;
   }
-  function guardarCfg(c) { try { armazem.setItem(CFG_KEY, JSON.stringify(c)); } catch (e) {} }
+  function guardarCfg(c) { try { armazem.setItem(CFG_KEY, JSON.stringify(c)); } catch (e) { seErroDeCodigo(e, 'Cultura'); } }
   function custoProcissao() {
     // Conhecido do painel do jogo: 300 pontos de combate.
     return CUSTOS.triumph.pontosCombate;
   }
-  function guardarCusto(v) { try { armazem.setItem(CUSTO_KEY, String(v)); } catch (e) {} }
-  function publicarReserva(v) { try { armazem.setItem(RESERVA_KEY, String(v)); } catch (e) {} }
+  function guardarCusto(v) { try { armazem.setItem(CUSTO_KEY, String(v)); } catch (e) { seErroDeCodigo(e, 'Cultura'); } }
+  function publicarReserva(v) { try { armazem.setItem(RESERVA_KEY, String(v)); } catch (e) { seErroDeCodigo(e, 'Cultura'); } }
 
   // NOTA: a cultura já NÃO reserva pontos de combate.
   // Porquê: a evolução das aldeias bárbaras é um investimento FINITO (cada
@@ -22340,7 +22344,7 @@ function makeCulturaModule(opts) {
         out[id].tipos[tipo] = fim;
         if (fim > out[id].fim) out[id].fim = fim;   // a que acaba mais tarde
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Cultura'); }
     return out;
   }
 
@@ -22373,7 +22377,7 @@ function makeCulturaModule(opts) {
         const nv = t ? t.level : null;
         out[Number(a.town_id)] = (nv === '-' || nv == null) ? 0 : Number(nv);
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Cultura'); }
     return out;
   }
 
@@ -22429,7 +22433,7 @@ function makeCulturaModule(opts) {
               else { col.add(Object.assign({ id: idNovo }, attrs)); }
               tratado = true;
             }
-          } catch (e) {}
+          } catch (e) { seErroDeCodigo(e, 'Cultura'); }
           if (tratado) continue;
 
           // 2) MODELOS: actualizar o que já existe (Town, PlayerLedger, ...)
@@ -22446,12 +22450,12 @@ function makeCulturaModule(opts) {
                 }
               }
             }
-          } catch (e) {}
+          } catch (e) { seErroDeCodigo(e, 'Cultura'); }
           continue;
 
         }
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Cultura'); }
   }
 
   async function pedir(controlador, townId, tipo) {
@@ -22778,7 +22782,7 @@ function makeGrutaModule(opts) {
         const t = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroTravar;
         if (t) t(2);
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Gruta'); }
     try {
       const txt = await resposta.text();
       if (!txt || !txt.trim()) {
@@ -22799,16 +22803,16 @@ function makeGrutaModule(opts) {
     try {
       const a = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroArmazem;
       if (a) return a;
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Gruta'); }
     return localStorage;
   })();
 
   function cfg() {
     const c = Object.assign({}, DEFAULTS);
-    try { Object.assign(c, JSON.parse(armazem.getItem(CFG_KEY) || '{}')); } catch (e) {}
+    try { Object.assign(c, JSON.parse(armazem.getItem(CFG_KEY) || '{}')); } catch (e) { seErroDeCodigo(e, 'Gruta'); }
     return c;
   }
-  function guardarCfg(c) { try { armazem.setItem(CFG_KEY, JSON.stringify(c)); } catch (e) {} }
+  function guardarCfg(c) { try { armazem.setItem(CFG_KEY, JSON.stringify(c)); } catch (e) { seErroDeCodigo(e, 'Gruta'); } }
 
   /* ---------------------- leitura do jogo ------------------------------- */
   function recursos(townId) {
@@ -22876,7 +22880,7 @@ function makeGrutaModule(opts) {
       const m = lerConteudos();
       m[townId] = { valor: Number(valor), quando: Date.now() };
       armazem.setItem(CONTEUDO_KEY, JSON.stringify(m));
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Gruta'); }
   }
 
   /* ------------- APLICAR AS NOTIFICAÇÕES DA RESPOSTA ---------------------
@@ -22921,7 +22925,7 @@ function makeGrutaModule(opts) {
               else { col.add(Object.assign({ id: idNovo }, attrs)); }
               tratado = true;
             }
-          } catch (e) {}
+          } catch (e) { seErroDeCodigo(e, 'Gruta'); }
           if (tratado) continue;
 
           // 2) MODELOS: actualizar o que já existe (Town, PlayerLedger, ...)
@@ -22938,12 +22942,12 @@ function makeGrutaModule(opts) {
                 }
               }
             }
-          } catch (e) {}
+          } catch (e) { seErroDeCodigo(e, 'Gruta'); }
           continue;
 
         }
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Gruta'); }
     return prataNaGruta;
   }
 
@@ -23303,7 +23307,7 @@ function makeTrocaCidadesModule(opts) {
         const t = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroTravar;
         if (t) t(2);
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'TrocaCidades'); }
     try {
       const txt = await resposta.text();
       if (!txt || !txt.trim()) {
@@ -23324,16 +23328,16 @@ function makeTrocaCidadesModule(opts) {
     try {
       const a = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroArmazem;
       if (a) return a;
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'TrocaCidades'); }
     return localStorage;
   })();
 
   function cfg() {
     const c = Object.assign({}, DEFAULTS);
-    try { Object.assign(c, JSON.parse(armazem.getItem(CFG_KEY) || '{}')); } catch (e) {}
+    try { Object.assign(c, JSON.parse(armazem.getItem(CFG_KEY) || '{}')); } catch (e) { seErroDeCodigo(e, 'TrocaCidades'); }
     return c;
   }
-  function guardarCfg(c) { try { armazem.setItem(CFG_KEY, JSON.stringify(c)); } catch (e) {} }
+  function guardarCfg(c) { try { armazem.setItem(CFG_KEY, JSON.stringify(c)); } catch (e) { seErroDeCodigo(e, 'TrocaCidades'); } }
 
   /* ---------------------- leitura do jogo ------------------------------- */
   function recursos(townId) {
@@ -23406,7 +23410,7 @@ function makeTrocaCidadesModule(opts) {
           const a = m.attributes || {};
           if (a[campo] != null) ocupadas.add(Number(a[campo]));
         }
-      } catch (e) {}
+      } catch (e) { seErroDeCodigo(e, 'TrocaCidades'); }
     };
     marcar('BuildingOrder', 'town_id');
     marcar('ResearchOrder', 'town_id');
@@ -23449,7 +23453,7 @@ function makeTrocaCidadesModule(opts) {
           if ((Number(tenho[u]) || 0) < Number(alvosU[u])) return true;
         }
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'TrocaCidades'); }
     return false;   // nada pendente: pode dar quase tudo
   }
 
@@ -23475,7 +23479,7 @@ function makeTrocaCidadesModule(opts) {
         // falta subir este edifício, tem espaço no armazém, mas faltam recursos
         if (!e.can_upgrade && e.enough_storage && e.enough_resources === false) return true;
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'TrocaCidades'); }
     return false;
   }
 
@@ -23510,7 +23514,7 @@ function makeTrocaCidadesModule(opts) {
         const nome = grupos[a.group_id];
         if (nome && tpls[nome]) return nome;
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'TrocaCidades'); }
     return null;
   }
 
@@ -23539,7 +23543,7 @@ function makeTrocaCidadesModule(opts) {
           || (Number(c.iron) || 0) > (res.iron || 0);
         if (falta) return true;                          // quer investigar e não chega
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'TrocaCidades'); }
     return false;
   }
 
@@ -23556,7 +23560,7 @@ function makeTrocaCidadesModule(opts) {
         const nome = grupos[a.group_id];
         if (nome && tpls[nome]) return nome;
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'TrocaCidades'); }
     return null;
   }
 
@@ -23610,7 +23614,7 @@ function makeTrocaCidadesModule(opts) {
               else { col.add(Object.assign({ id: idNovo }, attrs)); }
               tratado = true;
             }
-          } catch (e) {}
+          } catch (e) { seErroDeCodigo(e, 'TrocaCidades'); }
           if (tratado) continue;
 
           // 2) MODELOS: actualizar o que já existe (Town, PlayerLedger, ...)
@@ -23627,12 +23631,12 @@ function makeTrocaCidadesModule(opts) {
                 }
               }
             }
-          } catch (e) {}
+          } catch (e) { seErroDeCodigo(e, 'TrocaCidades'); }
           continue;
 
         }
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'TrocaCidades'); }
   }
 
   async function enviarRecursos(origem, destino, quantidades) {
@@ -23696,7 +23700,7 @@ function makeTrocaCidadesModule(opts) {
       try {
         const fab = JSON.parse(localStorage.getItem(chavePorPerfil('grepoFabricaNC_estado_v1')) || '{}');
         if (fab && Number(fab.cidade) === Number(t.id)) continue;
-      } catch (e) {}
+      } catch (e) { seErroDeCodigo(e, 'TrocaCidades'); }
 
       /* AS REGRAS, sem percentagens de armazém a decidir quem envia:
        *
@@ -23750,7 +23754,7 @@ function makeTrocaCidadesModule(opts) {
         if (Number(a.to_town_id) !== Number(townId)) continue;
         for (const r of RES) out[r] += Number(a[r]) || 0;
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'TrocaCidades'); }
     return out;
   }
 
@@ -23898,7 +23902,7 @@ function makeTrocaCidadesModule(opts) {
     const c = cfg();
     const towns = ctx.getMyTowns();
     let dadores = [], carentes = [];
-    try { ({ dadores, carentes } = classificar(towns, c)); } catch (e) {}
+    try { ({ dadores, carentes } = classificar(towns, c)); } catch (e) { seErroDeCodigo(e, 'TrocaCidades'); }
 
     container.innerHTML = `
       <div style="font-size:11px;line-height:1.7">
@@ -24082,7 +24086,7 @@ function makeEncaixeModule(opts) {
         const t = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroTravar;
         if (t) t(2);
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
     try {
       const txt = await resposta.text();
       if (!txt || !txt.trim()) {
@@ -24103,7 +24107,7 @@ function makeEncaixeModule(opts) {
     try {
       const a = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroArmazem;
       if (a) return a;
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
     return localStorage;
   })();
 
@@ -24111,7 +24115,7 @@ function makeEncaixeModule(opts) {
     try {
       const f = mUw.__maestroHoraJogo || uw.__maestroHoraJogo;
       if (f) return f(segundos);
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
     try {
       /* serverGMTOffset é uma FUNÇÃO, não um número. */
       const w = mUw || uw;
@@ -24130,7 +24134,7 @@ function makeEncaixeModule(opts) {
 
   function cfg() {
     const c = Object.assign({}, DEFAULTS);
-    try { Object.assign(c, JSON.parse(armazem.getItem(CFG_KEY) || '{}')); } catch (e) {}
+    try { Object.assign(c, JSON.parse(armazem.getItem(CFG_KEY) || '{}')); } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
     // MIGRAÇÃO: o valor antigo (5 atrasos) ficava guardado e continuava a
     // desistir cedo mesmo depois de o valor por omissão passar a 10. Medido:
     // com a variação real (~±10s), 5 dá 71% de sucesso e 10 dá 87%.
@@ -24140,10 +24144,10 @@ function makeEncaixeModule(opts) {
         c.migrado_v3 = true;
         armazem.setItem(CFG_KEY, JSON.stringify(c));
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
     return c;
   }
-  function guardarCfg(c) { try { armazem.setItem(CFG_KEY, JSON.stringify(c)); } catch (e) {} }
+  function guardarCfg(c) { try { armazem.setItem(CFG_KEY, JSON.stringify(c)); } catch (e) { seErroDeCodigo(e, 'Encaixe'); } }
   function lerPlanos() {
     try {
       const v = JSON.parse(armazem.getItem(PLANOS_KEY) || '[]');
@@ -24162,7 +24166,7 @@ function makeEncaixeModule(opts) {
       const vivos = v.filter((p) => !p || !p.chegada || Number(p.chegada) > limite);
 
       if (vivos.length !== v.length) {
-        try { armazem.setItem(PLANOS_KEY, JSON.stringify(vivos)); } catch (e) {}
+        try { armazem.setItem(PLANOS_KEY, JSON.stringify(vivos)); } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
       }
       return vivos;
     } catch (e) { return []; }
@@ -24180,18 +24184,18 @@ function makeEncaixeModule(opts) {
     try {
       const antes = lerPlanos().length;
       if (!permitirVazio && antes > 0 && (!p || !p.length)) {
-        try { console.log('[MAESTRO/encaixe] recusei apagar', antes, 'plano(s) de uma vez'); } catch (e) {}
+        try { console.log('[MAESTRO/encaixe] recusei apagar', antes, 'plano(s) de uma vez'); } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
         return;
       }
-    } catch (e) {}
-    try { armazem.setItem(PLANOS_KEY, JSON.stringify(p)); } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
+    try { armazem.setItem(PLANOS_KEY, JSON.stringify(p)); } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
     // Redesenhar o painel: um agendamento feito na janela de ataque tem de
     // aparecer logo na lista, senão não há como cancelá-lo sem reabrir tudo.
     try {
       if (painelRef && painelRef.container && painelRef.container.isConnected) {
         painel(painelRef.container, painelRef.ctx);
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
   }
 
   // RELÓGIO DO SERVIDOR — o único que conta. O relógio da máquina é
@@ -24204,11 +24208,11 @@ function makeEncaixeModule(opts) {
         const t = Math.floor(mUw.Timestamp.now());
         if (Number.isFinite(t) && t > 0) return t;
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
     try {
       const t = Number(mUw.Game && mUw.Game.server_time);
       if (Number.isFinite(t) && t > 0) return Math.floor(t);
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
     return null;
   }
 
@@ -24220,7 +24224,7 @@ function makeEncaixeModule(opts) {
         const sv = typeof T.serverGMTOffset === 'function' ? T.serverGMTOffset() : T.serverGMTOffset;
         if (Number.isFinite(Number(sv))) return Number(sv);
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
     return 0;
   }
 
@@ -24275,7 +24279,7 @@ function makeEncaixeModule(opts) {
         const v = Number((gd[u] || {}).speed) || 0;
         if (v > 0 && v < menor) menor = v;
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
     if (!Number.isFinite(menor)) return null;
     return menor;
   }
@@ -24332,7 +24336,7 @@ function makeEncaixeModule(opts) {
               else { col.add(Object.assign({ id: idNovo }, attrs)); }
               tratado = true;
             }
-          } catch (e) {}
+          } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
           if (tratado) continue;
 
           // 2) MODELOS: actualizar o que já existe (Town, PlayerLedger, ...)
@@ -24349,12 +24353,12 @@ function makeEncaixeModule(opts) {
                 }
               }
             }
-          } catch (e) {}
+          } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
           continue;
 
         }
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
   }
 
 
@@ -24512,7 +24516,7 @@ function makeEncaixeModule(opts) {
       if (armazem.getItem('grepoEncaixe_desvios_limpo_v2')) return;
       armazem.removeItem(DESVIOS_KEY);
       armazem.setItem('grepoEncaixe_desvios_limpo_v2', '1');
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
   })();
 
   function lerDesvios() {
@@ -24549,7 +24553,7 @@ function makeEncaixeModule(opts) {
       lista.push({ t: Math.floor(Date.now() / 1000), x: String(texto).slice(0, 200) });
       while (lista.length > RAJADA_MAX) lista.shift();
       armazem.setItem(RAJADA_KEY, JSON.stringify(lista));
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
   }
 
   try {
@@ -24567,9 +24571,9 @@ function makeEncaixeModule(opts) {
     };
     alvoR.__maestroEncaixeLogLimpar = () => {
       try { armazem.setItem(RAJADA_KEY, '[]'); console.log('Registo do encaixe limpo.'); }
-      catch (e) {}
+      catch (e) { seErroDeCodigo(e, 'Encaixe'); }
     };
-  } catch (e) {}
+  } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
 
   function anotarFalha(f) {
     try {
@@ -24577,7 +24581,7 @@ function makeEncaixeModule(opts) {
       lista.push(f);
       while (lista.length > 30) lista.shift();
       armazem.setItem(FALHAS_KEY, JSON.stringify(lista));
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
   }
 
   try {
@@ -24594,7 +24598,7 @@ function makeEncaixeModule(opts) {
         }
       } catch (e) { console.log('erro:', e.message); }
     };
-  } catch (e) {}
+  } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
 
   function registarDesvio(d) {
     try {
@@ -24613,7 +24617,7 @@ function makeEncaixeModule(opts) {
       const v = lerDesvios();
       v.push(n);
       armazem.setItem(DESVIOS_KEY, JSON.stringify(v.slice(-200)));
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
   }
   // Mediana dos desvios observados: se for diferente de zero, o envio está
   // enviesado e vale a pena deslocá-lo por essa medida.
@@ -24659,7 +24663,7 @@ function makeEncaixeModule(opts) {
     const anterior = cidadeOcupada.get(Number(plano.origemId));
     if (anterior) {
       log(`⏳ Encaixe: a cidade ${plano.origemId} tem outra rajada em curso; espero pela vez.`);
-      try { await anterior; } catch (e) {}
+      try { await anterior; } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
     }
     let libertar;
     cidadeOcupada.set(Number(plano.origemId), new Promise((r) => { libertar = r; }));
@@ -24723,11 +24727,11 @@ function makeEncaixeModule(opts) {
       try {
         const mm = mUw.MM.getModels().MovementsUnits || {};
         Object.keys(mm).forEach((k) => conhecidos.add(Number((mm[k].attributes || {}).command_id)));
-      } catch (e) {}
+      } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
       // e também os que o servidor já conhece (o modelo local costuma estar vazio)
       try {
         (await comandosDoServidor(plano.origemId)).forEach((x) => conhecidos.add(x.command_id));
-      } catch (e) {}
+      } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
 
       // ciclo de afinação: envia, verifica, cancela se falhar
       let atrasosSeguidos = 0;
@@ -24737,7 +24741,7 @@ function makeEncaixeModule(opts) {
       /* Tecto de 400 ms: com 900 os ciclos passavam de 350 para 1100 e a rajada
      * fazia seis tentativas em vez de trinta. Mais vale perder uma tentativa
      * por tropa em viagem do que perder metade delas à espera. */
-    try { folgaExtra = Math.min(400, Number(armazem.getItem('grepoEncaixe_folga_v1')) || 0); } catch (e) {}
+    try { folgaExtra = Math.min(400, Number(armazem.getItem('grepoEncaixe_folga_v1')) || 0); } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
       // Atenção ao 0: `x || 10` trocaria um limite de 0 s por 10 s, tornando
       // impossível pedir "parar assim que passar da hora". Mesmo erro que já
       // nos mordeu na margem de segundos.
@@ -24765,7 +24769,7 @@ function makeEncaixeModule(opts) {
          * precisa e volta a descer quando o problema passa. */
         if (r.ok && folgaExtra > 0) {
           folgaExtra = Math.max(0, folgaExtra - 50);
-          try { armazem.setItem('grepoEncaixe_folga_v1', String(folgaExtra)); } catch (e) {}
+          try { armazem.setItem('grepoEncaixe_folga_v1', String(folgaExtra)); } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
         }
 
         if (!r.ok) {
@@ -24776,7 +24780,7 @@ function makeEncaixeModule(opts) {
             // Se isto acontece, a folga está curta: aumentamo-la para as
             // tentativas seguintes, para não desperdiçar mais nenhuma.
             folgaExtra = Math.min(400, folgaExtra + 150);
-            try { armazem.setItem('grepoEncaixe_folga_v1', String(folgaExtra)); } catch (e) {}
+            try { armazem.setItem('grepoEncaixe_folga_v1', String(folgaExtra)); } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
             /* Mostrar a mensagem EXACTA do servidor: "tropas ainda a regressar"
              * é a minha interpretação, e pode estar errada. Sem o texto real
              * não se distingue tropa fora de casa de outro problema qualquer. */
@@ -24875,7 +24879,7 @@ function makeEncaixeModule(opts) {
               + 'Pode ter saído tropa da cidade ' + plano.origemId + '.');
             try { if (ctx.avisarDiscord) await ctx.avisarDiscord('ataque',
               `Encaixe: enviei um comando da cidade ${plano.origemId} e não consegui `
-              + 'cancelá-lo nem confirmar a chegada. Verifica no jogo.'); } catch (e) {}
+              + 'cancelá-lo nem confirmar a chegada. Verifica no jogo.'); } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
           }
           return;
         }
@@ -24999,7 +25003,7 @@ function makeEncaixeModule(opts) {
     } catch (e) {
       ctx.log('Encaixe falhou: ' + e.message);
     } finally {
-      try { if (libertar) libertar(); } catch (e) {}
+      try { if (libertar) libertar(); } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
       cidadeOcupada.delete(Number(plano.origemId));
       emCurso.delete(chave);
       // retirar o plano da lista
@@ -25702,14 +25706,15 @@ function makeEncaixeModule(opts) {
            *
            * Mais vale dizer o que falta fazer do que mostrar horários
            * inventados. */
-          if (!durJogo) {
-            el.innerHTML = '<div style="font-size:10px;letter-spacing:.5px;opacity:.65;margin-bottom:3px">'
-              + 'TENTATIVAS PARA O MESMO SEGUNDO</div>'
-              + '<div style="opacity:.55;font-size:10px">Escolhe as unidades primeiro — '
-              + 'preciso do tempo de viagem que o jogo mostra para calcular as '
-              + 'composições mais lentas.</div>';
-            return;
-          }
+          /* SEM UNIDADES ESCOLHIDAS NÃO HÁ TEMPO DE VIAGEM.
+           *
+           * Aqui escrevia-se a explicação no `el` — mas o `el` é do painel e
+           * esta função não o conhece. Rebentava com "el is not defined" e o
+           * catch devolvia lista vazia: a secção das tentativas para o mesmo
+           * segundo ficava simplesmente em branco, sem dizer porquê.
+           *
+           * A explicação passou para quem desenha; aqui devolve-se vazio. */
+          if (!durJogo) return [];
           let velJanela = 0;
           try {
             for (const u of Object.keys(naJanela)) {
@@ -26133,6 +26138,17 @@ function makeEncaixeModule(opts) {
           const chegada = lerHora();
           if (!chegada) { el.innerHTML = ''; return; }
 
+          /* Sem tropa nos campos o jogo não mostra a duração da viagem, e sem
+           * ela não há como deduzir as composições mais lentas. */
+          if (!duracaoDaJanela()) {
+            el.innerHTML = '<div style="font-size:10px;letter-spacing:.5px;opacity:.65;margin-bottom:3px">'
+              + 'TENTATIVAS PARA O MESMO SEGUNDO</div>'
+              + '<div style="opacity:.55;font-size:10px">Escolhe as unidades primeiro — '
+              + 'preciso do tempo de viagem que o jogo mostra para calcular as '
+              + 'composições mais lentas.</div>';
+            return;
+          }
+
           const combos = combinacoesPossiveis();
           if (combos.length < 2) { el.innerHTML = ''; return; }
 
@@ -26271,7 +26287,7 @@ function makeEncaixeModule(opts) {
       try {
         const dd = duracaoPrevista(p.origemId, p.alvoCoords, p.unidades, c);
         if (dd) return Number(p.chegada) - dd;
-      } catch (e) {}
+      } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
       return Number(p.chegada) || 0;
     };
 
@@ -26282,7 +26298,7 @@ function makeEncaixeModule(opts) {
         try {
           const g = (mUw.GameData && mUw.GameData.units) ? mUw.GameData.units[id] : null;
           if (g && g.name) return g.name;
-        } catch (e) {}
+        } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
         return id;
       };
 
@@ -26322,7 +26338,7 @@ function makeEncaixeModule(opts) {
       try {
         const t = mUw.ITowns.getTown(Number(p.origemId));
         if (t && t.getName) origem = t.getName();
-      } catch (e) {}
+      } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
 
       /* Os desvios do TIPO, quando o plano não tem os seus. */
       const doTipo = (c.porTipo || {})[p.tipo] || {};
@@ -26341,7 +26357,7 @@ function makeEncaixeModule(opts) {
         try {
           const t = mUw.ITowns.getTown(Number(p.alvoId));
           if (t && t.getName) return t.getName();
-        } catch (e) {}
+        } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
         try {
           for (const suf of ['__main', '__multi', '']) {
             const raw = localStorage.getItem('grepoApoio_nomes_v1' + suf);
@@ -26349,7 +26365,7 @@ function makeEncaixeModule(opts) {
             const o = JSON.parse(raw);
             if (o && o[p.alvoId] && o[p.alvoId].nome) return o[p.alvoId].nome;
           }
-        } catch (e) {}
+        } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
         return '#' + p.alvoId;
       })();
 
@@ -26522,6 +26538,23 @@ function makeMissoesModule(opts) {
   opts = opts || {};
 
   let mUw = null, mWorld = '';
+
+  /* O relógio do SERVIDOR. Faltava neste módulo: o painel usava-o para dizer
+   * quantas horas faltam para a missão expirar e rebentava com "agoraJogo is
+   * not defined". É a mesma implementação dos outros módulos. */
+  function agoraJogo() {
+    try {
+      if (typeof mUw.Timestamp !== 'undefined' && typeof mUw.Timestamp.now === 'function') {
+        const t = Math.floor(mUw.Timestamp.now());
+        if (Number.isFinite(t) && t > 0) return t;
+      }
+    } catch (e) { seErroDeCodigo(e, 'Missoes'); }
+    try {
+      const t = Number(mUw.Game && mUw.Game.server_time);
+      if (Number.isFinite(t) && t > 0) return Math.floor(t);
+    } catch (e) { seErroDeCodigo(e, 'Missoes'); }
+    return Math.floor(Date.now() / 1000);   // último recurso: o relógio local
+  }
   const CFG_KEY = 'grepoMissoes_cfg_v1';
 
   const DEFAULTS = {
@@ -26560,7 +26593,7 @@ function makeMissoesModule(opts) {
         const t = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroTravar;
         if (t) t(2);
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Missoes'); }
     try {
       const txt = await resposta.text();
       if (!txt || !txt.trim()) {
@@ -26581,7 +26614,7 @@ function makeMissoesModule(opts) {
     try {
       const a = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroArmazem;
       if (a) return a;
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Missoes'); }
     return localStorage;
   })();
 
@@ -26593,11 +26626,11 @@ function makeMissoesModule(opts) {
 
   function cfg() {
     const c = Object.assign({}, DEFAULTS);
-    try { Object.assign(c, JSON.parse(armazem.getItem(CFG_KEY) || '{}')); } catch (e) {}
+    try { Object.assign(c, JSON.parse(armazem.getItem(CFG_KEY) || '{}')); } catch (e) { seErroDeCodigo(e, 'Missoes'); }
     return c;
   }
   function guardar(c) {
-    try { armazem.setItem(CFG_KEY, JSON.stringify(c)); } catch (e) {}
+    try { armazem.setItem(CFG_KEY, JSON.stringify(c)); } catch (e) { seErroDeCodigo(e, 'Missoes'); }
   }
 
   /* ---------------------- leitura do estado ----------------------------- */
@@ -26624,7 +26657,7 @@ function makeMissoesModule(opts) {
         const t = ((x.configuration || {}).type) || '';
         if (/coins_of_/.test(t)) return t;
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Missoes'); }
     return '';
   }
 
@@ -26667,7 +26700,7 @@ function makeMissoesModule(opts) {
       const l = JSON.parse(armazem.getItem(INICIADAS_KEY) || '{}');
       l[String(m.progressable_id)] = Math.floor(Date.now() / 1000);
       armazem.setItem(INICIADAS_KEY, JSON.stringify(l));
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Missoes'); }
   }
 
   function poderesDa(recompensa) {
@@ -26684,7 +26717,7 @@ function makeMissoesModule(opts) {
       if (!t[tipo]) t[tipo] = { primeira: nomeMissao, vezes: 0 };
       t[tipo].vezes++;
       armazem.setItem(k, JSON.stringify(t));
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Missoes'); }
   }
   function tiposVistos() {
     try { return JSON.parse(armazem.getItem('grepoMissoes_tiposVistos_v1') || '{}'); }
@@ -26729,7 +26762,7 @@ function makeMissoesModule(opts) {
         const c = x.configuration || {};
         if (/coins_of_/.test(String(c.type))) return Number(c.amount) || 0;
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Missoes'); }
     return 0;
   }
 
@@ -26755,7 +26788,7 @@ function makeMissoesModule(opts) {
     try {
       const r = (missao.progress || {}).resources;
       if (r && typeof r === 'object') emFalta = r;
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Missoes'); }
     if (!emFalta) emFalta = pedido;
 
     const falta = {};
@@ -26919,7 +26952,7 @@ function makeMissoesModule(opts) {
           somaPop += quantas * c.pop;
         }
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Missoes'); }
     return { unidades: escolha, populacao: somaPop };
   }
 
@@ -26953,11 +26986,11 @@ function makeMissoesModule(opts) {
         if (/unit|troop|training|recruit/i.test(pid)) return true;
         /* Pelo subtipo: se for uma unidade do jogo, é tropa. */
         const sub = String((r || {}).subtype || ((r || {}).configuration || {}).type || '');
-        try { if (sub && (mUw.GameData.units || {})[sub]) return true; } catch (e) {}
+        try { if (sub && (mUw.GameData.units || {})[sub]) return true; } catch (e) { seErroDeCodigo(e, 'Missoes'); }
         return false;
       });
       if (temTropas && c && c.descartarTropas !== false) return 'trash';
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Missoes'); }
 
     /* Respeitar o que está escolhido no painel ("guardar" ou "usar já").
      * Estava fixo em 'stash' e ignorava a definição. */
@@ -27019,7 +27052,7 @@ function makeMissoesModule(opts) {
               else { col.add(Object.assign({ id: idNovo }, attrs)); }
               tratado = true;
             }
-          } catch (e) {}
+          } catch (e) { seErroDeCodigo(e, 'Missoes'); }
           if (tratado) continue;
 
           try {
@@ -27035,10 +27068,10 @@ function makeMissoesModule(opts) {
                 }
               }
             }
-          } catch (e) {}
+          } catch (e) { seErroDeCodigo(e, 'Missoes'); }
         }
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Missoes'); }
   }
 
   /* ---------------------- utilitários ----------------------------------- */
@@ -27052,7 +27085,7 @@ function makeMissoesModule(opts) {
           return { id: Number(id), name: t.getName() };
         }
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Missoes'); }
     return null;
   }
 
@@ -27088,7 +27121,7 @@ function makeMissoesModule(opts) {
         const d = ((Number(u.defense_hack) || 0) + (Number(u.defense_pierce) || 0)
           + (Number(u.defense_distance) || 0)) / 3;
         total += n * (d || 0);
-      } catch (e) {}
+      } catch (e) { seErroDeCodigo(e, 'Missoes'); }
     }
     return Math.round(total);
   }
@@ -27098,7 +27131,7 @@ function makeMissoesModule(opts) {
     for (const k of Object.keys(unidades || {})) {
       const n = Number(unidades[k]) || 0;
       if (n <= 0) continue;
-      try { total += n * (Number((mUw.GameData.units[k] || {}).attack) || 0); } catch (e) {}
+      try { total += n * (Number((mUw.GameData.units[k] || {}).attack) || 0); } catch (e) { seErroDeCodigo(e, 'Missoes'); }
     }
     return Math.round(total);
   }
@@ -27215,7 +27248,7 @@ function makeMissoesModule(opts) {
             }
           }
         }
-      } catch (e) {}
+      } catch (e) { seErroDeCodigo(e, 'Missoes'); }
 
       return { pode: true, tipo: 'recursos' };
     }
@@ -27332,7 +27365,7 @@ function makeMissoesModule(opts) {
               const b = JSON.parse(armazem.getItem(GUIA_BLOQUEADAS) || '{}');
               delete b[a2.progressable_id];
               armazem.setItem(GUIA_BLOQUEADAS, JSON.stringify(b));
-            } catch (e) {}
+            } catch (e) { seErroDeCodigo(e, 'Missoes'); }
           } else if (/verification|captcha|bot_protection/i.test(String(r2.msg))) {
             /* O JOGO PEDIU VERIFICAÇÃO.
              *
@@ -27352,7 +27385,7 @@ function makeMissoesModule(opts) {
                   + 'Fecha-a à mão no painel das missões — não volto a tentar nas '
                   + 'próximas 6 h.');
               }
-            } catch (e) {}
+            } catch (e) { seErroDeCodigo(e, 'Missoes'); }
           } else {
             rotina(`Guia: não consegui fechar "${nome2}" — ${r2.msg}`);
           }
@@ -27998,7 +28031,7 @@ function makeColonosModule(opts) {
     try {
       const f = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroPedirFora;
       if (f) return f(url, op);
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Colonos'); }
     return mUw.fetch(url, op);
   };
 
@@ -28068,7 +28101,7 @@ function makeColonosModule(opts) {
         const t = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroTravar;
         if (t) t(2);
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Colonos'); }
     try {
       const txt = await resposta.text();
       if (!txt || !txt.trim()) {
@@ -28089,7 +28122,7 @@ function makeColonosModule(opts) {
     try {
       const a = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroArmazem;
       if (a) return a;
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Colonos'); }
     return localStorage;
   })();
 
@@ -28097,7 +28130,7 @@ function makeColonosModule(opts) {
     try {
       const t = Number(mUw.Timestamp.now());
       if (Number.isFinite(t) && t > 0) return Math.floor(t);
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Colonos'); }
     return Math.floor(Date.now() / 1000);   // só se o jogo não responder
   }
 
@@ -28109,7 +28142,7 @@ function makeColonosModule(opts) {
 
   function cfg() {
     const c = Object.assign({}, DEFAULTS);
-    try { Object.assign(c, JSON.parse(armazem.getItem(CFG_KEY) || '{}')); } catch (e) {}
+    try { Object.assign(c, JSON.parse(armazem.getItem(CFG_KEY) || '{}')); } catch (e) { seErroDeCodigo(e, 'Colonos'); }
 
     /* A EQUIPA vem da lista fixa, não da configuração.
      *
@@ -28120,11 +28153,11 @@ function makeColonosModule(opts) {
       const fixa = (typeof mUw !== 'undefined' && mUw && mUw.__maestroEquipa)
         ? mUw.__maestroEquipa() : null;
       if (fixa) c.equipa = fixa;
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Colonos'); }
 
     return c;
   }
-  function guardar(c) { try { armazem.setItem(CFG_KEY, JSON.stringify(c)); } catch (e) {} }
+  function guardar(c) { try { armazem.setItem(CFG_KEY, JSON.stringify(c)); } catch (e) { seErroDeCodigo(e, 'Colonos'); } }
 
   /* ---------------------- estado próprio -------------------------------- */
 
@@ -28161,7 +28194,7 @@ function makeColonosModule(opts) {
       if (typeof t.unitsSupport === 'function') {
         total += Number((t.unitsSupport() || {})[NC]) || 0;
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Colonos'); }
     return total;
   }
 
@@ -28179,7 +28212,7 @@ function makeColonosModule(opts) {
     try {
       // só os PRÓPRIOS: os de apoio são de outras contas
       for (const id of Object.keys(mUw.ITowns.towns)) t += colonizadoresProprios(id);
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Colonos'); }
     return t;
   }
 
@@ -28200,7 +28233,7 @@ function makeColonosModule(opts) {
         if (Number(a.current_town_id) !== Number(townId)) continue;
         t += Number(a[NC]) || 0;
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Colonos'); }
     return t;
   }
 
@@ -28238,7 +28271,7 @@ function makeColonosModule(opts) {
 
   async function escreverPartilha(dados) {
     // não segurar o processo (importante nos testes)
-    try { if (typeof t2 !== 'undefined' && t2 && t2.unref) t2.unref(); } catch (e) {}
+    try { if (typeof t2 !== 'undefined' && t2 && t2.unref) t2.unref(); } catch (e) { seErroDeCodigo(e, 'Colonos'); }
     if (!GIST_ID || !GIST_TOKEN) return false;
     try {
       const body = { files: {} };
@@ -28276,10 +28309,10 @@ function makeColonosModule(opts) {
         }
         if (mudou) {
           guardar(c);
-          try { console.log(`[MAESTRO/colonos] bases e modo actualizados a partir de ${comum.quem}`); } catch (e) {}
+          try { console.log(`[MAESTRO/colonos] bases e modo actualizados a partir de ${comum.quem}`); } catch (e) { seErroDeCodigo(e, 'Colonos'); }
         }
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Colonos'); }
 
     // Publicar também as MINHAS cidades: assim qualquer conta do grupo pode
     // escolher a base de entre todas as cidades das contas do grupo (são todas
@@ -28295,7 +28328,7 @@ function makeColonosModule(opts) {
           nc: colonizadoresEm(id),
         });
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Colonos'); }
 
     todos[eu] = {
       equipa: c.equipa || '',
@@ -28335,7 +28368,7 @@ function makeColonosModule(opts) {
           ids, nomes, quando: agoraServidor(),
         }));
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Colonos'); }
 
     /* AS BASES E O MODO viajam com a partilha, numa entrada própria.
      *
@@ -28386,7 +28419,7 @@ function makeColonosModule(opts) {
       const ultimo = armazem.getItem(ULTIMA_PARTILHA_KEY);
       if (ultimo === agoraAssim) precisaEscrever = false;
       else armazem.setItem(ULTIMA_PARTILHA_KEY, agoraAssim);
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Colonos'); }
 
     if (precisaEscrever) await escreverPartilha(todos);
     partilhaCache = todos;      // o painel usa isto para listar as contas
@@ -28439,7 +28472,7 @@ function makeColonosModule(opts) {
               else { col.add(Object.assign({ id: idNovo }, attrs)); }
               tratado = true;
             }
-          } catch (e) {}
+          } catch (e) { seErroDeCodigo(e, 'Colonos'); }
           if (tratado) continue;
           try {
             const modelos = mUw.MM.getModels()[nome];
@@ -28454,10 +28487,10 @@ function makeColonosModule(opts) {
                 }
               }
             }
-          } catch (e) {}
+          } catch (e) { seErroDeCodigo(e, 'Colonos'); }
         }
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Colonos'); }
   }
 
   /* ---------------------- envio para o depósito ------------------------- */
@@ -28603,7 +28636,7 @@ function makeColonosModule(opts) {
           melhor = { id: Number(id), name: t.getName(), navios, distancia: d };
         }
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Colonos'); }
     return melhor;
   }
 
@@ -28886,7 +28919,7 @@ function makeColonosModule(opts) {
         ${(() => {
           /* Se esta conta está na lista fixa, a equipa não se escolhe. */
           let fixa = null;
-          try { fixa = mUw.__maestroEquipa ? mUw.__maestroEquipa() : null; } catch (e) {}
+          try { fixa = mUw.__maestroEquipa ? mUw.__maestroEquipa() : null; } catch (e) { seErroDeCodigo(e, 'Colonos'); }
           if (fixa) {
             return `Equipa: <b>${fixa}</b>
               <span style="opacity:.6;font-size:10px">— definida pelo nome da conta,
@@ -28959,7 +28992,7 @@ function makeColonosModule(opts) {
     if (bt) bt.onclick = async () => {
       bt.disabled = true; bt.textContent = 'a procurar...';
       const todos = await sincronizar(cfg());
-      try { armazem.setItem(CACHE_CIDADES, JSON.stringify(todos)); } catch (e) {}
+      try { armazem.setItem(CACHE_CIDADES, JSON.stringify(todos)); } catch (e) { seErroDeCodigo(e, 'Colonos'); }
       const n = Object.keys(todos).length;
       const nc = Object.keys(todos).reduce((s2, k) => s2 + ((todos[k].cidades || []).length), 0);
       ctx.log(`Colonos: ${n} conta(s) conhecidas, ${nc} cidade(s). Escolhe as bases.`);
@@ -29050,7 +29083,7 @@ function makeApoioModule(opts) {
     try {
       const f = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroPerguntar;
       if (f) return f(t);
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Apoio'); }
     return Promise.resolve(true);
   };
 
@@ -29060,7 +29093,7 @@ function makeApoioModule(opts) {
     try {
       const f = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroPedirFora;
       if (f) return f(url, op);
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Apoio'); }
     return mUw.fetch(url, op);
   };
 
@@ -29117,7 +29150,7 @@ function makeApoioModule(opts) {
         if (Number(c2.baseA) === Number(townId)) return true;
         if (Number(c2.baseB) === Number(townId)) return true;
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Apoio'); }
     return false;
   }
 
@@ -29146,7 +29179,7 @@ function makeApoioModule(opts) {
     c = c || {};
     const berth = temBeliche(townId);
     let tenho = {};
-    try { tenho = mUw.ITowns.getTown(Number(townId)).units() || {}; } catch (e) {}
+    try { tenho = mUw.ITowns.getTown(Number(townId)).units() || {}; } catch (e) { seErroDeCodigo(e, 'Apoio'); }
 
     let popTerra = 0;
     for (const u of TERRESTRES) popTerra += (Number(pacote[u]) || 0) * popDaUnidade(u);
@@ -29216,7 +29249,7 @@ function makeApoioModule(opts) {
         const t = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroTravar;
         if (t) t(2);
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Apoio'); }
     try {
       const txt = await resposta.text();
       if (!txt || !txt.trim()) {
@@ -29237,16 +29270,16 @@ function makeApoioModule(opts) {
     try {
       const a = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroArmazem;
       if (a) return a;
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Apoio'); }
     return localStorage;
   })();
 
   function cfg() {
     const c = JSON.parse(JSON.stringify(DEFAULTS));
-    try { Object.assign(c, JSON.parse(armazem.getItem(CFG_KEY) || '{}')); } catch (e) {}
+    try { Object.assign(c, JSON.parse(armazem.getItem(CFG_KEY) || '{}')); } catch (e) { seErroDeCodigo(e, 'Apoio'); }
     return c;
   }
-  function guardarCfg(c) { try { armazem.setItem(CFG_KEY, JSON.stringify(c)); } catch (e) {} }
+  function guardarCfg(c) { try { armazem.setItem(CFG_KEY, JSON.stringify(c)); } catch (e) { seErroDeCodigo(e, 'Apoio'); } }
 
   function meuId() {
     try { return String(mUw.Game.player_id || mUw.Game.playerId || 'x'); } catch (e) { return 'x'; }
@@ -29265,7 +29298,7 @@ function makeApoioModule(opts) {
       const todos = JSON.parse(armazem.getItem(DONE_KEY) || '{}');
       todos[meuId()] = reg;
       armazem.setItem(DONE_KEY, JSON.stringify(todos));
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Apoio'); }
   }
   const chavePar = (origem, alvo) => `${origem}->${alvo}`;
 
@@ -29350,7 +29383,7 @@ function makeApoioModule(opts) {
         if (agora - Number(f[k]) > 2 * VALIDADE_PEDIDO) delete f[k];
       }
       armazem.setItem('grepoApoio_pedidosFeitos_v1', JSON.stringify(f));
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Apoio'); }
   }
 
   /* JÁ MIGRÁMOS PARA O FIREBASE?
@@ -29363,7 +29396,7 @@ function makeApoioModule(opts) {
     try { return armazem.getItem(MIGRADO_KEY) === '1'; } catch (e) { return false; }
   };
   const marcarMigrado = () => {
-    try { armazem.setItem(MIGRADO_KEY, '1'); } catch (e) {}
+    try { armazem.setItem(MIGRADO_KEY, '1'); } catch (e) { seErroDeCodigo(e, 'Apoio'); }
   };
 
   /* Atalhos para a camada do núcleo — o módulo não lhe chega directamente. */
@@ -29415,7 +29448,7 @@ function makeApoioModule(opts) {
           return d;
         }
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Apoio'); }
 
     /* 2) Gist, enquanto a migração não estiver feita. */
     if (!GIST_ID) return null;
@@ -29453,7 +29486,7 @@ function makeApoioModule(opts) {
 
   async function escreverLista(dados) {
     // não segurar o processo (importante nos testes)
-    try { if (typeof t2 !== 'undefined' && t2 && t2.unref) t2.unref(); } catch (e) {}
+    try { if (typeof t2 !== 'undefined' && t2 && t2.unref) t2.unref(); } catch (e) { seErroDeCodigo(e, 'Apoio'); }
 
     if (!souAPrincipalDoApoio()) {
       return { ok: false, msg: 'só a conta principal altera a lista de apoio' };
@@ -29472,7 +29505,7 @@ function makeApoioModule(opts) {
           return { ok: true };
         }
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Apoio'); }
 
     if (!GIST_ID || !GIST_TOKEN) return { ok: false, msg: 'sem Gist nem Firebase configurados' };
     try {
@@ -29505,7 +29538,7 @@ function makeApoioModule(opts) {
             porque = 'o GitHub limitou as escritas — tenta daqui a uns minutos '
               + '(guardei localmente entretanto)';
           }
-        } catch (e) {}
+        } catch (e) { seErroDeCodigo(e, 'Apoio'); }
         return { ok: false, msg: porque };
       }
 
@@ -29544,7 +29577,7 @@ function makeApoioModule(opts) {
     try {
       const d = Object.assign({}, dados, { guardadaEm: Date.now() });
       armazem.setItem(CACHE_ALVOS, JSON.stringify(d));
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Apoio'); }
   }
 
   /* ---------------------- informação sobre os alvos --------------------- */
@@ -29571,7 +29604,7 @@ function makeApoioModule(opts) {
     try { return JSON.parse(armazem.getItem(ENVIADO_KEY) || '{}'); } catch (e) { return {}; }
   }
   function gravarEnviado(d) {
-    try { armazem.setItem(ENVIADO_KEY, JSON.stringify(d)); } catch (e) {}
+    try { armazem.setItem(ENVIADO_KEY, JSON.stringify(d)); } catch (e) { seErroDeCodigo(e, 'Apoio'); }
   }
 
   function anotarEnvio(alvoId, unidades) {
@@ -29583,7 +29616,7 @@ function makeApoioModule(opts) {
         d[k][u] = (Number(d[k][u]) || 0) + (Number(unidades[u]) || 0);
       }
       gravarEnviado(d);
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Apoio'); }
   }
 
   /* O que esta conta tem AGORA em cada alvo. */
@@ -29600,7 +29633,7 @@ function makeApoioModule(opts) {
           if (n > 0) out[u] = (out[u] || 0) + n;
         }
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Apoio'); }
     return out;
   }
 
@@ -29734,7 +29767,7 @@ function makeApoioModule(opts) {
         }
         return { unitsId: Number(a.id), de: Number(a.home_town_id), unidades };
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Apoio'); }
     return null;
   }
 
@@ -29797,7 +29830,7 @@ function makeApoioModule(opts) {
   })();
 
   function gravarNomes() {
-    try { armazem.setItem(NOMES_KEY, JSON.stringify(cacheCidades)); } catch (e) {}
+    try { armazem.setItem(NOMES_KEY, JSON.stringify(cacheCidades)); } catch (e) { seErroDeCodigo(e, 'Apoio'); }
   }
 
   /* Blocos do mapa já procurados, para a busca continuar de onde parou em vez
@@ -29808,7 +29841,7 @@ function makeApoioModule(opts) {
     catch (e) { return new Set(); }
   }
   function gravarBlocos(set) {
-    try { armazem.setItem(VISTOS_KEY, JSON.stringify(Array.from(set).slice(-400))); } catch (e) {}
+    try { armazem.setItem(VISTOS_KEY, JSON.stringify(Array.from(set).slice(-400))); } catch (e) { seErroDeCodigo(e, 'Apoio'); }
   }
 
   /* O nome pode estar nos MEUS MOVIMENTOS.
@@ -29839,12 +29872,12 @@ function makeApoioModule(opts) {
               const d = JSON.parse(atob(b64[1]));
               if (Number.isFinite(Number(d.ix))) ilha = { x: Number(d.ix), y: Number(d.iy) };
             }
-          } catch (e) {}
+          } catch (e) { seErroDeCodigo(e, 'Apoio'); }
 
           if (nome) return { nome: String(nome), jogador: '?', minha: false, ilha };
         }
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Apoio'); }
     return null;
   }
 
@@ -29874,10 +29907,10 @@ function makeApoioModule(opts) {
             if (Number.isFinite(Number(o.ix)) && Number.isFinite(Number(o.iy))) {
               return { x: Number(o.ix), y: Number(o.iy) };
             }
-          } catch (e) {}
+          } catch (e) { seErroDeCodigo(e, 'Apoio'); }
         }
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Apoio'); }
     return null;
   }
 
@@ -29926,7 +29959,7 @@ function makeApoioModule(opts) {
         n++;
       }
       if (n) gravarNomes();
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Apoio'); }
     return n;
   }
 
@@ -29966,7 +29999,7 @@ function makeApoioModule(opts) {
         }
         if (cacheCidades[townId]) { gravarNomes(); return cacheCidades[townId]; }
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Apoio'); }
 
     /* O nome pode estar nos meus movimentos — mas o JOGADOR não vem lá (o
      * `player_id` do movimento sou eu, não o dono da cidade).
@@ -29989,7 +30022,7 @@ function makeApoioModule(opts) {
         gravarNomes();
         return info;
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Apoio'); }
 
     // senão, procurar no mapa à volta das minhas ilhas
     try {
@@ -30063,10 +30096,10 @@ function makeApoioModule(opts) {
             }
           }
           if (cacheCidades[townId]) { gravarNomes(); return cacheCidades[townId]; }
-        } catch (e) {}
+        } catch (e) { seErroDeCodigo(e, 'Apoio'); }
       }
       gravarNomes();
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Apoio'); }
 
     /* SEI AS COORDENADAS? Vou direto ao bloco certo.
      *
@@ -30101,7 +30134,7 @@ function makeApoioModule(opts) {
           return cacheCidades[townId];
         }
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Apoio'); }
 
     /* Se já se sabe o nome pelos movimentos, não vale a pena varrer o mapa só
      * para descobrir o dono — devolve-se o que há. */
@@ -30123,7 +30156,7 @@ function makeApoioModule(opts) {
         try {
           const t = mUw.ITowns.getTown(Number(id));
           jaVi.add(`${Math.floor(t.getIslandCoordinateX() / CHUNK)}:${Math.floor(t.getIslandCoordinateY() / CHUNK)}`);
-        } catch (e) {}
+        } catch (e) { seErroDeCodigo(e, 'Apoio'); }
       }
 
       /* Grelha à volta do centro, do mais perto para o mais longe.
@@ -30160,7 +30193,7 @@ function makeApoioModule(opts) {
           try {
             console.log(`[MAESTRO/apoio] procurei ${MAX_POR_VEZ} blocos sem achar `
               + `a cidade ${townId}; continuo na próxima vez.`);
-          } catch (e) {}
+          } catch (e) { seErroDeCodigo(e, 'Apoio'); }
           break;
         }
         const url = mUw.location.origin + '/game/map_data?town_id=' + Number(base)
@@ -30185,7 +30218,7 @@ function makeApoioModule(opts) {
       }
       gravarNomes();
       gravarBlocos(jaVi);
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Apoio'); }
 
     return cacheCidades[townId] || { nome: '#' + townId, jogador: '?', minha: false };
   }
@@ -30243,7 +30276,7 @@ function makeApoioModule(opts) {
         const r = await cancelarOuRetirar(a, alvoId);
         if (r) { voltaram++; await ctx.sleep(ctx.rand(600, 1200)); }
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Apoio'); }
 
     /* 2. O que JÁ LÁ ESTÁ estacionado: manda-se de volta.
      *
@@ -30266,7 +30299,7 @@ function makeApoioModule(opts) {
         const n = Number(b) || 0;
         if (n) basesProtegidas.add(n);
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Apoio'); }
 
     if (basesProtegidas.has(Number(alvoId))) {
       log(`Apoio: ${alvoId} é uma base do módulo de colonizadores `
@@ -30290,7 +30323,7 @@ function makeApoioModule(opts) {
         const r = await mandarDeVolta(a.id, casa);
         if (r) { voltaram++; await ctx.sleep(ctx.rand(700, 1300)); }
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Apoio'); }
 
     return voltaram;
   }
@@ -30680,7 +30713,7 @@ function makeApoioModule(opts) {
             if (extra[alvo] <= 0) delete extra[alvo];
             armazem.setItem('grepoApoio_reforcar_v1', JSON.stringify(extra));
           }
-        } catch (e) {}
+        } catch (e) { seErroDeCodigo(e, 'Apoio'); }
       }
         if (r.ok) {
           reg[chavePar(t.id, alvo)] = { t: Date.now(), u: cargaFinal };
@@ -30772,7 +30805,7 @@ function makeApoioModule(opts) {
     mUw = ctx.uw; mWorld = ctx.WORLD;
     /* Aprender os nomes que a tropa estacionada já sabe, para o painel os
      * mostrar mal se abre. */
-    try { nomesPelasTropas(); } catch (e) {}
+    try { nomesPelasTropas(); } catch (e) { seErroDeCodigo(e, 'Apoio'); }
     const c = cfg();
     const lista = listaEmCache() || {};
 
@@ -30967,7 +31000,7 @@ function makeApoioModule(opts) {
           const foi = await publicarPedido('reforcar', id, quantos);
           ctx.log(`Apoio: ${info.nome} vai receber mais ${quantos} envio(s)`
             + (foi ? ' de CADA conta.' : ' desta conta (não consegui avisar as outras).'));
-        } catch (e) {}
+        } catch (e) { seErroDeCodigo(e, 'Apoio'); }
 
         b.disabled = false; b.textContent = 'reforçar';
       };
@@ -31005,7 +31038,7 @@ function makeApoioModule(opts) {
           const foi = await publicarPedido('repor', id, 1);
           ctx.log(`Apoio: ${info.nome} — vou repor ${lista}`
             + (foi ? ', e as outras contas repõem o que perderam.' : '.'));
-        } catch (e) {}
+        } catch (e) { seErroDeCodigo(e, 'Apoio'); }
         b.disabled = false; b.textContent = 'repor';
       };
     });
@@ -31023,7 +31056,7 @@ function makeApoioModule(opts) {
         try {
           const n = await retirarApoio(ctx, id);
           ctx.log(`Apoio: ${info.nome} retirado${n ? ` — ${n} comando(s) a voltar` : ''}.`);
-        } catch (e) {}
+        } catch (e) { seErroDeCodigo(e, 'Apoio'); }
 
         /* A lista grava-se uma vez só, depois de parares de clicar. */
         if (gravarRemocoes) clearTimeout(gravarRemocoes);
@@ -31047,7 +31080,7 @@ function makeApoioModule(opts) {
           const rr = await escreverLista(atual);
           if (rr.ok) {
             ctx.log(`Apoio: ${quais.length} alvo(s) saíram da lista partilhada.`);
-            try { armazem.removeItem(POR_REMOVER_KEY); } catch (e) {}
+            try { armazem.removeItem(POR_REMOVER_KEY); } catch (e) { seErroDeCodigo(e, 'Apoio'); }
           } else {
             /* A escrita falhou — guardar o que falta remover para a passagem
              * seguinte tentar outra vez. Sem isto, a lista ficava por
@@ -31057,7 +31090,7 @@ function makeApoioModule(opts) {
               const pend = JSON.parse(armazem.getItem(POR_REMOVER_KEY) || '[]');
               const novo = Array.from(new Set(pend.concat(quais)));
               armazem.setItem(POR_REMOVER_KEY, JSON.stringify(novo));
-            } catch (e) {}
+            } catch (e) { seErroDeCodigo(e, 'Apoio'); }
             ctx.log(`Apoio: as tropas voltaram, mas não consegui gravar a lista — ${rr.msg}. `
               + 'Tento outra vez sozinho.');
           }
@@ -31121,7 +31154,7 @@ function makeApoioModule(opts) {
       try {
         for (const id of alvos) delete cacheCidades[Number(id)];
         gravarNomes();
-      } catch (e) {}
+      } catch (e) { seErroDeCodigo(e, 'Apoio'); }
 
       let atuais = alvos;
       try {
@@ -31132,7 +31165,7 @@ function makeApoioModule(opts) {
           cc.alvos = atuais;
           guardarCfg(cc);
         }
-      } catch (e) {}
+      } catch (e) { seErroDeCodigo(e, 'Apoio'); }
 
       const towns = ctx.getMyTowns();
       for (const id of atuais) {
@@ -31227,7 +31260,7 @@ function makeFundacaoModule(opts) {
         const t = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroTravar;
         if (t) t(2);
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Fundacao'); }
     try {
       const txt = await resposta.text();
       if (!txt || !txt.trim()) {
@@ -31248,7 +31281,7 @@ function makeFundacaoModule(opts) {
     try {
       const a = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroArmazem;
       if (a) return a;
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Fundacao'); }
     return localStorage;
   })();
 
@@ -31288,7 +31321,7 @@ function makeFundacaoModule(opts) {
       if (!m) return null;
       const d = JSON.parse(atob(m[1]));
       if (Number.isFinite(Number(d.ix))) return { ix: Number(d.ix), iy: Number(d.iy) };
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Fundacao'); }
     return null;
   }
 
@@ -31313,10 +31346,10 @@ function makeFundacaoModule(opts) {
 
   function cfg() {
     const c = JSON.parse(JSON.stringify(DEFAULTS));
-    try { Object.assign(c, JSON.parse(armazem.getItem(CFG_KEY) || '{}')); } catch (e) {}
+    try { Object.assign(c, JSON.parse(armazem.getItem(CFG_KEY) || '{}')); } catch (e) { seErroDeCodigo(e, 'Fundacao'); }
     return c;
   }
-  function guardar(c) { try { armazem.setItem(CFG_KEY, JSON.stringify(c)); } catch (e) {} }
+  function guardar(c) { try { armazem.setItem(CFG_KEY, JSON.stringify(c)); } catch (e) { seErroDeCodigo(e, 'Fundacao'); } }
 
   /* ---------------------- leitura do jogo ------------------------------- */
 
@@ -31446,7 +31479,7 @@ function makeFundacaoModule(opts) {
         const co = { x: Number(t.getIslandCoordinateX()), y: Number(t.getIslandCoordinateY()) };
         if (co.x) { centrosConhecidos[id] = co; return co; }
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Fundacao'); }
 
     /* Nos nomes que o apoio guardou — trazem a ilha de cada cidade. */
     try {
@@ -31461,7 +31494,7 @@ function makeFundacaoModule(opts) {
           return co;
         }
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Fundacao'); }
 
     return null;
   }
@@ -31540,7 +31573,7 @@ function makeFundacaoModule(opts) {
             break;
           }
         }
-      } catch (e) {}
+      } catch (e) { seErroDeCodigo(e, 'Fundacao'); }
 
       const ocupados = new Set();
       let aldeias = 0;
@@ -31601,7 +31634,7 @@ function makeFundacaoModule(opts) {
           }
         }
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Fundacao'); }
     return achadas;
   }
 
@@ -31629,7 +31662,7 @@ function makeFundacaoModule(opts) {
               else { col.add(Object.assign({ id: idNovo }, attrs)); }
               tratado = true;
             }
-          } catch (e) {}
+          } catch (e) { seErroDeCodigo(e, 'Fundacao'); }
           if (tratado) continue;
           try {
             const modelos = mUw.MM.getModels()[nome];
@@ -31644,10 +31677,10 @@ function makeFundacaoModule(opts) {
                 }
               }
             }
-          } catch (e) {}
+          } catch (e) { seErroDeCodigo(e, 'Fundacao'); }
         }
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Fundacao'); }
   }
 
   /* ---------------------- ciclo principal ------------------------------- */
@@ -32137,7 +32170,7 @@ function makeFundacaoModule(opts) {
     const estado = lerEstado();
 
     let comNC = 0;
-    try { comNC = ctx.getMyTowns().filter((t) => colonizadoresEm(t.id) > 0).length; } catch (e) {}
+    try { comNC = ctx.getMyTowns().filter((t) => colonizadoresEm(t.id) > 0).length; } catch (e) { seErroDeCodigo(e, 'Fundacao'); }
 
     container.innerHTML = `
       <div style="font-size:11px;line-height:1.7">
@@ -32338,13 +32371,13 @@ function makeRelatoriosModule(opts) {
     try {
       const a = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroArmazem;
       if (a) return a;
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Relatorios'); }
     return localStorage;
   })();
 
   function cfg() {
     const c = Object.assign({}, DEFAULTS);
-    try { Object.assign(c, JSON.parse(armazem.getItem(CFG_KEY) || '{}')); } catch (e) {}
+    try { Object.assign(c, JSON.parse(armazem.getItem(CFG_KEY) || '{}')); } catch (e) { seErroDeCodigo(e, 'Relatorios'); }
 
     /* A EQUIPA vem da lista fixa, não da configuração.
      *
@@ -32355,11 +32388,11 @@ function makeRelatoriosModule(opts) {
       const fixa = (typeof mUw !== 'undefined' && mUw && mUw.__maestroEquipa)
         ? mUw.__maestroEquipa() : null;
       if (fixa) c.equipa = fixa;
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Relatorios'); }
 
     return c;
   }
-  function guardarCfg(c) { try { armazem.setItem(CFG_KEY, JSON.stringify(c)); } catch (e) {} }
+  function guardarCfg(c) { try { armazem.setItem(CFG_KEY, JSON.stringify(c)); } catch (e) { seErroDeCodigo(e, 'Relatorios'); } }
 
   /* Tirar acentos e escapes, para comparar texto sem surpresas. */
   function normalizar(txt) {
@@ -32403,7 +32436,7 @@ function makeRelatoriosModule(opts) {
         const t = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroTravar;
         if (t) t(2);
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Relatorios'); }
     try {
       const txt = await resposta.text();
       if (!txt || !txt.trim()) {
@@ -32660,7 +32693,7 @@ function makeFrotaModule(opts) {
     try {
       const a = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroArmazem;
       if (a) return a;
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Frota'); }
     return localStorage;
   })();
 
@@ -32711,24 +32744,24 @@ function makeFrotaModule(opts) {
           u: Math.floor((Number(est[id].ultima) || 0) / 1000),
         };
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Frota'); }
 
     let errosCodigo = [];
     try { errosCodigo = ((w.__maestroErrosDeCodigo && w.__maestroErrosDeCodigo()) || []).slice(-8); }
-    catch (e) {}
+    catch (e) { seErroDeCodigo(e, 'Frota'); }
 
     let erros = [];
     try {
       erros = ((w.__maestroErrosPainel && w.__maestroErrosPainel()) || [])
         .slice(-5)
         .map((x) => String(`[${x.mod}] ${x.msg}`).slice(0, 160));
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Frota'); }
 
     let captcha = 0;
-    try { captcha = (w.__maestroHaCaptcha && w.__maestroHaCaptcha()) ? 1 : 0; } catch (e) {}
+    try { captcha = (w.__maestroHaCaptcha && w.__maestroHaCaptcha()) ? 1 : 0; } catch (e) { seErroDeCodigo(e, 'Frota'); }
 
     let cidades = 0;
-    try { cidades = (ctx.getMyTowns() || []).length; } catch (e) {}
+    try { cidades = (ctx.getMyTowns() || []).length; } catch (e) { seErroDeCodigo(e, 'Frota'); }
 
     return {
       conta: meuNome(),
@@ -32747,7 +32780,7 @@ function makeFrotaModule(opts) {
     if (!erros.length || !ctx.avisarDiscord) return;
 
     let ja = {};
-    try { ja = JSON.parse(armazem.getItem(AVISADOS_KEY) || '{}'); } catch (e) {}
+    try { ja = JSON.parse(armazem.getItem(AVISADOS_KEY) || '{}'); } catch (e) { seErroDeCodigo(e, 'Frota'); }
     const agora = Math.floor(Date.now() / 1000);
     let mudou = false;
 
@@ -32772,7 +32805,7 @@ function makeFrotaModule(opts) {
     for (const k of Object.keys(ja)) {
       if (agora - Number(ja[k]) > 7 * 24 * 3600) delete ja[k];
     }
-    if (mudou) { try { armazem.setItem(AVISADOS_KEY, JSON.stringify(ja)); } catch (e) {} }
+    if (mudou) { try { armazem.setItem(AVISADOS_KEY, JSON.stringify(ja)); } catch (e) { seErroDeCodigo(e, 'Frota'); } }
   }
 
   /* ---------------------- passagem -------------------------------------- */
@@ -32784,7 +32817,7 @@ function makeFrotaModule(opts) {
     const w = janela();
     const fb = w.__maestroFb;
     let temFb = false;
-    try { temFb = !!(fb && fb.escrever && fb.url && fb.url()); } catch (e) {}
+    try { temFb = !!(fb && fb.escrever && fb.url && fb.url()); } catch (e) { seErroDeCodigo(e, 'Frota'); }
     if (!temFb) {
       rotina('Frota: sem Firebase configurado — não publico o sinal de vida.');
       return;
@@ -32815,7 +32848,7 @@ function makeFrotaModule(opts) {
     const minhaVersao = String(w.__maestroVersao || '?');
 
     let temFb = false;
-    try { temFb = !!(fb && fb.ler && fb.url && fb.url()); } catch (e) {}
+    try { temFb = !!(fb && fb.ler && fb.url && fb.url()); } catch (e) { seErroDeCodigo(e, 'Frota'); }
     if (!temFb) {
       container.innerHTML = '<div style="font-size:11px;opacity:.7">'
         + 'Sem Firebase configurado. Põe o endereço da base de dados no painel do núcleo '
@@ -32824,7 +32857,7 @@ function makeFrotaModule(opts) {
     }
 
     let dados = null;
-    try { dados = await fb.ler(`frota/${mWorld}`); } catch (e) {}
+    try { dados = await fb.ler(`frota/${mWorld}`); } catch (e) { seErroDeCodigo(e, 'Frota'); }
     const contas = Object.keys(dados || {})
       .map((k) => (dados || {})[k])
       .filter((x) => x && x.conta)
@@ -32923,7 +32956,7 @@ function makeFrotaModule(opts) {
   const GIST_TOKEN = GIST_GUARDADO.token || '';
 
   // o núcleo também precisa deles, para o perfil partilhado
-  try { GIST_ID_GLOBAL = GIST_ID; GIST_TOKEN_GLOBAL = GIST_TOKEN; } catch (e) {}
+  try { GIST_ID_GLOBAL = GIST_ID; GIST_TOKEN_GLOBAL = GIST_TOKEN; } catch (e) { seErroDeCodigo(e, 'Frota'); }
 
   registerModule(makeConstrucaoModule({ intervaloMin: 20, gistId: GIST_ID, gistToken: GIST_TOKEN }));
   registerModule(makePesquisaModule({ intervaloMin: 30, gistId: GIST_ID, gistToken: GIST_TOKEN }));
@@ -32982,7 +33015,7 @@ function makeFrotaModule(opts) {
             log('core', `Perfil "${perfil0}" publicado (${r0.n} definição(ões)).`);
           }
         }
-      } catch (e) {}
+      } catch (e) { seErroDeCodigo(e, 'Frota'); }
     } else {
       /* Uma tentativa AGORA, para o painel já mostrar a configuração certa.
        * Se falhar, o `aplicarPerfilAoArrancar` continua a tentar em segundo
@@ -33008,7 +33041,7 @@ function makeFrotaModule(opts) {
         talvezRefrescar();
         setInterval(() => { verificarVersaoNova(); talvezRefrescar(); }, 10 * 60 * 1000);
       }, 30000 + desvio);
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Frota'); }
     if (autoStartLigado()) {
       log('core', 'Pronto — arranque automático ligado.');
       startMaestro();
