@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.03.0100
+// @version      2026.09.03.0120
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1102,7 +1102,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.03.0100';
+  const MAESTRO_VERSAO = '2026.09.03.0120';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -13039,9 +13039,42 @@ function makeFabricaNCModule(opts) {
       return r && r.armazem >= c.armazemMinimo;
     });
 
+    /* PÔR AS ORDENS EM DIA ANTES DE DECIDIR.
+     *
+     * O modelo do jogo não se actualiza sozinho: uma cidade com uma ordem de
+     * 4 colonizadores a decorrer aparecia sem ordem nenhuma, e a fábrica
+     * escolhia-a outra vez em vez de passar à seguinte.
+     *
+     * Visto em jogo: "dá para 0, espero por 2" numa cidade que tinha uma
+     * ordem a acabar dentro de 45 minutos. */
+    try {
+      if (ctx.actualizarNumeros) {
+        for (const t of grandes.slice(0, 6)) {
+          await ctx.actualizarNumeros(t.id, ['mar']);
+        }
+      }
+    } catch (e) { seErroDeCodigo(e, 'FabricaNC'); }
+
     if (!grandes.length) {
       rotina(`Fábrica de NC: nenhuma cidade com armazém de ${c.armazemMinimo}+.`);
       return;
+    }
+
+    /* PÔR AS FILAS EM DIA ANTES DE DECIDIR.
+     *
+     * A colecção `UnitOrder` não se actualiza sozinha. Uma cidade que acabou
+     * de receber uma ordem continua a aparecer livre, e a fábrica volta a
+     * escolhê-la — depois queixa-se de não ter recursos, porque acabou de os
+     * gastar.
+     *
+     * Visto em jogo: "dá para 0, espero por 2" numa cidade com uma ordem de
+     * quatro colonizadores a decorrer.
+     *
+     * Actualiza-se só o porto das cidades grandes, que são poucas. */
+    for (const t of grandes) {
+      try {
+        if (ctx.actualizarNumeros) await ctx.actualizarNumeros(t.id, ['mar']);
+      } catch (e) { seErroDeCodigo(e, 'FabricaNC'); }
     }
 
     const livres = grandes.filter((t) => !temOrdemDeNC(t.id));
@@ -13054,6 +13087,56 @@ function makeFabricaNCModule(opts) {
     /* ---- 2. A FÁBRICA DE AGORA ---- */
     const est = estado();
     let alvo = livres.find((t) => Number(t.id) === Number(est.cidade));
+
+    /* HÁ OUTRA CIDADE MELHOR AGORA?
+     *
+     * Ficar numa cidade que não consegue uma ordem, enquanto outra já tem
+     * recursos para a fazer, é desperdiçar o Argus — e o objectivo é ter o
+     * máximo de cidades a produzir.
+     *
+     * Se a cidade actual não dá para o mínimo mas outra dá, muda-se. O Argus
+     * segue atrás.
+     *
+     * Não se muda com ele em viagem: isso é tratado a seguir. */
+    if (alvo) {
+      try {
+        const custoAqui2 = custoAqui(alvo.id);
+        const rAqui = recursosDa(alvo.id) || {};
+        let cabemAqui = Infinity;
+        for (const k of RES) {
+          const cu = Number(custoAqui2[k]) || 0;
+          if (cu) cabemAqui = Math.min(cabemAqui, Math.floor((Number(rAqui[k]) || 0) / cu));
+        }
+        if (!Number.isFinite(cabemAqui)) cabemAqui = 0;
+
+        if (cabemAqui < c.minimoPorOrdem) {
+          /* Alguma outra consegue já? */
+          const melhor = livres
+            .filter((t) => Number(t.id) !== Number(alvo.id))
+            .map((t) => {
+              const cu = custoAqui(t.id);
+              const r = recursosDa(t.id) || {};
+              let n = Infinity;
+              for (const k of RES) {
+                const x = Number(cu[k]) || 0;
+                if (x) n = Math.min(n, Math.floor((Number(r[k]) || 0) / x));
+              }
+              return { t, n: Number.isFinite(n) ? n : 0 };
+            })
+            .filter((x) => x.n >= c.minimoPorOrdem)
+            .sort((a, b) => b.n - a.n)[0];
+
+          if (melhor) {
+            rotina(`Fábrica de NC: ${alvo.name} só dá para ${cabemAqui} — `
+              + `${melhor.t.name} já dá para ${melhor.n}, mudo para lá.`);
+            alvo = melhor.t;
+            est.cidade = Number(melhor.t.id);
+            est.desde = agoraJogo();
+            guardarEstado(est);
+          }
+        }
+      } catch (e) { seErroDeCodigo(e, 'FabricaNC'); }
+    }
 
     /* NÃO MUDAR DE CIDADE COM O ARGUS A CAMINHO.
      *
