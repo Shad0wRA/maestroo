@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.03.1600
+// @version      2026.09.03.1650
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1102,7 +1102,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.03.1600';
+  const MAESTRO_VERSAO = '2026.09.03.1650';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -13774,6 +13774,54 @@ function makeFeiticosModule(opts) {
     } catch (e) {}
   }
 
+  /* ============ LER UM RELATÓRIO ======================================
+   *
+   * Capturado do jogo:
+   *   POST /game/report?town_id=<id>&action=view
+   *   json={"id":"<relatório>","town_id":<id>,"nl_init":true}
+   *
+   * O conteúdo vem em `json.plain.html` — não em `json.html`, que está
+   * vazio. Foi preciso procurar campo a campo para dar com ele.
+   *
+   * As unidades destruídas aparecem assim:
+   *   <div class="report_unit unit unit_icon40x40 bireme">...9...</div>
+   *
+   * Devolve { bireme: 9, colonize_ship: 1, ... } — só o que MORREU. O que
+   * sobrou não vem no relatório.
+   * ==================================================================== */
+  async function lerRelatorio(reportId, townId) {
+    try {
+      const url = mUw.location.origin + '/game/report?town_id=' + Number(townId)
+        + '&action=view&h=' + mUw.Game.csrfToken;
+      const r = await mUw.fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                   'x-requested-with': 'XMLHttpRequest' },
+        credentials: 'include',
+        body: 'json=' + encodeURIComponent(JSON.stringify({
+          id: String(reportId), town_id: Number(townId), nl_init: true,
+        })),
+      }).then(lerResposta);
+
+      /* O conteúdo vem em `plain.html` — a resposta tem também um `json`
+       * com o menu, que não interessa. */
+      const html = String(((r && r.plain) || {}).html || '');
+      if (!html) return null;
+
+      /* O JOGO DÁ OS NÚMEROS EM ATRIBUTOS.
+       *
+       *   <div class="report_unit unit unit_icon40x40 bireme"
+       *        data-unit_id="bireme" data-unit_count="9">
+       *
+       * Não é preciso interpretar HTML: lê-se os atributos. */
+      const mortas = {};
+      const re = /data-unit_id="(\w+)"[\s\S]{0,80}?data-unit_count="(\d+)"/g;
+      let m;
+      while ((m = re.exec(html))) mortas[m[1]] = Number(m[2]);
+      return mortas;
+    } catch (e) { return null; }
+  }
+
   /* ============ OS FEITIÇOS, LIDOS DO JOGO =============================
    *
    * O `GameData.powers` traz tudo: nome traduzido, efeito, duração, custo e
@@ -14063,6 +14111,34 @@ function makeFeiticosModule(opts) {
             if (r.ok) {
               est.tempestades[cmdId] = jaFoi + 1;
               guardarEstado(est);
+
+              /* AFUNDOU O COLONIZADOR?
+               *
+               * O relatório diz o que MORREU. Se o colonizador lá estiver,
+               * acabou — não vale a pena gastar mais favor neste ataque.
+               *
+               * O identificador do relatório vem na resposta do feitiço. */
+              if (r.relatorio) {
+                await ctx.sleep(1200);
+                const mortas = await lerRelatorio(r.relatorio, dePoseidon.id);
+
+                if (mortas && Object.keys(mortas).length) {
+                  const lista = Object.keys(mortas)
+                    .map((u) => `${mortas[u]} ${(mUw.GameData.units[u] || {}).name || u}`)
+                    .join(', ');
+
+                  if (mortas.colonize_ship) {
+                    log(`🌊 Afundei o colonizador! (${lista})`);
+                    /* Marcar como tratado: não se gasta mais favor aqui. */
+                    est.tempestades[cmdId] = 999;
+                    guardarEstado(est);
+                    continue;
+                  }
+                  log(`🌊 Tempestade: ${lista} — o colonizador aguentou.`);
+                } else {
+                  rotina('Feitiços: a tempestade não destruiu nada.');
+                }
+              }
 
               /* Gastei 280 e posso precisar de mais: pedir ao farm que ataque
                * já, em vez de esperar pela passagem seguinte. */
