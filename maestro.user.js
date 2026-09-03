@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.05.0330
+// @version      2026.09.05.0430
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -318,6 +318,106 @@
     uw.__maestroTravado = servidorTravado;
     uw.__maestroTravar = marcarTravado;
   } catch (e) { seErroDeCodigo(e, 'núcleo'); }
+
+  /* ============ É COLONIZADOR? — UMA MEDIÇÃO SÓ =========================
+   *
+   * Havia duas, e discordavam. Os alertas usavam uma faixa fixa até 12,5 e a
+   * esquiva usava 9 × 1,28 = 11,52. Um birreme sem bónus anda a 12: caía
+   * dentro da faixa dos alertas e ficava fora da da esquiva, e por isso o
+   * mesmo ataque era anunciado de uma maneira e tratado de outra.
+   *
+   * A pergunta certa não é "é mais lento do que X". É: que unidade explica o
+   * tempo que este comando levou? Compara-se a velocidade observada com a de
+   * cada unidade, já com as combinações de bónus possíveis, e vê-se se o
+   * colonizador está entre as que encaixam. Assim apanha-se o colonizador com
+   * farol, que aparenta 10,4, sem apanhar o birreme, que aparenta 12.
+   *
+   * A faixa fica como rede: se nada explicar o tempo observado e ele for
+   * lento de mais para tudo menos o colonizador, é colonizador.
+   *
+   * A POLÍTICA não vive aqui. Isto só mede. Cada módulo decide o que faz com
+   * a resposta — os alertas avisam na dúvida, a esquiva assume o pior. */
+  const FOLGA_MEDICAO_NC = 0.08;   // 8%: a dispersão medida em jogo foi de 3,6%
+  const TOLERANCIA_NC = 0.28;      // cartografia (+10%) e farol (+15%) juntos
+
+  function velocidadeColonizador() {
+    try {
+      const cs = (uw.GameData.units || {}).colonize_ship;
+      const v = cs ? Number(cs.speed) : 0;
+      if (Number.isFinite(v) && v > 0) return v;
+    } catch (e) {}
+    return 9;   // valor de sempre, se o jogo ainda não respondeu
+  }
+
+  function limiteColonizador() { return velocidadeColonizador() * (1 + TOLERANCIA_NC); }
+
+  /* As unidades cuja velocidade explica o tempo observado.
+   *
+   * Entre ilhas diferentes só entram navais e voadoras: a tropa terrestre
+   * viaja dentro de transportes e o comando anda à velocidade do transporte. */
+  function unidadesQueExplicam(velEquivalente, mesmaIlha) {
+    const out = [];
+    try {
+      const u = uw.GameData.units || {};
+      const combosNavais = [
+        { f: 1, nome: 'sem bónus' },
+        { f: 1.10, nome: 'cartografia' },
+        { f: 1.15, nome: 'farol' },
+        { f: 1.10 * 1.15, nome: 'cartografia + farol' },
+      ];
+      const combosTerra = [{ f: 1, nome: '' }, { f: 1.10, nome: 'meteorologia' }];
+
+      for (const id of Object.keys(u)) {
+        const v = Number(u[id].speed) || 0;
+        if (v <= 0) continue;
+        const naval = !!u[id].is_naval;
+        const voadora = !!(u[id].flying || u[id].is_flying);
+        if (!mesmaIlha && !naval && !voadora) continue;
+
+        let melhor = null;
+        for (const c of (naval ? combosNavais : combosTerra)) {
+          const comBonus = v * c.f;
+          const desvio = Math.abs(comBonus - velEquivalente) / comBonus;
+          if (desvio > FOLGA_MEDICAO_NC) continue;
+          if (!melhor || desvio < melhor.desvio) melhor = { desvio, bonus: c.nome };
+        }
+        if (melhor) {
+          out.push({ id, nome: u[id].name || id, v, naval, desvio: melhor.desvio, bonus: melhor.bonus });
+        }
+      }
+    } catch (e) {}
+    out.sort((a, b) => a.desvio - b.desvio);
+    return out;
+  }
+
+  /* `vel` é a velocidade observada; `velMax` é o tecto que o tempo QUE FALTA
+   * impõe, e é prova, não estimativa. Devolve também o porquê, para o registo
+   * poder explicar-se. */
+  function pareceColonizadorNC(vel, mesmaIlha, velMax) {
+    const v = Number(vel);
+    const lim = limiteColonizador();
+
+    if (Number.isFinite(velMax) && velMax > 0 && velMax <= lim) {
+      return { nc: true, certo: true, porque: 'o que falta da viagem já não dá para mais nada' };
+    }
+    if (!Number.isFinite(v) || v <= 0) return { nc: false, certo: false, porque: '' };
+
+    const compat = unidadesQueExplicam(v, mesmaIlha);
+    if (compat.some((c) => c.id === 'colonize_ship')) {
+      return { nc: true, certo: true, porque: 'a velocidade observada é a do colonizador', compat };
+    }
+    if (v <= lim) {
+      return { nc: true, certo: false, porque: 'lento de mais para tudo menos o colonizador', compat };
+    }
+    return { nc: false, certo: true, porque: '', compat };
+  }
+
+  try {
+    uw.__maestroNC = {
+      parece: pareceColonizadorNC, limite: limiteColonizador, explicam: unidadesQueExplicam,
+    };
+  } catch (e) {}
+
 
   /* ============ FIREBASE ================================================
    * O Gist do GitHub tem um limite secundário de escritas que não aparece no
@@ -1159,7 +1259,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.05.0330';
+  const MAESTRO_VERSAO = '2026.09.05.0430';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -16139,7 +16239,7 @@ function makeAlertasModule(opts) {
    * a folga não gera ruído.
    *
    * 3 minutos de atraso não estragam a medição: num colonizador de 45 min dão
-   * uma velocidade de 11,1 em vez de 10,4, e o limite é 12,5. */
+   * uma velocidade de 11,1 em vez de 10,4, e o limite anda pelos 11,5. */
   function horaNaoFiavel(quando) {
     if (vistoAoArrancar(quando)) return true;
     try {
@@ -16643,8 +16743,12 @@ function makeAlertasModule(opts) {
     }
 
     // Entre ilhas. Zonas limpas primeiro — são as que importam.
-    if (vel <= 12.5) {
-      return { cat: '🚨 NAVIO COLONIZADOR', grave: true, nc: true, certo: true };
+    /* A faixa fixa até 12,5 apanhava o birreme sem bónus, que anda a 12.
+     * Agora pergunta-se que unidade explica o tempo observado. */
+    const suspeita = pareceColonizadorNC(vel, false);
+    if (suspeita.nc) {
+      return { cat: '🚨 NAVIO COLONIZADOR', grave: true, nc: true, certo: !!suspeita.certo,
+        porque: suspeita.porque };
     }
     if (vel <= 20.5) {
       return { cat: 'navio incendiário', grave: true };
@@ -16684,78 +16788,10 @@ function makeAlertasModule(opts) {
    * Uma unidade "cabe" se existir alguma combinação de bónus que a faça
    * chegar no tempo observado, com uma folga pequena para ruído de medição.
    * ==================================================================== */
-  const FOLGA_MEDICAO = 0.08;    // 8%: a dispersão medida foi de 3,6%
-
-  function unidadesCompativeis(velEquivalente, mesmaIlha) {
-    const out = [];
-    try {
-      const u = mUw.GameData.units || {};
-
-      /* As combinações de bónus possíveis, da mais lenta para a mais rápida.
-       * Terrestres não beneficiam de cartografia nem do farol. */
-      const combosNavais = [
-        { f: 1,           nome: 'sem bónus' },
-        { f: 1.10,        nome: 'cartografia' },
-        { f: 1.15,        nome: 'farol' },
-        { f: 1.10 * 1.15, nome: 'cartografia + farol' },
-      ];
-      const combosTerra = [{ f: 1, nome: '' }, { f: 1.10, nome: 'meteorologia' }];
-
-      for (const id of Object.keys(u)) {
-        const v = Number(u[id].speed) || 0;
-        if (v <= 0) continue;
-        const naval = !!u[id].is_naval;
-        const voadora = !!(u[id].flying || u[id].is_flying);
-        if (!mesmaIlha && !naval && !voadora) continue;
-
-        const combos = naval ? combosNavais : combosTerra;
-
-        /* A velocidade observada é a da unidade COM os bónus. Procura-se a
-         * combinação que melhor explica o que vimos. */
-        let melhor = null;
-        for (const c2 of combos) {
-          const velComBonus = v * c2.f;
-          const desvio = Math.abs(velComBonus - velEquivalente) / velComBonus;
-          if (desvio > FOLGA_MEDICAO) continue;
-          if (!melhor || desvio < melhor.desvio) {
-            melhor = { desvio, bonus: c2.nome };
-          }
-        }
-
-        if (melhor) {
-          out.push({
-            id, nome: u[id].name || id, v, naval,
-            desvio: melhor.desvio,
-            bonus: melhor.bonus,
-          });
-        }
-      }
-    } catch (e) { seErroDeCodigo(e, 'Alertas'); }
-    out.sort((a, b) => a.desvio - b.desvio);
-    return out;
-  }
-
-  /* É COLONIZADOR?
-   *
-   * Agora que se testam as combinações de bónus, a resposta é directa: ele
-   * está entre as unidades que explicam o tempo observado?
-   *
-   * Isto é melhor do que comparar com uma faixa fixa — apanha o colonizador
-   * com farol (velocidade aparente 10,4) que uma faixa até 12 apanharia por
-   * pouco, e não dá falsos positivos com o incendiário sem bónus (15). */
-  function pareceColonizador(velEquivalente, compativeis) {
-    try {
-      if ((compativeis || []).some((c) => c.id === 'colonize_ship')) return true;
-    } catch (e) { seErroDeCodigo(e, 'Alertas'); }
-
-    try {
-      const cs = (mUw.GameData.units || {}).colonize_ship;
-      const vcs = cs ? Number(cs.speed) : 9;
-      // suspeita se a velocidade observada está na faixa do colonizador ou abaixo
-      if (velEquivalente <= vcs * (1 + TOLERANCIA)) return true;
-    } catch (e) { seErroDeCodigo(e, 'Alertas'); }
-    return compativeis.some((c) => c.id === 'colonize_ship');
-  }
+  /* A medição do colonizador vive agora no núcleo, partilhada com a esquiva:
+   * `pareceColonizadorNC` e `unidadesQueExplicam`. Havia aqui uma cópia que
+   * ninguém chamava — duas cópias da mesma coisa em módulos diferentes foi o
+   * que deu origem a metade dos erros deste ficheiro. */
 
   function hhmm(ts) {
     try { return horaJogo(ts); }
@@ -16984,7 +17020,7 @@ function makeAlertasModule(opts) {
          *
          * Diz-se em texto o que ele exclui, para não parecer uma velocidade
          * medida. */
-        if (velMax != null && velMax <= 12.5) {
+        if (velMax != null && velMax <= limiteColonizador()) {
           cls = { cat: '🚨 NAVIO COLONIZADOR (é o único tão lento)', grave: true, nc: true, certo: true };
         } else if (velMax != null && velMax <= 20.5) {
           cls = {
@@ -17026,7 +17062,7 @@ function makeAlertasModule(opts) {
          * Isto só pode tornar um aviso mais grave, nunca menos. */
         try {
           const velMax = (falta > 0) ? (c.K * dist) / falta : null;
-          if (velMax != null && velMax <= 12.5 && !(cls && cls.nc)) {
+          if (velMax != null && velMax <= limiteColonizador() && !(cls && cls.nc)) {
             cls = {
               cat: '🚨 NAVIO COLONIZADOR (o que falta da viagem já não dá para mais nada)',
               grave: true, nc: true, certo: true,
@@ -20962,8 +20998,9 @@ function makeEsquivaModule(opts) {
       const partida = a.started_at || visto;
       const duracao = partida ? (a.arrival_at - partida) : null;
 
-      const vcs = ((mUw.GameData.units || {}).colonize_ship || {}).speed || 9;
-      const limite = vcs * 1.28;
+      /* O limite e o teste vêm agora do núcleo, partilhados com os alertas.
+       * Antes eram dois: 11,52 aqui e uma faixa fixa até 12,5 nos alertas. */
+      const limite = limiteColonizador();
 
       let ehNC, incerto = false;
 
@@ -20986,7 +21023,7 @@ function makeEsquivaModule(opts) {
         if (!(viagem > 0)) { ehNC = true; incerto = true; }
         else {
           const vel = (c.K * dist) / viagem;
-          ehNC = vel <= limite;
+          ehNC = pareceColonizadorNC(vel, false).nc;
 
           /* NOTA: com `started_at` a null, a viagem calculada é um MÍNIMO
            * (o ataque pode ter partido antes de o vermos) e a velocidade um
@@ -21017,7 +21054,7 @@ function makeEsquivaModule(opts) {
             + `· distância ${dist.toFixed(2)} · viagem ${duracao == null ? '?' : duracao + 's'} `
             + `· started_at ${a.started_at ? 'SIM' : 'não'} `
             + `· velocidade ${duracao ? ((c.K * dist) / Math.max(1, duracao - tempoPreparacao())).toFixed(2) : '?'} `
-            + `· limite ${(vcs * 1.28).toFixed(2)} `
+            + `· limite ${limite.toFixed(2)} `
             + `→ ${ehNC ? 'COLONIZADOR' : 'normal'}`);
         } catch (e) { seErroDeCodigo(e, 'Esquiva'); }
 
