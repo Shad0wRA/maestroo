@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.03.1530
+// @version      2026.09.03.1600
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1102,7 +1102,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.03.1530';
+  const MAESTRO_VERSAO = '2026.09.03.1600';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -13629,6 +13629,10 @@ function makeFeiticosModule(opts) {
     /* Tempestades do mar contra colonizadores que vêm a caminho. */
     tempestades: false,
     maxTempestades: 3,      // por ataque; cada uma custa 280 de favor
+
+    /* Reforços a manter nos ataques que envio: { <comando>: '<feitiço>' }.
+     * Escolhidos no painel, um a um. */
+    reforcos: {},
   };
 
   const armazem = {
@@ -13770,6 +13774,59 @@ function makeFeiticosModule(opts) {
     } catch (e) {}
   }
 
+  /* ============ OS FEITIÇOS, LIDOS DO JOGO =============================
+   *
+   * O `GameData.powers` traz tudo: nome traduzido, efeito, duração, custo e
+   * a que deus pertence. Nada de tabelas minhas — se o jogo mudar os
+   * números, isto acompanha.
+   * ==================================================================== */
+  function todosOsFeiticos() {
+    try { return mUw.GameData.powers || {}; } catch (e) { return {}; }
+  }
+
+  function nomeDoFeitico(id) {
+    try { return (todosOsFeiticos()[id] || {}).name || id; } catch (e) { return id; }
+  }
+
+  /* Campos confirmados em jogo: `god_id`, `favor`, `targets`, `images`. */
+  function deusDoFeitico(id) {
+    try { return String((todosOsFeiticos()[id] || {}).god_id || '') || null; }
+    catch (e) { return null; }
+  }
+
+  function custoDoFeitico(id) {
+    try { return Number((todosOsFeiticos()[id] || {}).favor) || 0; }
+    catch (e) { return 0; }
+  }
+
+  /* Os que se lançam num COMANDO — o jogo diz-o no `targets`.
+   *
+   * Confirmado: a Tempestade no Mar tem
+   *   targets: ['target_command', 'target_support_command'] */
+  function feiticosDeAtaque(soPositivos) {
+    const out = [];
+    try {
+      const todos = todosOsFeiticos();
+      for (const id of Object.keys(todos)) {
+        const p = todos[id] || {};
+        const alvos = p.targets || [];
+        if (!alvos.some((x) => /command/i.test(String(x)))) continue;
+        if (p.is_fake_power) continue;
+        /* Para reforçar os MEUS ataques só interessam os que ajudam. */
+        if (soPositivos && p.negative) continue;
+        out.push(id);
+      }
+    } catch (e) {}
+    return out;
+  }
+
+  /* O ícone que o jogo usa, para o painel mostrar imagens em vez de nomes. */
+  function iconeDoFeitico(id) {
+    return `<div class="power_icon30x30 ${id}" style="display:inline-block;`
+      + 'width:30px;height:30px;vertical-align:middle" title="'
+      + esc(nomeDoFeitico(id)) + '"></div>';
+  }
+
   /* Favor disponível de um deus. */
   function favorDe(deus) {
     try {
@@ -13874,6 +13931,71 @@ function makeFeiticosModule(opts) {
 
       await ctx.sleep(ctx.rand(800, 1600));
     }
+
+    /* ============ REFORÇOS NOS MEUS ATAQUES ===========================
+     *
+     * Escolhes no painel que feitiço queres em cada ataque que enviaste. Ele
+     * lança e, se alguém purificar, volta a lançar.
+     *
+     * Só cabe um feitiço por ataque: se já lá estiver o que queres, não se
+     * faz nada. Se o jogo disser que está ocupado, é porque lá está outro —
+     * e aí não se mexe, porque purificar apagaria o nosso também.
+     * ================================================================== */
+    try {
+      const querem = c.reforcos || {};
+      if (Object.keys(querem).length) {
+        const col = mUw.MM.getCollections().MovementsUnits;
+        const meus = ((col && col[0] && col[0].models) || []).map((m) => m.attributes || {});
+
+        for (const cmdId of Object.keys(querem)) {
+          const powerId = String(querem[cmdId] || '');
+          if (!powerId) continue;
+
+          /* O ataque ainda existe? Se já chegou, esquece-se. */
+          const a = meus.find((x) => Number(x.id || x.command_id) === Number(cmdId));
+          if (!a) {
+            delete querem[cmdId];
+            guardarCfg(Object.assign({}, c, { reforcos: querem }));
+            continue;
+          }
+
+          /* Já lá está o nosso? O jogo não diz que feitiço tem, portanto
+           * guarda-se o que se lançou. */
+          est.reforcos = est.reforcos || {};
+          if (est.reforcos[cmdId] === powerId) continue;
+
+          const deus = deusDoFeitico(powerId);
+          const donde = deus ? cidadeCom(deus, towns) : null;
+          if (!donde) {
+            rotina(`Feitiços: nenhuma cidade venera ${deus || '?'} para o reforço.`);
+            continue;
+          }
+
+          const custo = custoDoFeitico(powerId);
+          if (favorDe(deus) < custo) {
+            pedirFavor(deus, custo);
+            rotina(`Feitiços: falta favor de ${deus} para o reforço (${favorDe(deus)}/${custo}).`);
+            continue;
+          }
+
+          const r = await lancarNoAtaque(powerId, cmdId, donde.id);
+
+          if (r.ok) {
+            est.reforcos[cmdId] = powerId;
+            guardarEstado(est);
+            log(`✨ ${nomeDoFeitico(powerId)} no ataque para ${a.town_name_destination || a.target_town_id}.`);
+          } else if (r.ocupado) {
+            /* Já lá está algum — pode ser o nosso, de antes de sabermos. */
+            est.reforcos[cmdId] = powerId;
+            guardarEstado(est);
+          } else {
+            rotina(`Feitiços: reforço falhou no ${cmdId} — ${r.msg}`);
+          }
+
+          await ctx.sleep(ctx.rand(700, 1400));
+        }
+      }
+    } catch (e) { seErroDeCodigo(e, 'Feiticos'); }
 
     /* ============ TEMPESTADES CONTRA COLONIZADORES =====================
      *
@@ -13993,6 +14115,60 @@ function makeFeiticosModule(opts) {
 
     const favor = favorDe('athena');
 
+    /* ---- OS MEUS ATAQUES EM CURSO ----
+     *
+     * Com o que levam, para te orientares, e um selector com os feitiços que
+     * o jogo permite lançar num comando — com os ícones dele. */
+    const htmlAtaques = (() => {
+      try {
+        const col = mUw.MM.getCollections().MovementsUnits;
+        const meus = ((col && col[0] && col[0].models) || [])
+          .map((m) => m.attributes || {})
+          .filter((a) => /attack/i.test(String(a.type || '')));
+
+        if (!meus.length) {
+          return '<div style="opacity:.55;font-size:11px">Não tens ataques a caminho.</div>';
+        }
+
+        const opcoes = feiticosDeAtaque(true);
+        const gd = mUw.GameData.units || {};
+
+        return meus.map((a) => {
+          const cid = Number(a.id || a.command_id) || 0;
+          const escolhido = String((c.reforcos || {})[cid] || '');
+
+          /* O que leva — os ataques que EU envio mostram as unidades. */
+          const leva = Object.keys(a)
+            .filter((k) => gd[k] && Number(a[k]) > 0)
+            .map((k) => `${a[k]} ${gd[k].name || k}`)
+            .join(', ');
+
+          const chega = a.arrival_at
+            ? new Date(Number(a.arrival_at) * 1000).toLocaleTimeString().slice(0, 5)
+            : '?';
+
+          return `<div style="background:#0d141c;padding:5px 6px;border-radius:4px;margin-bottom:4px">
+            <div style="font-size:11px">
+              <b>${esc(String(a.town_name_destination || a.target_town_id))}</b>
+              <span style="opacity:.6">chega ${chega}</span>
+            </div>
+            <div style="opacity:.7;font-size:10px;margin:1px 0 3px">
+              ${esc(leva || 'não vejo o que leva')}
+            </div>
+            <select class="fei-ref" data-cmd="${cid}" style="width:100%;font-size:11px">
+              <option value="">— sem feitiço —</option>
+              ${opcoes.map((id) => `<option value="${id}"${escolhido === id ? ' selected' : ''}>`
+                + `${esc(nomeDoFeitico(id))} (${custoDoFeitico(id)} de ${deusDoFeitico(id) || '?'})`
+                + '</option>').join('')}
+            </select>
+            <div style="margin-top:2px">
+              ${opcoes.map((id) => iconeDoFeitico(id)).join(' ')}
+            </div>
+          </div>`;
+        }).join('');
+      } catch (e) { return '<div style="opacity:.55;font-size:11px">Não consegui ler os ataques.</div>'; }
+    })();
+
     container.innerHTML = `
       <label style="display:block;margin-bottom:4px">
         <input type="checkbox" id="fei-on"${c.ativo ? ' checked' : ''}>
@@ -14041,6 +14217,15 @@ function makeFeiticosModule(opts) {
         </div>
       </div>
 
+      <div style="border-top:1px solid #234;margin:8px 0 6px;padding-top:6px">
+        <b style="font-size:11px">Reforços nos meus ataques</b>
+        <div style="opacity:.6;font-size:10px;margin:2px 0 5px">
+          Escolhe o feitiço para cada ataque em curso. Ele lança e, se
+          purificarem, volta a lançar. Só cabe um por ataque.
+        </div>
+        ${htmlAtaques}
+      </div>
+
       <button id="fei-guardar" style="cursor:pointer;width:100%;margin-top:8px;background:#48d;color:#fff;padding:6px;border:none;border-radius:4px">Guardar</button>`;
 
     container.querySelector('#fei-guardar').onclick = () => {
@@ -14051,6 +14236,13 @@ function makeFeiticosModule(opts) {
       cc.favorMinimo = Math.max(0, Number(container.querySelector('#fei-reserva').value) || 0);
       cc.tempestades = container.querySelector('#fei-temp').checked;
       cc.maxTempestades = Math.max(1, Number(container.querySelector('#fei-maxtemp').value) || 3);
+
+      /* Os reforços escolhidos, por ataque. */
+      cc.reforcos = {};
+      container.querySelectorAll('.fei-ref').forEach((el) => {
+        const cid = el.getAttribute('data-cmd');
+        if (cid && el.value) cc.reforcos[cid] = el.value;
+      });
       guardarCfg(cc);
       ctx.log('Feitiços: definições guardadas.');
       painel(container, ctx);
