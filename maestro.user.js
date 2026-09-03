@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.03.1815
+// @version      2026.09.03.1830
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1102,7 +1102,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.03.1815';
+  const MAESTRO_VERSAO = '2026.09.03.1830';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -29052,7 +29052,8 @@ function makeApoioModule(opts) {
    * acaba. */
   function quantasPosso(c) {
     try {
-      const porEnvio = c.unidades || {};
+      /* O campo chama-se `pacote` — é o que o painel edita. */
+      const porEnvio = c.pacote || {};
       const pedidas = Object.keys(porEnvio).filter((u) => Number(porEnvio[u]) > 0);
       if (!pedidas.length) return null;
 
@@ -29068,7 +29069,9 @@ function makeApoioModule(opts) {
       }
 
       /* Guardar o que a reserva manda ficar em casa. */
-      const reserva = Number(c.reservaPct) || 0;
+      /* O apoio não tem reserva por percentagem: o que o trava é a tropa em
+       * casa e a capacidade dos transportes. */
+      const reserva = 0;
 
       let cabem = Infinity;
       let limita = '';
