@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.04.0530
+// @version      2026.09.04.0630
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1123,7 +1123,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.04.0530';
+  const MAESTRO_VERSAO = '2026.09.04.0630';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -29685,7 +29685,7 @@ function makeApoioModule(opts) {
    *
    * O `units_id` identifica o apoio que ESTA conta tem naquela cidade.
    * ==================================================================== */
-  async function mandarDeVolta(unitsId, minhaCidade, unidades) {
+  async function mandarParteDeVolta(unitsId, minhaCidade, unidades) {
     try {
       const url = mUw.location.origin + '/game/units_beyond_info?town_id='
         + Number(minhaCidade) + '&action=send_back_part&h=' + mUw.Game.csrfToken;
@@ -30472,42 +30472,12 @@ function makeApoioModule(opts) {
         const meu = meuApoioEm(alvoT);
         if (!meu || !meu.unitsId) continue;
 
-        const rv = await mandarDeVolta(meu.unitsId, meu.de, { small_transporter: sobram });
+        const rv = await mandarParteDeVolta(meu.unitsId, meu.de, { small_transporter: sobram });
         if (rv.ok) {
           const inf = cacheCidades[alvoT] || { nome: '#' + alvoT };
           log(`🚤 ${inf.nome}: ${sobram} transporte(s) a mais voltaram para casa.`);
         } else {
           rotina(`Apoio: não consegui trazer os transportes de ${alvoT} — ${rv.msg}`);
-        }
-        await ctx.sleep(ctx.rand(700, 1400));
-      }
-    } catch (e) { seErroDeCodigo(e, 'Apoio'); }
-
-    /* ============ TRANSPORTES A MAIS VOLTAM SOZINHOS ==================
-     *
-     * Quando parte da tropa morre num ataque, os transportes que a levaram
-     * ficam lá sem carga — e fazem falta em casa para outros apoios.
-     *
-     * Não é preciso pedir: assim que se vê que sobram, voltam.
-     *
-     * Com 120 de população e transportes de 16 foram 8; se ficarem 80,
-     * bastam 5 e três voltam já.
-     *
-     * O pedido é o `send_back_part`, que devolve só o que se indicar. */
-    try {
-      for (const alvo of alvos) {
-        const sobram = transportesASobrar(alvo);
-        if (sobram < 1) continue;
-
-        const meu = meuApoioEm(alvo);
-        if (!meu || !meu.unitsId) continue;
-
-        const r = await mandarDeVolta(meu.unitsId, meu.de, { small_transporter: sobram });
-        if (r.ok) {
-          const info = cacheCidades[alvo] || { nome: '#' + alvo };
-          log(`🚤 ${info.nome}: ${sobram} transporte(s) a mais voltaram para casa.`);
-        } else {
-          rotina(`Apoio: não consegui trazer os transportes de ${alvo} — ${r.msg}`);
         }
         await ctx.sleep(ctx.rand(700, 1400));
       }
