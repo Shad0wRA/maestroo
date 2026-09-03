@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.03.0040
+// @version      2026.09.03.0100
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1102,7 +1102,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.03.0040';
+  const MAESTRO_VERSAO = '2026.09.03.0100';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -1902,18 +1902,23 @@
    * exportação, e a importação avisa quais tens de configurar à mão.
    * ==================================================================== */
   const CHAVES_COM_CIDADES = [
-    'grepoColonos_cfg_v1',        // baseA, baseB, destino
-    'grepoColonos_cidades_v1',
-    'grepoApoio_cfg_v1',
-    'grepoApoio_cacheAlvos_v1',
-    'grepoApoio_done_v1',
-    'grepoEncaixe_cfg_v1',        // cidade de encaixe
-    'grepoDeuses_ultimoAlvo_v1',
-    'grepoAlertas_vistos_v1',
+    /* O QUE NÃO ATRAVESSA CONTAS.
+     *
+     * Um identificador de cidade é o MESMO visto de qualquer conta — é da
+     * cidade no mundo, não da conta. Portanto muita coisa que estava aqui
+     * podia perfeitamente passar.
+     *
+     * Ficam de fora só as que são mesmo por conta:
+     *   • estado interno (o que já foi feito, o que já foi visto)
+     *   • a cidade de encaixe, que é uma escolha local */
+    'grepoApoio_cacheAlvos_v1',   // cópia local da lista; vem do Firebase
+    'grepoApoio_done_v1',         // o que já foi apoiado nesta conta
+    'grepoEncaixe_cfg_v1',        // cidade de encaixe: escolha local
+    'grepoDeuses_ultimoAlvo_v1',  // memória da rotação desta conta
+    'grepoAlertas_vistos_v1',     // comandos já vistos aqui
     'grepoAlertas_ignorar_v1',
-    'grepoFundacao_cfg_v1',       // ilhas são deste mundo
-    'grepoFundacao_estado_v1',
-    'grepoMaestro_webhooks_v1',   // esses queres iguais? ver abaixo
+    'grepoFundacao_estado_v1',    // ilhas já tentadas por esta conta
+    'grepoMaestro_webhooks_v1',   // excepção abaixo: copiam-se na mesma
   ];
 
   // Destas, os webhooks até fazem sentido copiar.
