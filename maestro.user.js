@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.05.0430
+// @version      2026.09.05.0530
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -415,6 +415,158 @@
   try {
     uw.__maestroNC = {
       parece: pareceColonizadorNC, limite: limiteColonizador, explicam: unidadesQueExplicam,
+    };
+  } catch (e) {}
+
+  /* ============ O QUE ESTA CONTA TEM ESTACIONADO FORA ===================
+   *
+   * Até aqui, saber o que estava numa cidade apoiada era ler os modelos do
+   * jogo (`MM.getModels().Units`). Esses modelos só mudam quando o servidor
+   * manda uma notificação, e por isso ficam parados durante horas: depois de
+   * um ataque matar o apoio, continuavam a mostrar a tropa viva. Foi o que
+   * pôs o "repor" a dizer que não se perdeu nada e o que fez as sentinelas
+   * empilharem-se — três vezes o mesmo envio, porque nenhuma das vezes se
+   * via o que já lá estava.
+   *
+   * Esta é a fonte directa: a Ágora, separador Fora, que é o
+   * `building_place?action=units_beyond` de CADA cidade minha. Devolve a
+   * lista do que está estacionado fora, com a cidade de destino e o
+   * `units_id` de cada bloco — que é o que o regresso precisa.
+   *
+   * REGRA DA CASA: quando não se consegue ler, devolve-se `null`, nunca zero.
+   * Confundir "não tenho" com "não sei" foi a origem de metade dos erros
+   * deste ficheiro.
+   *
+   * Custa um pedido por cidade, por isso guarda-se em cache e refresca-se
+   * poucas de cada vez.
+   * ==================================================================== */
+  const APOIO_FORA_KEY = 'grepoMaestro_apoioFora_v1';
+  const APOIO_FORA_VALIDADE = 15 * 60 * 1000;   // 15 min
+
+  function lerCacheApoioFora() {
+    try { return JSON.parse(localStorage.getItem(APOIO_FORA_KEY) || '{}') || {}; }
+    catch (e) { return {}; }
+  }
+  function gravarCacheApoioFora(d) {
+    try { localStorage.setItem(APOIO_FORA_KEY, JSON.stringify(d)); } catch (e) {}
+  }
+
+  /* O destino vem escondido num link em base64:
+   * `#eyJpZCI6MTg4LCJpeCI6NDk0...` → {"id":188,"ix":494,...} */
+  function idDoLinkDaCidade(href) {
+    try {
+      const b64 = String(href || '').replace(/^#/, '');
+      if (!b64) return 0;
+      const txt = (uw.atob || atob)(b64);
+      const j = JSON.parse(txt);
+      return Number(j && j.id) || 0;
+    } catch (e) { return 0; }
+  }
+
+  /* Lê a Ágora de UMA cidade minha. Devolve null se não conseguir. */
+  async function apoioForaDaCidade(townId) {
+    try {
+      const url = uw.location.origin + '/game/building_place?town_id=' + Number(townId)
+        + '&action=units_beyond&h=' + uw.Game.csrfToken
+        + '&json=' + encodeURIComponent(JSON.stringify({ town_id: Number(townId), nl_init: true }))
+        + '&_=' + Date.now();
+
+      const txt = await uw.fetch(url, {
+        headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
+      }).then((r) => r.text());
+      if (!txt) return null;
+
+      let html = '';
+      try { html = ((JSON.parse(txt) || {}).json || {}).html || ''; } catch (e) { return null; }
+      if (!html) return null;
+
+      /* A própria página diz quando não há nada. Isso é uma resposta válida:
+       * lista vazia, e não "não sei". */
+      if (/n[ãa]o apoia outras cidades/i.test(html)) return [];
+
+      const blocos = [];
+      const partes = html.split('id="place_units_');
+      for (let i = 1; i < partes.length; i++) {
+        const p = partes[i];
+        const unitsId = Number((p.match(/^(\d+)/) || [])[1]) || 0;
+        if (!unitsId) continue;
+
+        const href = (p.match(/href="(#[^"]+)"[^>]*class="gp_town_link"/) || [])[1] || '';
+        const alvoId = idDoLinkDaCidade(href);
+        const alvoNome = (p.match(/class="gp_town_link"[^>]*>([^<]+)</) || [])[1] || '';
+
+        /* Nesta página o contador vem ANTES do identificador da unidade —
+         * ao contrário do quartel, onde vem depois. */
+        const unidades = {};
+        const re = /data-unit_count="(\d+)"\s+data-unit_id="(\w+)"/g;
+        let m;
+        while ((m = re.exec(p)) !== null) {
+          const n = Number(m[1]);
+          if (n > 0) unidades[m[2]] = (unidades[m[2]] || 0) + n;
+        }
+
+        if (alvoId) blocos.push({ unitsId, alvoId, alvoNome: String(alvoNome).trim(), unidades });
+      }
+      return blocos;
+    } catch (e) { return null; }
+  }
+
+  /* Refresca as cidades com a leitura mais velha, poucas de cada vez, para
+   * não fazer 40 pedidos numa passagem. Devolve quantas leu. */
+  async function refrescarApoioFora(idsDasMinhasCidades, quantas) {
+    const cache = lerCacheApoioFora();
+    const agora = Date.now();
+    const alvo = (idsDasMinhasCidades || [])
+      .map(Number).filter(Boolean)
+      .filter((id) => !cache[id] || (agora - Number(cache[id].quando || 0)) > APOIO_FORA_VALIDADE)
+      .sort((a, b) => Number((cache[a] || {}).quando || 0) - Number((cache[b] || {}).quando || 0))
+      .slice(0, Math.max(1, Number(quantas) || 3));
+
+    let lidas = 0;
+    for (const id of alvo) {
+      const blocos = await apoioForaDaCidade(id);
+      if (blocos == null) continue;            // não sei: fica a leitura antiga
+      cache[id] = { quando: Date.now(), blocos };
+      lidas++;
+      await new Promise((r) => setTimeout(r, 400 + Math.floor(Math.random() * 500)));
+    }
+    if (lidas) gravarCacheApoioFora(cache);
+    return lidas;
+  }
+
+  /* O que esta conta tem em CADA cidade apoiada, somado das minhas cidades.
+   * Devolve null se não houver leitura nenhuma — nunca um objecto vazio que
+   * se confunda com "não tenho lá nada". */
+  function apoioForaPorAlvo(validadeMs) {
+    const cache = lerCacheApoioFora();
+    const ids = Object.keys(cache);
+    if (!ids.length) return null;
+
+    const limite = Number(validadeMs) || (APOIO_FORA_VALIDADE * 4);
+    const agora = Date.now();
+    let algumaFresca = false;
+    const out = {};
+
+    for (const id of ids) {
+      const e = cache[id] || {};
+      if ((agora - Number(e.quando || 0)) > limite) continue;
+      algumaFresca = true;
+      for (const b of (e.blocos || [])) {
+        const alvo = out[b.alvoId] = out[b.alvoId] || { unidades: {}, blocos: [] };
+        alvo.blocos.push({ unitsId: b.unitsId, de: Number(id), unidades: b.unidades });
+        for (const u of Object.keys(b.unidades || {})) {
+          alvo.unidades[u] = (alvo.unidades[u] || 0) + Number(b.unidades[u] || 0);
+        }
+      }
+    }
+    return algumaFresca ? out : null;
+  }
+
+  try {
+    uw.__maestroApoioFora = {
+      daCidade: apoioForaDaCidade,
+      refrescar: refrescarApoioFora,
+      porAlvo: apoioForaPorAlvo,
     };
   } catch (e) {}
 
@@ -1259,7 +1411,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.05.0430';
+  const MAESTRO_VERSAO = '2026.09.05.0530';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -29793,7 +29945,21 @@ function makeApoioModule(opts) {
   }
 
   /* O que esta conta tem AGORA em cada alvo. */
+  /* O que esta conta tem AGORA em cada alvo.
+   *
+   * Primeiro a verdade: a leitura da Ágora, separador Fora, que o núcleo
+   * guarda em cache. Só se não houver leitura nenhuma se cai nos modelos do
+   * jogo, que ficam parados durante horas depois de um ataque — foi isso que
+   * pôs o "repor" a dizer sempre que não se perdeu nada. */
   function tenhoEm(alvoId) {
+    try {
+      const fora = (mUw.__maestroApoioFora && mUw.__maestroApoioFora.porAlvo());
+      if (fora) return ((fora[Number(alvoId)] || {}).unidades) || {};
+    } catch (e) { seErroDeCodigo(e, 'Apoio'); }
+    return tenhoEmPelosModelos(alvoId);
+  }
+
+  function tenhoEmPelosModelos(alvoId) {
     const out = {};
     try {
       const mods = mUw.MM.getModels().Units || {};
@@ -31059,6 +31225,7 @@ function makeApoioModule(opts) {
           <b style="font-size:11px">Alvos apoiados</b>
           <button id="ap-nomes" style="cursor:pointer;font-size:10px" title="traz a lista partilhada e procura os nomes que faltam">🔄 actualizar</button>
           <button id="ap-adoptar" style="cursor:pointer;font-size:10px" title="regista o apoio que já está nos alvos, para o repor passar a saber o que se perde">📌 adoptar</button>
+          <button id="ap-fora" style="cursor:pointer;font-size:10px" title="lê a Ágora (separador Fora) de todas as tuas cidades e actualiza os números">🔎 ler a Ágora</button>
           <span style="opacity:.55;font-size:10px">“retirar” tira o alvo da lista e manda o apoio de volta</span>
         </div>
         <div style="max-height:180px;overflow-y:auto">
@@ -31287,6 +31454,31 @@ function makeApoioModule(opts) {
      * Este botão escreve, para cada alvo SEM registo, o que lá está agora.
      * A partir daí qualquer baixa passa a ser vista. Não mexe nos alvos que
      * já têm registo, para não apagar o que se sabe de verdade. */
+    /* LER A ÁGORA.
+     *
+     * O outro botão só traz a lista partilhada e os nomes; os números da
+     * tropa vinham dos modelos do jogo, que ficam parados durante horas.
+     * Este vai à fonte: o separador Fora de cada cidade minha. */
+    const btFora = container.querySelector('#ap-fora');
+    if (btFora) btFora.onclick = async () => {
+      btFora.disabled = true;
+      const antes = btFora.textContent;
+      btFora.textContent = 'a ler…';
+      try {
+        const meus = (ctx.getMyTowns() || []).map((t) => Number(t.id));
+        const api = mUw.__maestroApoioFora;
+        if (!api) { ctx.log('Apoio: leitor da Ágora indisponível.'); return; }
+        const lidas = await api.refrescar(meus, meus.length);
+        ctx.log(`Apoio: li a Ágora de ${lidas} cidade(s) — os números passam a ser os do servidor.`);
+      } catch (e) {
+        ctx.log('Apoio: não consegui ler a Ágora — ' + (e && e.message));
+      } finally {
+        btFora.disabled = false;
+        btFora.textContent = antes;
+        comRolamento(() => painel(container, ctx));
+      }
+    };
+
     const btAd = container.querySelector('#ap-adoptar');
     if (btAd) btAd.onclick = () => {
       const reg = lerEnviado();
