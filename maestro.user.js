@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.03.1800
+// @version      2026.09.03.1815
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1102,7 +1102,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.03.1800';
+  const MAESTRO_VERSAO = '2026.09.03.1815';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -14230,9 +14230,21 @@ function makeFeiticosModule(opts) {
     const htmlAtaques = (() => {
       try {
         const col = mUw.MM.getCollections().MovementsUnits;
+        /* SÓ OS ATAQUES QUE EU ENVIEI.
+         *
+         * Filtrar por tipo não chega: a colecção traz também os RECEBIDOS, e
+         * esses não se reforçam — são para atacar com tempestades.
+         *
+         * Visto em jogo: 3 ataques na lista dos reforços numa conta que não
+         * tinha nenhum a sair. Vinham de cidades de outros jogadores.
+         *
+         * O que distingue: a origem é minha. */
+        const minhasCidades = new Set((ctx.getMyTowns() || []).map((t) => Number(t.id)));
+
         const meus = ((col && col[0] && col[0].models) || [])
           .map((m) => m.attributes || {})
-          .filter((a) => /attack/i.test(String(a.type || '')));
+          .filter((a) => /attack/i.test(String(a.type || '')))
+          .filter((a) => minhasCidades.has(Number(a.home_town_id)));
 
         if (!meus.length) {
           return '<div style="opacity:.55;font-size:11px">Não tens ataques a caminho.</div>';
