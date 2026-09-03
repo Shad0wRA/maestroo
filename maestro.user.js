@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.03.1830
+// @version      2026.09.03.2035
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -987,6 +987,9 @@
     const q = quais || ['terra', 'mar'];
     if (q.indexOf('terra') >= 0) edificios.push('building_barracks');
     if (q.indexOf('mar') >= 0) edificios.push('building_docks');
+    /* A FILA DE CONSTRUÇÃO também fica presa: uma obra acabada continua a
+     * contar até alguém pedir a vista do senado. */
+    if (q.indexOf('construcao') >= 0) edificios.push('building_main');
     if (!edificios.length) return Promise.resolve();
 
     return Promise.all(edificios.map((ed) => new Promise((resolve) => {
@@ -1102,7 +1105,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.03.1830';
+  const MAESTRO_VERSAO = '2026.09.03.2035';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) {}
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -5024,9 +5027,101 @@ function makeConstrucaoModule(opts) {
     return n;
   }
 
+    /* ============ CIDADES ATACADAS DEIXAM DE ESTAR CUMPRIDAS =============
+   *
+   * As catapultas baixam a muralha e o raio de Zeus danifica um edifício ao
+   * acaso. A cidade deixa de cumprir o template — mas está marcada como
+   * cumprida e nem chega a ser visitada, portanto ninguém dá por isso.
+   *
+   * Guarda-se a hora do último ataque a chegar a cada cidade. Se for depois
+   * da marca, a marca deixa de valer e a cidade volta a ser vista.
+   * ==================================================================== */
+  const ATAQUES_KEY = 'grepoConstru_atacadas_v1';
+
+  /* Só uma verificação completa por arranque — não por passagem. */
+  let primeiraPassagemFeita = false;
+
+  function estadoInicial() {
+    try { return loadEstado(); } catch (e) { return {}; }
+  }
+
+  function ultimoAtaqueEm(townId) {
+    try {
+      const d = JSON.parse(armazem.getItem(ATAQUES_KEY) || '{}');
+      return Number(d[String(townId)]) || 0;
+    } catch (e) { return 0; }
+  }
+
+  function anotarAtaquesChegados() {
+    try {
+      const d = JSON.parse(armazem.getItem(ATAQUES_KEY) || '{}');
+      const agora = Math.floor(Date.now() / 1000);
+      let mexeu = false;
+
+      /* O modelo esvazia-se quando o ataque chega, portanto guarda-se a
+       * chegada PREVISTA enquanto ele ainda se vê. Quando essa hora passar,
+       * a marca de cumprida deixa de valer. */
+      const mv = uw.MM.getModels().MovementsUnits || {};
+      const minhas = new Set(Object.keys(uw.ITowns.towns).map(Number));
+
+      for (const k of Object.keys(mv)) {
+        const a = mv[k].attributes || {};
+        const alvo = Number(a.target_town_id);
+        if (!minhas.has(alvo)) continue;
+        if (!/attack/i.test(String(a.type || ''))) continue;
+
+        const chegada = Number(a.arrival_at) || 0;
+        if (!chegada) continue;
+        if (chegada > (Number(d[String(alvo)]) || 0)) { d[String(alvo)] = chegada; mexeu = true; }
+      }
+
+      /* Deitar fora o que é muito antigo — já foi verificado. */
+      for (const k of Object.keys(d)) {
+        if (Number(d[k]) < agora - 7 * 86400) { delete d[k]; mexeu = true; }
+      }
+
+      if (mexeu) armazem.setItem(ATAQUES_KEY, JSON.stringify(d));
+    } catch (e) { seErroDeCodigo(e, 'Construcao'); }
+  }
+
   async function run(ctx) {
     uw = ctx.uw; WORLD = ctx.WORLD;
     const log = ctx.log;
+
+    /* Anotar os ataques recebidos antes de decidir o que visitar — uma
+     * cidade atacada deixa de contar como cumprida.
+     *
+     * TEM de vir depois do `uw` estar definido. */
+    try { anotarAtaquesChegados(); } catch (e) { seErroDeCodigo(e, 'Construcao'); }
+
+    /* ============ UMA VERIFICAÇÃO COMPLETA AO ARRANCAR ================
+     *
+     * As marcas de cumprida foram postas antes de haver a regra dos ataques.
+     * Podem estar erradas: cidades com a muralha em baixo por catapultas ou
+     * edifícios partidos por um raio de Zeus, marcadas como completas e nunca
+     * mais visitadas.
+     *
+     * Na PRIMEIRA passagem depois de arrancar, esquecem-se as marcas e
+     * visita-se tudo. Custa uma passagem lenta; a seguir volta ao normal.
+     *
+     * Faz-se uma vez por arranque, não uma vez por sempre: se algo correr
+     * mal e as marcas ficarem outra vez desactualizadas, um recarregamento
+     * resolve. */
+    try {
+      if (!primeiraPassagemFeita) {
+        primeiraPassagemFeita = true;
+
+        const quantas = Object.keys((estadoInicial() || {}).cumpridas || {}).length;
+        if (quantas) {
+          const e2 = loadEstado();
+          e2.cumpridas = {};
+          e2.cumpridasQuando = {};
+          saveEstado(e2);
+          log(`🔍 Primeira passagem: vou verificar as ${quantas} cidade(s) marcadas `
+            + 'como cumpridas — pode haver muralhas em baixo ou edifícios partidos.');
+        }
+      }
+    } catch (e) { seErroDeCodigo(e, 'Construcao'); }
 
 
     const rotina = ctx.logRotina || ctx.log;
@@ -5082,8 +5177,41 @@ function makeConstrucaoModule(opts) {
        * outro edifício — a assinatura muda e a cidade volta a ser vista. */
       const assinatura = assinaturaDoTemplate(template);
       if (estado.cumpridas && estado.cumpridas[town.id] === assinatura) {
-        saltadas++;
-        continue;
+        /* A NÃO SER QUE A CIDADE TENHA SIDO ATACADA.
+         *
+         * As catapultas baixam a muralha e um raio de Zeus danifica um
+         * edifício ao acaso. A cidade deixa de cumprir o template — mas
+         * está marcada como cumprida e nem é visitada, portanto ninguém dá
+         * por isso.
+         *
+         * Guarda-se a hora do último ataque recebido; se for depois da
+         * marca, a marca deixa de valer. */
+        const atacadaEm = ultimoAtaqueEm(town.id);
+        const marcadaEm = Number((estado.cumpridasQuando || {})[town.id]) || 0;
+
+        /* REVISÃO PERIÓDICA.
+         *
+         * A anotação de ataques só apanha o que acontece daqui para a frente.
+         * Uma cidade que já perdeu a muralha antes disto ficaria presa para
+         * sempre — e nem sabemos quais são.
+         *
+         * De 12 em 12 horas revê-se cada cidade cumprida, mesmo sem sinal de
+         * ataque. Uma visita por cidade por meio dia não pesa, e apanha
+         * também o que os alertas não viram: raios, demolições, tudo. */
+        const REVER_APOS = 12 * 3600;
+        const agoraS = Math.floor(Date.now() / 1000);
+        const velha = !marcadaEm || (agoraS - marcadaEm) > REVER_APOS;
+
+        if (!velha && (!atacadaEm || atacadaEm <= marcadaEm)) {
+          saltadas++;
+          continue;
+        }
+
+        if (atacadaEm > marcadaEm) {
+          rotina(`${town.name}: foi atacada depois de estar cumprida — vou verificar.`);
+        } else {
+          rotina(`${town.name}: revisão periódica do template.`);
+        }
       }
 
       // trocar para a cidade para ter dados atualizados
@@ -5200,6 +5328,24 @@ function makeConstrucaoModule(opts) {
       let bdAtual = bd;
       let seguranca = 0;
       const deuAgora = [], naoDaoAgoraGlobal = new Set(), semRecursosGlobal = new Set();
+      /* A FILA PODE ESTAR PRESA.
+       *
+       * O `is_building_order_queue_full` vem do modelo, e o modelo não se
+       * actualiza sozinho: uma obra que já acabou continua a contar e a fila
+       * parece cheia quando já tem espaço.
+       *
+       * Visto em jogo, no quartel e na construção.
+       *
+       * Se ela diz estar cheia logo à partida, confirma-se antes de desistir
+       * — custa um pedido e evita uma cidade parada. */
+      if (bdAtual.filaCheia && ctx.actualizarNumeros) {
+        try {
+          await ctx.actualizarNumeros(town.id, ['construcao']);
+          const fresco = getBuildData(town.id);
+          if (fresco) bdAtual = fresco;
+        } catch (e) { seErroDeCodigo(e, 'Construcao'); }
+      }
+
       while (!bdAtual.filaCheia && seguranca < 15) {
         seguranca++;
         const dec = decidirConstrucao(template, bdAtual.building_data, blockedSet);
@@ -5215,6 +5361,9 @@ function makeConstrucaoModule(opts) {
          * cidade de volta sozinha. */
         if (dec.terminado) {
           estado.cumpridas[town.id] = assinatura;
+        /* Guardar QUANDO — para saber se um ataque posterior a invalida. */
+        estado.cumpridasQuando = estado.cumpridasQuando || {};
+        estado.cumpridasQuando[town.id] = Math.floor(Date.now() / 1000);
           break;
         }
         // registar os que não dão neste momento (para o rastreio de bloqueio)
@@ -9098,6 +9247,24 @@ function makeRecrutamentoModule(opts) {
         try {
           if (ctx.actualizarNumeros) await ctx.actualizarNumeros(town.id, quais);
         } catch (e) { seErroDeCodigo(e, 'Recrutamento'); }
+      } else {
+        /* ORDENS QUE JÁ ACABARAM MAS AINDA APARECEM NA FILA.
+         *
+         * O modelo do jogo não se actualiza sozinho: uma ordem terminada
+         * continua a contar, a fila parece cheia, e o módulo desiste sem
+         * chegar a tentar.
+         *
+         * Visto em jogo, no quartel — o mesmo que já apanhámos na construção
+         * e na fábrica de colonizadores.
+         *
+         * Se a fila parece cheia e não há nada a fazer, vale a pena
+         * confirmar: pode ser que já haja espaço. */
+        try {
+          const temFila = Object.keys(emFila || {}).some((u) => Number(emFila[u]) > 0);
+          if (temFila && ctx.actualizarNumeros) {
+            await ctx.actualizarNumeros(town.id, ['terra', 'mar']);
+          }
+        } catch (e) { seErroDeCodigo(e, 'Recrutamento'); }
       }
 
       for (const a of acoes) {
@@ -12472,6 +12639,17 @@ function makeSentinelasModule(opts) {
     const c = cfg();
     const amigas = aliancasAmigas(c);
     const registo = lerRegisto();
+
+    /* ============ TRANSPORTES A MAIS VOLTAM SOZINHOS ==================
+     *
+     * Quando parte da tropa morre num ataque, os transportes que a levaram
+     * ficam lá sem carga — e fazem falta em casa para outros apoios.
+     *
+     * Não é preciso pedir: assim que se vê que sobram, voltam.
+     *
+     * Com 120 de população e transportes de 16 foram 8; se ficarem 80,
+     * bastam 5 e três voltam já. */
+    
 
     /* PEDIDOS DO PAINEL.
      *
@@ -29068,25 +29246,135 @@ function makeApoioModule(opts) {
         }
       }
 
-      /* Guardar o que a reserva manda ficar em casa. */
-      /* O apoio não tem reserva por percentagem: o que o trava é a tropa em
-       * casa e a capacidade dos transportes. */
-      const reserva = 0;
+      /* SÃO PRECISAS DUAS COISAS: TROPA E QUEM A LEVE.
+       *
+       * A tropa terrestre não atravessa o mar sozinha — vai em transportes.
+       * Contar só a tropa e as birremes dava um número optimista.
+       *
+       * Com 40 espadachins, 40 arqueiros e 40 hoplitas por envio são 120 de
+       * população; um transporte rápido com beliche leva 16, portanto são 8
+       * transportes por envio.
+       *
+       * Nos números reais: a tropa dava para 70 cidades e as birremes para
+       * 32, mas os transportes só para 25 — e é esse o limite. */
+      const capacidade = (() => {
+        try {
+          const primeira = Object.keys(mUw.ITowns.towns)[0];
+          return CAPACIDADE.small_transporter[temBeliche(Number(primeira)) ? 'com' : 'sem'];
+        } catch (e) { return 10; }
+      })();
 
       let cabem = Infinity;
       let limita = '';
+
+      /* 1. cada unidade do pacote, pelo que há dela */
       for (const u of pedidas) {
-        const tem = Math.floor((Number(total[u]) || 0) * (1 - reserva / 100));
-        const n = Math.floor(tem / Number(porEnvio[u]));
+        const n = Math.floor((Number(total[u]) || 0) / Number(porEnvio[u]));
         if (n < cabem) { cabem = n; limita = u; }
       }
 
+      /* 2. e os transportes para levar a tropa terrestre */
+      let popTerrestre = 0;
+      for (const u of pedidas) {
+        const gd = (mUw.GameData.units || {})[u] || {};
+        if (gd.is_naval) continue;
+        popTerrestre += Number(porEnvio[u]) * (Number(gd.population) || 1);
+      }
+
+      if (popTerrestre > 0 && capacidade > 0) {
+        const btrPorEnvio = Math.ceil(popTerrestre / capacidade);
+        const n = Math.floor((Number(total.small_transporter) || 0) / btrPorEnvio);
+        if (n < cabem) { cabem = n; limita = 'small_transporter'; }
+      }
+
       return {
-        quantas: Number.isFinite(cabem) ? cabem : 0,
+        quantas: Number.isFinite(cabem) ? Math.max(0, cabem) : 0,
         limita,
         total,
       };
     } catch (e) { return null; }
+  }
+
+  /* ============ MANDAR PARTE DE VOLTA ==================================
+   *
+   * Capturado do jogo:
+   *   POST /game/units_beyond_info?town_id=<minha>&action=send_back_part
+   *   json={"units_id":<id do apoio>,"sword":0,"archer":16,
+   *         "small_transporter":1,"town_id":<minha>,"nl_init":true}
+   *
+   * O `units_id` identifica o apoio que ESTA conta tem naquela cidade.
+   * ==================================================================== */
+  async function mandarDeVolta(unitsId, minhaCidade, unidades) {
+    try {
+      const url = mUw.location.origin + '/game/units_beyond_info?town_id='
+        + Number(minhaCidade) + '&action=send_back_part&h=' + mUw.Game.csrfToken;
+
+      const corpo = Object.assign({}, unidades, {
+        units_id: Number(unitsId),
+        town_id: Number(minhaCidade),
+        nl_init: true,
+      });
+
+      const r = await mUw.fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                   'x-requested-with': 'XMLHttpRequest' },
+        credentials: 'include',
+        body: 'json=' + encodeURIComponent(JSON.stringify(corpo)),
+      }).then(lerResposta);
+
+      const j = (r && r.json) || {};
+      return { ok: !j.error, msg: j.error || j.success || 'ok' };
+    } catch (e) { return { ok: false, msg: e.message }; }
+  }
+
+  /* O apoio desta conta numa cidade, com o seu `units_id`. */
+  function meuApoioEm(alvoId) {
+    try {
+      const mods = mUw.MM.getModels().Units || {};
+      for (const k of Object.keys(mods)) {
+        const a = mods[k].attributes || {};
+        if (Number(a.current_town_id) !== Number(alvoId)) continue;
+        if (!minhasCidades().has(Number(a.home_town_id))) continue;
+
+        const unidades = {};
+        for (const u of Object.keys(a)) {
+          if (!(mUw.GameData.units || {})[u]) continue;
+          const n = Number(a[u]) || 0;
+          if (n > 0) unidades[u] = n;
+        }
+        return { unitsId: Number(a.id), de: Number(a.home_town_id), unidades };
+      }
+    } catch (e) {}
+    return null;
+  }
+
+  /* TRANSPORTES A MAIS.
+   *
+   * A tropa terrestre chegou em transportes. Se morreu parte dela, sobram
+   * transportes vazios — e esses fazem falta em casa.
+   *
+   * Com 120 de população e transportes de 16, foram 8. Se ficarem 80, bastam
+   * 5 — e 3 podem voltar já. */
+  function transportesASobrar(alvoId) {
+    try {
+      const meu = meuApoioEm(alvoId);
+      if (!meu) return 0;
+
+      const cap = CAPACIDADE.small_transporter[temBeliche(meu.de) ? 'com' : 'sem'];
+      if (!cap) return 0;
+
+      let pop = 0;
+      for (const u of Object.keys(meu.unidades)) {
+        const gd = (mUw.GameData.units || {})[u] || {};
+        if (gd.is_naval) continue;
+        pop += meu.unidades[u] * (Number(gd.population) || 1);
+      }
+
+      const precisos = Math.ceil(pop / cap);
+      const tem = Number(meu.unidades.small_transporter) || 0;
+      return Math.max(0, tem - precisos);
+    } catch (e) { return 0; }
   }
 
   /* Quanto falta para repor o que esta conta perdeu neste alvo. */
@@ -29735,6 +30023,36 @@ function makeApoioModule(opts) {
 
     const alvos = (lista.alvos || lista.targets || []).map(Number).filter(Boolean);
 
+    /* ============ TRANSPORTES A MAIS VOLTAM SOZINHOS ==================
+     *
+     * Quando parte da tropa morre num ataque, os transportes que a levaram
+     * ficam lá sem carga — e fazem falta em casa para outros apoios.
+     *
+     * Não é preciso pedir: assim que se vê que sobram, voltam.
+     *
+     * Com 120 de população e transportes de 16 foram 8; se ficarem 80,
+     * bastam 5 e três voltam já.
+     *
+     * O pedido é o `send_back_part`, que devolve só o que se indicar. */
+    try {
+      for (const alvo of alvos) {
+        const sobram = transportesASobrar(alvo);
+        if (sobram < 1) continue;
+
+        const meu = meuApoioEm(alvo);
+        if (!meu || !meu.unitsId) continue;
+
+        const r = await mandarDeVolta(meu.unitsId, meu.de, { small_transporter: sobram });
+        if (r.ok) {
+          const info = cacheCidades[alvo] || { nome: '#' + alvo };
+          log(`🚤 ${info.nome}: ${sobram} transporte(s) a mais voltaram para casa.`);
+        } else {
+          rotina(`Apoio: não consegui trazer os transportes de ${alvo} — ${r.msg}`);
+        }
+        await ctx.sleep(ctx.rand(700, 1400));
+      }
+    } catch (e) { seErroDeCodigo(e, 'Apoio'); }
+
     /* RETIRAR O QUE JÁ NÃO ESTÁ NA LISTA.
      *
      * A lista é partilhada: se removeres um alvo NOUTRA conta, esta fica com
@@ -30047,6 +30365,9 @@ function makeApoioModule(opts) {
     const linhas = alvos.length ? alvos.map((id) => {
       const info = cacheCidades[id] || { nome: '#' + id, jogador: '…' };
       const t = tropasEnviadasPara(id, reg);
+
+      /* O botão "repor" só faz sentido onde esta conta PERDEU tropa. */
+      const perdeu = Object.keys(faltaRepor(id)).length > 0;
       const det = Object.keys(t.detalhe).map((k) => `${t.detalhe[k]} ${k}`).join(', ');
       return `<tr data-alvo="${id}">
         <td style="padding:2px 3px">${esc(info.nome)}</td>
@@ -30055,8 +30376,8 @@ function makeApoioModule(opts) {
         <td style="padding:2px 3px;text-align:right;white-space:nowrap">
           <button data-reforcar="${id}" title="mandar mais envios para este alvo"
             style="cursor:pointer;font-size:10px;background:#364;color:#dfd;border:none;border-radius:3px;padding:2px 5px">reforçar</button>
-          <button data-repor="${id}" title="repor o que esta conta perdeu aqui"
-            style="cursor:pointer;font-size:10px;background:#446;color:#ddf;border:none;border-radius:3px;padding:2px 5px">repor</button>
+          ${perdeu ? `<button data-repor="${id}" title="repor o que esta conta perdeu aqui"
+            style="cursor:pointer;font-size:10px;background:#446;color:#ddf;border:none;border-radius:3px;padding:2px 5px">repor</button>` : ''}
           <button data-remover="${id}" style="cursor:pointer;font-size:10px;background:#733;color:#fdd;border:none;border-radius:3px;padding:2px 5px">retirar</button>
         </td>
       </tr>`;
