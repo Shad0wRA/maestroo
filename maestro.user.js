@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.06.1530
+// @version      2026.09.06.1830
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -114,6 +114,43 @@
       || /vagas de treino|unidades suficientes|requisit|prerequisit/i.test(t)
       || /ainda n[ãa]o foram preenchidos|arrefecimento|cooldown|mais do que \d+/i.test(t);
   }
+
+  /* ============ O PORQUÊ NÃO, POR CIDADE ================================
+   *
+   * A pergunta que mais vezes se faz é "porque é que isto não aconteceu nesta
+   * cidade?", e a resposta estava sempre escrita — espalhada por registos,
+   * caixas negras e despejos na consola. Ficava a meia hora de distância.
+   *
+   * Aqui guarda-se a ÚLTIMA razão por módulo e por cidade. Só a última: não é
+   * um histórico, é um retrato. Vive na memória, porque interessa o agora.
+   *
+   *   __maestroPorque()            tudo
+   *   __maestroPorque('deuses')    só de um módulo
+   * ==================================================================== */
+  const porques = {};
+
+  function registarPorque(mod, cidade, motivo) {
+    try {
+      const m = porques[mod] = porques[mod] || {};
+      m[String(cidade)] = { motivo: String(motivo).slice(0, 160), quando: Date.now() };
+      const ks = Object.keys(m);
+      if (ks.length > 60) delete m[ks[0]];
+    } catch (e) {}
+  }
+
+  try {
+    uw.__maestroPorque = (mod) => {
+      const alvo = mod ? { [mod]: porques[mod] || {} } : porques;
+      for (const k of Object.keys(alvo)) {
+        const m = alvo[k] || {};
+        const linhas = Object.keys(m).map((c) => `  ${c}: ${m[c].motivo}`);
+        if (!linhas.length) continue;
+        console.log(`[${k}] ${linhas.length} cidade(s) travada(s):`);
+        linhas.forEach((l) => console.log(l));
+      }
+      return '';
+    };
+  } catch (e) {}
 
   function pareceErro(msg) {
     const t = String(msg || '');
@@ -1558,7 +1595,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.06.1530';
+  const MAESTRO_VERSAO = '2026.09.06.1830';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -21937,9 +21974,7 @@ function makeEsquivaModule(opts) {
     return out;
   }
 
-  function escolherDestino(origemId, cidades, origemAtaque, amigo) {
-    return destinosPossiveis(origemId, cidades, origemAtaque, amigo)[0] || null;
-  }
+  
 
   // Tudo o que está na cidade. Se for preciso atravessar mar, junta transportes
   // suficientes para a tropa terrestre (senão o envio é recusado).
@@ -22107,8 +22142,13 @@ function makeEsquivaModule(opts) {
       const org0 = cidades.find((x) => x.id === Number(plano.townId));
       if (org0) await carregarIlha(org0.ix, org0.iy, plano.townId);
     } catch (e) { seErroDeCodigo(e, 'Esquiva'); }
-    const esc = escolherDestino(plano.townId, cidades, plano.origemAtaque, !!plano.daMain);
-    if (!esc) { log(`Esquiva ${nome}: sem cidade de destino.`); return; }
+    const opcoes = destinosPossiveis(plano.townId, cidades, plano.origemAtaque, !!plano.daMain);
+    if (!opcoes.length) {
+      registarPorque('esquiva', nome, 'sem cidade de destino');
+      log(`Esquiva ${nome}: sem cidade de destino.`);
+      return;
+    }
+    let esc = opcoes[0];
     /* DOIS ENVIOS quando é preciso: um por terra, outro por mar.
      *
      * Numa cidade com tropa terrestre e naval, mandar tudo junto fazia o jogo
@@ -22148,6 +22188,29 @@ function makeEsquivaModule(opts) {
       try { plano.destino = Number(esc.destino.id); } catch (e) { seErroDeCodigo(e, 'Esquiva'); }
 
       let r = await enviarApoio(plano.townId, esc.destino.id, cmd.carga);
+
+      /* SE O DESTINO NÃO SERVIR, TENTAR O SEGUINTE.
+       *
+       * Custou tropa no 125: o destino escolhido era uma cidade que já não
+       * existe, o servidor recusou os dois envios, e a esquiva desistiu com a
+       * tropa em casa — num ataque reconhecido e com plano feito.
+       *
+       * A lista já vem ordenada por preferência. Aqui percorre-se até uma
+       * passar. Só se muda de destino por causa do DESTINO — se a recusa for
+       * por falta de tropa, isso trata-se mais abaixo e mudar de cidade não
+       * ajudava nada. */
+      if (!r.ok && /n[ãa]o existe|does not exist|inv[áa]lid/i.test(String(r.msg || ''))) {
+        for (const alt of opcoes) {
+          if (alt.destino.id === esc.destino.id) continue;
+          log(`Esquiva ${nome}: ${esc.destino.name || esc.destino.id} não serve (${r.msg})`
+            + ` — tento ${alt.destino.name || alt.destino.id}.`);
+          esc = alt;
+          try { plano.destino = Number(esc.destino.id); } catch (e) {}
+          r = await enviarApoio(plano.townId, esc.destino.id, cmd.carga);
+          if (r.ok || !/n[ãa]o existe|does not exist|inv[áa]lid/i.test(String(r.msg || ''))) break;
+        }
+        if (!r.ok) registarPorque('esquiva', nome, `nenhum destino aceite (${r.msg})`);
+      }
 
       /* SE O SERVIDOR RECUSAR, INSISTIR COM MENOS ATÉ PASSAR.
        *
@@ -32419,6 +32482,31 @@ function makeFundacaoModule(opts) {
     return null;
   }
 
+  /* O TAMANHO DE UMA ILHA NÃO MUDA.
+   *
+   * Perguntava-se ao jogo por cada candidata, uma a uma, com pausa entre
+   * elas. Numa passagem com cem candidatas são cem pedidos para saber uma
+   * coisa que é fixa desde que o mundo abriu. Os LUGARES LIVRES mudam, esses
+   * continuam a ser perguntados — o que fica guardado é só o total e as
+   * aldeias, que é o que decide se a ilha serve. */
+  const ILHAS_KEY = 'grepoFundacao_tamanhoIlhas_v1';
+
+  function tamanhoGuardado(islandId) {
+    try {
+      const d = JSON.parse(armazem.getItem(ILHAS_KEY) || '{}');
+      return d[String(islandId)] || null;
+    } catch (e) { return null; }
+  }
+
+  function guardarTamanho(islandId, total, aldeias) {
+    try {
+      if (!islandId || !(total > 0)) return;
+      const d = JSON.parse(armazem.getItem(ILHAS_KEY) || '{}');
+      d[String(islandId)] = { total: Number(total), aldeias: Number(aldeias) || 0 };
+      armazem.setItem(ILHAS_KEY, JSON.stringify(d));
+    } catch (e) {}
+  }
+
   async function infoDaIlha(islandId, townIdBase, ix, iy) {
     try {
       /* Sem `id` — as ilhas marcadas à mão no painel só têm coordenadas —
@@ -32861,7 +32949,16 @@ function makeFundacaoModule(opts) {
        * O critério anterior — contar aldeias no `map_data` — nunca funcionava:
        * elas não vêm de fora. Saltavam-se todas as ilhas, sem excepção. */
       if (c.exigirAldeias) {
+        /* Se já se soube o tamanho desta ilha, não se volta a perguntar: uma
+         * ilha pequena é pequena para sempre e nem chega a gastar um pedido. */
+        const guardado = tamanhoGuardado(ilha.id);
+        if (guardado && guardado.total < 20) {
+          registarPorque('fundacao', chave, `ilha pequena (${guardado.total} lugares)`);
+          continue;
+        }
+
         const info = await infoDaIlha(ilha.id, t.id, ilha.x, ilha.y);
+        if (info) guardarTamanho(ilha.id, info.total, info.aldeias);
         await ctx.sleep(ctx.rand(700, 1300));
 
         if (!info) {
@@ -32869,10 +32966,12 @@ function makeFundacaoModule(opts) {
           continue;
         }
         if (info.total < 20) {
+          registarPorque('fundacao', chave, `ilha pequena (${info.total} lugares)`);
           log(`— ${chave}: ilha pequena (${info.total} lugares); salto.`);
           continue;
         }
         if (!info.livres) {
+          registarPorque('fundacao', chave, `ilha cheia (${info.ocupados}/${info.total})`);
           log(`— ${chave}: ilha grande mas cheia (${info.ocupados}/${info.total}); salto.`);
           continue;
         }
@@ -33770,6 +33869,20 @@ function makeFrotaModule(opts) {
         .map((x) => String(`[${x.mod}] ${x.msg}`).slice(0, 160));
     } catch (e) { seErroDeCodigo(e, 'Frota'); }
 
+    /* AS ÚLTIMAS LINHAS DE ROTINA.
+     *
+     * Quando uma conta se porta mal, era preciso abri-la para perceber
+     * porquê. Com estas, diagnosticam-se as vinte a partir da principal.
+     *
+     * Dez linhas cortadas aos 120 caracteres: cabem no sinal de vida sem o
+     * inchar, e são sempre as mais recentes, que é o que interessa. */
+    let rotinas = [];
+    try {
+      const cx = JSON.parse(localStorage.getItem('grepoMaestro_caixaRotina_v1') || '[]') || [];
+      rotinas = cx.slice(-10).map((l) => String(
+        typeof l === 'string' ? l : (l.txt || l.msg || '')).slice(0, 120));
+    } catch (e) {}
+
     let captcha = 0;
     try { captcha = (w.__maestroHaCaptcha && w.__maestroHaCaptcha()) ? 1 : 0; } catch (e) { seErroDeCodigo(e, 'Frota'); }
 
@@ -33973,7 +34086,7 @@ function makeFrotaModule(opts) {
       mundo: mWorld,
       versao: String(w.__maestroVersao || '?'),
       quando: Math.floor(Date.now() / 1000),
-      captcha, cidades, travoes, jogo, inventario, apoio, modulos, errosCodigo, erros,
+      captcha, cidades, travoes, jogo, inventario, apoio, modulos, errosCodigo, erros, rotinas,
     };
   }
 
