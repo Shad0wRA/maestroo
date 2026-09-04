@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.05.1230
+// @version      2026.09.05.1730
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -103,48 +103,25 @@
   function pareceErro(msg) {
     const t = String(msg || '');
 
-    /* NÃO são erros — é o funcionamento normal a explicar-se.
+    /* QUEM ESCREVE A LINHA É QUE DIZ SE É AVARIA.
      *
-     * Sem isto, o sininho enchia-se de decisões correctas (um travão que
-     * travou, uma esquiva que não se faz de propósito) e deixava de servir
-     * para nada. */
-    const normal = [
-      /NÃO recruto/i,               // travão do recrutamento a funcionar
-      /cortado de/i,                // ordem ajustada ao alvo
-      /fica em casa para o matar/i, // decisão deliberada perante colonizador
-      /NÃO esquivo/i,               // idem
-      /limite diário/i,             // aldeias no limite: normal ao fim do dia
-      /já no limite diário/i,
-      /não retiro nada de lá/i,     // protecção das bases
-      /nada a esquivar|nenhum ataque/i,
-      /já apoiados \(|nada a enviar agora/i,   // resumo do apoio, não erro
-      /está desligado|desligadas/i,
-      /não está publicado|ainda não foi publicado/i,
-      /já estava concluída/i,       // limpeza da fila a funcionar
-      /não está na lista de equipas/i,
-
-      /* Funcionamento normal, não erros. */
-      /vagas de treino|vagas est[ãa]o cheias|queue is full/i,   // fila do quartel cheia
-      /fila de constru[çc][ãa]o est[áa] cheia/i,                 // fila no limite: normal
-      /fila de pesquisas est[áa] cheia/i,                        // idem, nas pesquisas
-      /n[ãa]o h[áa] aldeias b[áa]rbaras nesta ilha/i,           // condição da ilha, não muda
-      /requisitos de pesquisa .* n[ãa]o foram preenchidos/i,     // falta pesquisa: já se vê no painel
-      /que o jogo não trouxe/i,                                 // o cruzamento a funcionar
-      /vou perguntar ao servidor/i,
-      /servidor a limitar|limitar os pedidos/i,                  // já tem o seu próprio travão
-
-      /* As mensagens DO PRÓPRIO SININHO não contam como erro — senão ele
-       * registava-se a si mesmo e ficava em ciclo. */
-      /Sem erros guardados/i,
-      /^🔔 \d+ erro/,
-      /^\s+\[\d{2}:\d{2}:\d{2}\]/,
-    ];
-    if (normal.some((re) => re.test(t))) return false;
-
-    /* ERROS a sério: falhas de pedido, recusas do servidor, coisas que não
-     * deviam acontecer. */
-    return /⚠️|✗|falh|não consegui|nao consegui|erro|recusou|limitou|rebent|inv[áa]lid/i.test(t);
+     * Isto era uma adivinhação: procuravam-se palavras como "falhou", "erro"
+     * ou "não consegui", e depois uma lista de vinte e cinco excepções para as
+     * mensagens normais que também as usam. A lista crescia a cada mensagem
+     * nova — o arrefecimento dos bandidos e o "não pode recrutar mais do que
+     * 3" foram ao sininho por causa disso, e não são avarias nenhumas.
+     *
+     * A convenção já existia no código: as avarias levam ⚠️, ⛔, 🛑 ou 🐞, e o
+     * que é rotina vai pelo `rotina()`, que nem chega aqui. Passa a ser essa a
+     * regra, e não há mais listas para manter.
+     *
+     * Das 301 mensagens do ficheiro, 64 têm marca. As nove que falavam de
+     * falha sem marca foram vistas uma a uma: são avisos de passagem, do
+     * género "não consegui mudar para esta cidade", que se resolvem sozinhos
+     * na passagem seguinte e não valem um sininho. */
+    return /⚠️|⛔|🛑|🐞|✗/.test(t);
   }
+
 
   function anotarErro(modId, msg) {
     try {
@@ -194,7 +171,7 @@
   }
 
   /* ---- WEBHOOKS DO DISCORD ------------------------------------------------
-   * Cola aqui os teus três webhooks. Ficam vazios por omissão; sem eles, os
+   * Cola aqui os teus quatro webhooks. Ficam vazios por omissão; sem eles, os
    * avisos só aparecem no log do painel.
    *   captcha   → verificação de bot (o módulo pára e avisa)
    *   ataque    → ataque a chegar, sem suspeita de navio colonizador
@@ -280,6 +257,86 @@
     });
   }
   try { uw.__maestroPedirFora = pedirFora; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
+
+  /* ============ TESTE SECO ==============================================
+   *
+   * Os módulos correm tudo como sempre — leem o jogo, decidem, escolhem
+   * cidades, calculam quantidades — mas na hora de AGIR o pedido não sai.
+   * Em vez disso fica escrito no registo o que teria sido enviado.
+   *
+   * Serve para ver o que uma versão nova quer fazer ANTES de a pôr nas 20
+   * contas. Com isto ligado, as três sentinelas a mais tinham aparecido no
+   * arranque em vez de aparecerem na cidade do aliado com nove.
+   *
+   * COMO FUNCIONA: todos os módulos agem por POST para `/game/...`. Basta
+   * travar esses. As leituras são GET e passam, senão os módulos não tinham
+   * o que decidir; a única leitura por POST é o `action=fetch`, que se deixa
+   * passar de propósito.
+   *
+   * AVISOS:
+   * • Trava TODOS os pedidos de escrita daquela aba, incluindo os que fizeres
+   *   a clicar no jogo. Não ligues numa conta onde estejas a jogar.
+   * • Desliga-se sozinho ao fim de 15 minutos, para não ficar esquecido.
+   * • Vários módulos só marcam o que fizeram DEPOIS de o envio resultar, por
+   *   isso à segunda passagem repetem a mesma decisão. A repetição é do
+   *   teste, não um defeito.
+   *
+   *   __maestroTesteSeco(true)   liga
+   *   __maestroTesteSeco(false)  desliga
+   *   __maestroTesteSeco()       diz como está
+   * ==================================================================== */
+  const SECO_KEY = 'grepoMaestro_testeSeco_v1';
+
+  function testeSecoAtivo() {
+    try {
+      const ate = Number(localStorage.getItem(SECO_KEY)) || 0;
+      return ate > Date.now();
+    } catch (e) { return false; }
+  }
+
+  try {
+    uw.__maestroTesteSeco = (ligar) => {
+      if (ligar === undefined) {
+        const ate = Number(localStorage.getItem(SECO_KEY)) || 0;
+        const falta = Math.round((ate - Date.now()) / 60000);
+        return falta > 0 ? `teste seco LIGADO, faltam ${falta} min` : 'teste seco desligado';
+      }
+      try {
+        if (ligar) {
+          localStorage.setItem(SECO_KEY, String(Date.now() + 15 * 60 * 1000));
+          log('core', '🧪 TESTE SECO LIGADO — nada é enviado ao jogo durante 15 min.');
+          return 'ligado por 15 minutos';
+        }
+        localStorage.removeItem(SECO_KEY);
+        log('core', '🧪 Teste seco desligado — os pedidos voltam a sair.');
+        return 'desligado';
+      } catch (e) { return 'não consegui: ' + e.message; }
+    };
+  } catch (e) {}
+
+  /* O interceptor é montado uma vez e fica inerte enquanto o teste estiver
+   * desligado: sem isso, ligá-lo obrigaria a recarregar a página. */
+  try {
+    const fetchOriginal = uw.fetch;
+    uw.fetch = function (url, opcoes) {
+      try {
+        if (testeSecoAtivo()) {
+          const u = String((url && url.url) || url || '');
+          const metodo = String((opcoes && opcoes.method) || 'GET').toUpperCase();
+          if (metodo === 'POST' && /\/game\//.test(u) && !/action=fetch/.test(u)) {
+            const alvo = (u.split('/game/')[1] || u).slice(0, 90);
+            const corpo = String((opcoes && opcoes.body) || '').slice(0, 220);
+            log('core', `🧪 seco: TRAVEI ${alvo}${corpo ? ' · ' + corpo : ''}`);
+            return Promise.resolve(new Response(
+              JSON.stringify({ json: { error: 'teste seco: o pedido não foi enviado' } }),
+              { status: 200, headers: { 'Content-Type': 'application/json' } }));
+          }
+        }
+      } catch (e) {}
+      return fetchOriginal.apply(this, arguments);
+    };
+  } catch (e) {}
+
 
   /* ============ TRAVÃO DO SERVIDOR (429) ================================
    * Quando o Grepolis responde 429 — "pedidos a mais" — insistir só piora.
@@ -786,7 +843,7 @@
    *
    * Cada escrita relê e regrava a caixa toda — 1,8 ms com 3000 linhas. Com
    * as de rotina a entrar e 40 abas na VPS, isso somava. Junta-se o que
-   * chega e grava-se de 3 em 3 segundos. */
+   * chega e grava-se de 30 em 30 segundos. */
   let caixaPendente = [];
   let rotinaPendente = [];
   let caixaTemporizador = null;
@@ -795,7 +852,7 @@
    *
    * Antes, cada descarga lia os 200 KB do armazenamento, convertia-os de
    * texto, acrescentava as linhas novas, voltava a convertê-los e gravava
-   * tudo outra vez — de 3 em 3 segundos, nas duas caixas, em 21 abas. São
+   * tudo outra vez — de 3 em 3 segundos, nas duas caixas, em todas as abas. São
    * centenas de megabytes por minuto de conversão e de escrita em disco só
    * para guardar um registo, e foi o que pôs a VPS de rastos.
    *
@@ -863,8 +920,8 @@
       try { lista = JSON.parse(localStorage.getItem(CAIXA_NEGRA_KEY) || '[]'); } catch (e) { seErroDeCodigo(e, 'núcleo'); }
       lista.push(linha);
 
-      /* Cortar pelo mais antigo. 800 linhas são uns 200 KB no pior caso — o
-       * navegador aguenta bem, e dá para uma noite inteira. */
+      /* Cortar pelo mais antigo. Mil linhas dão várias horas, e o tamanho da
+       * lista é o custo de cada gravação — ver o tecto lá em cima. */
       while (lista.length > CAIXA_NEGRA_MAX) lista.shift();
 
       localStorage.setItem(CAIXA_NEGRA_KEY, JSON.stringify(lista));
@@ -1486,7 +1543,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.05.1230';
+  const MAESTRO_VERSAO = '2026.09.05.1730';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -1783,8 +1840,8 @@
   /* CABEÇALHOS PARA LER O GIST.
    *
    * As leituras iam SEM token. O GitHub dá 60 pedidos por hora a quem não se
-   * identifica, e conta-os por endereço — as 21 contas do VPS partilham o
-   * mesmo. Sessenta por hora entre 21 contas esgota-se em minutos, e a partir
+   * identifica, e conta-os por endereço — as contas do VPS partilham o
+   * mesmo. Sessenta por hora entre as vinte e tal contas esgota-se em minutos, e a partir
    * daí todas as leituras vinham recusadas. Como quase todas estão dentro de
    * um `try` que devolve vazio, o efeito não era um erro: era o módulo achar
    * que não havia templates, nem lista de apoio, nem perfil.
@@ -2296,24 +2353,7 @@
    * Os perfis são independentes: um perfil sem templates fica SEM templates.
    * O trabalho não se perde — o perfil anterior é guardado antes da troca
    * (ver `aplicarPerfil`), portanto voltar a ele traz tudo de volta. */
-  function reporCfgDoPerfil(perfil) {
-    const todos = lerCfgPerfis();
-    const meu = todos[perfil] || {};
-    let n = 0, limpas = 0;
-
-    for (const k of chavesDosModulos()) {
-      try {
-        if (Object.prototype.hasOwnProperty.call(meu, k) && meu[k] != null) {
-          localStorage.setItem(k, meu[k]);
-          n++;
-        } else {
-          // o perfil novo não tem esta definição: fica vazia
-          if (localStorage.getItem(k) != null) { localStorage.removeItem(k); limpas++; }
-        }
-      } catch (e) { seErroDeCodigo(e, 'núcleo'); }
-    }
-    return { repostas: n, limpas };
-  }
+  
 
   /* ============ EXPORTAR / IMPORTAR DEFINIÇÕES ==========================
    * Para não repetir a configuração toda num mundo novo.
@@ -2741,52 +2781,14 @@
     'siege', 'revolt', 'conquer', 'colon',
   ];
 
-  function deveApagar(tipo) {
-    if (!tipo) return false;
-    const t = String(tipo).toLowerCase();
-    return !NOTIFICACOES_A_MANTER.some((k) => t.indexOf(k) >= 0);
-  }
+  
 
   let ultimaLimpeza = 0;
   let vigiaLigada = false;
 
   /* Apagar à medida que chegam é melhor do que de X em X minutos: nunca
    * chegam a aparecer. Embrulha-se o `push` da pilha do jogo. */
-  function vigiarNotificacoes() {
-    if (vigiaLigada) return;
-    try {
-      const st = uw.GrepoNotificationStack;
-      if (!st || typeof st.push !== 'function') return;
-      const original = st.push;
-      st.push = function (...args) {
-        const r = original.apply(this, args);
-        try {
-          const n = args[0];
-          const tipo = n && typeof n.getType === 'function' ? n.getType() : null;
-          if (deveApagar(tipo)) {
-            /* SÓ tirar do ecrã.
-             *
-             * Tentei apagar no servidor com `deleteByTypeAndParamID` e correu
-             * mal: cada chamada faz um pedido `notify/delete` e percorre a
-             * pilha a alterá-la ao mesmo tempo. Com muitas notificações, isso
-             * deu 429 (demasiados pedidos) e corrompeu a pilha do jogo — a
-             * janela dos relatórios passou a rebentar com
-             * "Cannot read properties of undefined (reading 'getOpt')".
-             *
-             * Não vale a pena: as notificações no ecrã são o incómodo, e isto
-             * resolve-o sem mexer no que é do jogo. */
-            setTimeout(() => {
-              try { if (typeof n.despawn === 'function') n.despawn(); } catch (e) { seErroDeCodigo(e, 'núcleo'); }
-              try { if (typeof n.destroy === 'function') n.destroy(); } catch (e) { seErroDeCodigo(e, 'núcleo'); }
-              tirarDoEcra();
-            }, 60);
-          }
-        } catch (e) { seErroDeCodigo(e, 'núcleo'); }
-        return r;
-      };
-      vigiaLigada = true;
-    } catch (e) { seErroDeCodigo(e, 'núcleo'); }
-  }
+  
 
   /* Tirar as notificações pelo ELEMENTO no ecrã.
    *
@@ -2833,35 +2835,7 @@
    * Um observador na árvore do documento apanha-as à chegada. */
   let obsNotificacoes = null;
 
-  function vigiarEcra() {
-    if (obsNotificacoes) return;
-    try {
-      obsNotificacoes = new MutationObserver((mudancas) => {
-        for (const m of mudancas) {
-          for (const no of (m.addedNodes || [])) {
-            if (!no || no.nodeType !== 1) continue;
-            const cls = String(no.className || '');
-            if (!/\bnotification\b/.test(cls)) continue;
-            if (/bot_?check|captcha/i.test(cls)) continue;   // esse fica
-            if (/notification_date/.test(cls)) continue;
-
-            /* ESCONDER, não remover — e só depois de o jogo a processar.
-             *
-             * Remover à chegada era o pior de tudo: a notificação saía do
-             * documento antes de o jogo lhe tocar, e é ao processá-las que ele
-             * ACTUALIZA OS CONTADORES de tropas.
-             *
-             * O atraso dá ao jogo tempo de fazer o que tem a fazer; a seguir
-             * a notificação desaparece da vista. */
-            setTimeout(() => {
-              try { if (no.style) no.style.display = 'none'; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
-            }, 1500);
-          }
-        }
-      });
-      obsNotificacoes.observe(document.body, { childList: true, subtree: true });
-    } catch (e) { seErroDeCodigo(e, 'núcleo'); }
-  }
+  
 
   /* Apagar TODAS as notificações no servidor — UM pedido só.
    *
@@ -3015,82 +2989,16 @@
   const TIPOS_A_LIMPAR = ['resourcetransport', 'newreport', 'newaward'];
   const APAGAR_POR_VEZ = 20;
 
-  async function apagarUma(id) {
-    try {
-      const t = uw.Game.townId;
-      const url = uw.location.origin + '/game/notify?town_id=' + Number(t)
-        + '&action=delete&h=' + uw.Game.csrfToken;
-      const r = await uw.fetch(url, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
-          'x-requested-with': 'XMLHttpRequest',
-        },
-        credentials: 'include',
-        body: 'json=' + encodeURIComponent(JSON.stringify({
-          id: Number(id), town_id: Number(t), nl_init: true,
-        })),
-      });
-      if (r.status === 429) return '429';
-      return r.ok;
-    } catch (e) { return false; }
-  }
+  
 
   /* Recolher os IDs das notificações que se podem apagar. */
-  function idsParaApagar() {
-    const out = [];
-    try {
-      const st = uw.GrepoNotificationStack;
-      if (!st || typeof st.loop !== 'function') return out;
-      st.loop((el, notif) => {
-        try {
-          const tipo = String((typeof notif.getType === 'function' ? notif.getType() : '') || '').toLowerCase();
-          if (TIPOS_A_LIMPAR.indexOf(tipo) < 0) return;
-          const opt = (typeof notif.getOpt === 'function') ? notif.getOpt() : null;
-          const id = opt && opt.id;
-          if (id) out.push(Number(id));
-        } catch (e) { seErroDeCodigo(e, 'núcleo'); }
-      });
-    } catch (e) { seErroDeCodigo(e, 'núcleo'); }
-    return out;
-  }
+  
 
   /* NOTA: a função abaixo não é chamada por ninguém. Fica como está, mas a
    * chave tinha de existir — sem ela rebentava à primeira linha. */
   const ULTIMO_APAGAR_KEY = 'grepoMaestro_ultimoApagarNotif_v1';
 
-  async function apagarTodasNoServidorSeHoras() {
-    try {
-      /* De 5 em 5 minutos: com 20 por vez, 449 notificações ficam limpas em
-       * cerca de 2 horas — sem nunca chegar perto do limite do servidor. */
-      const ultimo = Number(localStorage.getItem(ULTIMO_APAGAR_KEY)) || 0;
-      if (Date.now() - ultimo < 5 * 60 * 1000) return;
-
-      /* NUNCA apagar com uma verificação de bot pendente. */
-      if (haVerificacaoDeBot()) {
-        log('core', '⚠️ Há uma verificação de bot por responder — não apago as notificações.');
-        return;
-      }
-
-      localStorage.setItem(ULTIMO_APAGAR_KEY, String(Date.now()));
-
-      /* Nada para apagar: não gastar o pedido. */
-      const ids = idsParaApagar();
-      if (!ids.length) return;
-
-      /* `delete_all` — UM pedido apaga tudo.
-       *
-       * Confirmado no jogo: as espadas vermelhas do aviso de ataque
-       * CONTINUAM depois deste pedido. Não são notificações — são outra coisa
-       * na interface. Por isso o `delete_all` é seguro.
-       *
-       * (A tentativa anterior de apagar uma a uma dava 429 com centenas
-       * acumuladas; esta faz tudo de uma vez.) */
-      const r = await apagarTodasNoServidor();
-      if (r.ok) log('core', `Notificações: apaguei ${ids.length} no servidor.`);
-      else log('core', `Notificações: não consegui apagar (${r.msg}).`);
-    } catch (e) { seErroDeCodigo(e, 'núcleo'); }
-  }
+  
 
   function resumoPeriodico() {
     if (Date.now() - ultimoResumo < RESUMO_CADA_MS) return;
@@ -3120,7 +3028,7 @@
     /* QUANDO É QUE ESTE MÓDULO DEVE CORRER A SEGUIR.
      *
      * Arranque escalonado: atraso próprio do módulo mais um desvio próprio da
-     * conta, senão as 21 contas arrancavam na mesma janela ao reiniciar a VPS
+     * conta, senão as contas arrancavam todas na mesma janela ao reiniciar a VPS
      * e faziam um pico de pedidos.
      *
      * E respeita-se o intervalo do módulo entre carregamentos: se ele correu
@@ -3330,82 +3238,180 @@
 
   function buildPanel() {
     if (document.getElementById('maestro-panel')) return;
+    /* ============ O BOTÃO QUE ABRE O PAINEL ==============================
+     *
+     * Era uma barra com gradiente e sombra, encostada por baixo do Porto, com
+     * a posição calculada a partir das etiquetas do jogo. Adivinhar a posição
+     * falha: muda com a resolução, com o idioma e com o que o jogo tiver
+     * aberto naquele momento.
+     *
+     * Agora: arrasta-se para onde quiseres e o sítio fica guardado, como já
+     * acontece com o painel. A posição calculada passa a ser só o ponto de
+     * partida de quem nunca lhe mexeu.
+     *
+     * E deixa de ser só uma porta: o ponto ao lado do nome diz o estado sem
+     * ser preciso abrir nada — verde a correr, cinzento parado, âmbar quando
+     * o servidor está a travar, vermelho quando há erros de código ou
+     * verificação de bot. */
+    const BTN_POS_KEY = 'maestro_btn_pos_v1';
     const btn = document.createElement('div');
     btn.id = 'maestro-btn';
-    /* Barra com o nome, encostada à direita por baixo dos indicadores de
-     * tropas do jogo (quartel/porto). Antes era um "M" solto que não dizia
-     * nada e ficava a meio da coluna. */
-    btn.textContent = 'MAESTRO';
+    btn.innerHTML = '<span id="maestro-btn-luz"></span><span>MAESTRO</span>';
     btn.style.cssText = [
       'position:fixed', 'right:6px', 'top:340px', 'z-index:99999',
-      'background:linear-gradient(180deg,#1c2530,#141b24)',
-      'border:1px solid #3a4757', 'border-radius:5px',
-      'color:#d8a33f', 'font:600 11px/1 system-ui,-apple-system,"Segoe UI",sans-serif',
-      'letter-spacing:.16em', 'text-align:center',
-      'padding:7px 14px', 'cursor:pointer', 'user-select:none',
-      'box-shadow:0 2px 8px rgba(0,0,0,.45)',
+      'display:flex', 'align-items:center', 'gap:7px',
+      'background:#161d26', 'border:1px solid #28323f', 'border-radius:6px',
+      'color:#8493a5', 'font:600 11px/1 system-ui,-apple-system,"Segoe UI",sans-serif',
+      'letter-spacing:.16em', 'padding:7px 12px',
+      'cursor:grab', 'user-select:none',
       'transition:border-color .12s,color .12s',
     ].join(';');
-    btn.title = 'Abrir ou fechar o Maestro';
-    btn.onmouseover = () => { btn.style.borderColor = '#d8a33f'; btn.style.color = '#f0c76a'; };
-    btn.onmouseout = () => { btn.style.borderColor = '#3a4757'; btn.style.color = '#d8a33f'; };
+    btn.title = 'Abrir o Maestro (arrasta para mudar de sítio)';
 
-    /* Encostar por baixo do último painel lateral do jogo (Porto/Quartel), em
-     * vez de uma posição fixa que pode calhar mal noutra resolução. */
-    /* Encostar por baixo do painel do PORTO, que é o último da coluna
-     * lateral direita.
-     *
-     * Medir a coluna inteira não funcionava: o #ui_box ocupa o ecrã todo, e
-     * o cálculo dava sempre o fundo da janela. O que identifica o sítio é a
-     * etiqueta "Porto" — o seu contentor termina exactamente onde queremos
-     * (medido no jogo: fundo aos 479 px). */
-    const encostarAoLado = () => {
+    const luz = btn.querySelector('#maestro-btn-luz');
+    luz.style.cssText = 'width:7px;height:7px;border-radius:50%;background:#5b6878;flex:0 0 auto';
+
+    function pintarLuz() {
       try {
-        let fundo = 0;
-        document.querySelectorAll('.bottom_link, .nav').forEach((el) => {
-          const txt = (el.textContent || '').trim();
-          if (!/^(porto|harbor|hafen|puerto)$/i.test(txt)) return;
-          const r = el.getBoundingClientRect();
-          // Sem condição de largura: o jogo tem largura fixa e numa janela
-          // larga o painel fica bem à esquerda do meio do ecrã (medido: x=1168
-          // numa janela de 2551).
-          if (r.height > 5) fundo = Math.max(fundo, r.bottom);
-        });
+        let cor = '#5b6878';                       // parado
+        const algum = MODULES.some((m) => modState[m.id] && modState[m.id].ativo);
+        if (algum) cor = '#4fc7a1';                // a correr
+        if (servidorTravado()) cor = '#d8a33f';    // o servidor está a limitar
+        try {
+          if ((uw.__maestroErrosDeCodigo && uw.__maestroErrosDeCodigo() || []).length) cor = '#d9705f';
+        } catch (e) {}
+        try { if (haVerificacaoDeBot && haVerificacaoDeBot()) cor = '#d9705f'; } catch (e) {}
+        luz.style.background = cor;
+        btn.style.color = (cor === '#5b6878') ? '#5b6878' : '#dce4ee';
+      } catch (e) {}
+    }
+    setInterval(pintarLuz, 5000);
+    setTimeout(pintarLuz, 1200);
 
-        // sem a etiqueta (idioma diferente?), usar o quartel como referência
-        if (!fundo) {
-          document.querySelectorAll('.bottom_link, .nav').forEach((el) => {
-            const txt = (el.textContent || '').trim();
-            if (!/^(quartel|barracks|kaserne|cuartel)$/i.test(txt)) return;
-            const r = el.getBoundingClientRect();
-            if (r.height > 5) fundo = Math.max(fundo, r.bottom + 90);
-          });
-        }
+    btn.onmouseover = () => { btn.style.borderColor = '#d8a33f'; };
+    btn.onmouseout = () => { btn.style.borderColor = '#28323f'; };
 
-        if (fundo > 60 && fundo < window.innerHeight - 40) {
-          btn.style.top = Math.round(fundo + 12) + 'px';
+    /* ARRASTAR. O clique só abre o painel se o rato não se tiver mexido —
+     * senão arrastar o botão abria o painel de cada vez. */
+    let aArrastar = false, moveu = false, dx = 0, dy = 0;
 
-          /* Alinhar também na horizontal com a coluna do jogo: numa janela
-           * larga, o jogo fica centrado e a barra colada à direita ficaria
-           * longe dele. */
-          let dir = null;
-          document.querySelectorAll('.bottom_link, .nav').forEach((el) => {
-            const txt = (el.textContent || '').trim();
-            if (!/^(porto|quartel|harbor|barracks)$/i.test(txt)) return;
-            const r = el.getBoundingClientRect();
-            if (r.width > 20) dir = Math.max(dir || 0, r.right);
-          });
-          if (dir && dir < window.innerWidth - 20) {
-            btn.style.right = Math.round(window.innerWidth - dir) + 'px';
-          }
-        }
-      } catch (e) { seErroDeCodigo(e, 'núcleo'); }
+    function guardarSitio() {
+      try {
+        localStorage.setItem(BTN_POS_KEY, JSON.stringify({
+          left: parseInt(btn.style.left, 10), top: parseInt(btn.style.top, 10),
+        }));
+      } catch (e) {}
+    }
+
+    btn.addEventListener('mousedown', (ev) => {
+      aArrastar = true; moveu = false;
+      const r = btn.getBoundingClientRect();
+      dx = ev.clientX - r.left; dy = ev.clientY - r.top;
+      btn.style.cursor = 'grabbing';
+      ev.preventDefault();
+    });
+
+    document.addEventListener('mousemove', (ev) => {
+      if (!aArrastar) return;
+      moveu = true;
+      const x = Math.max(0, Math.min(window.innerWidth - btn.offsetWidth, ev.clientX - dx));
+      const y = Math.max(0, Math.min(window.innerHeight - btn.offsetHeight, ev.clientY - dy));
+      btn.style.left = Math.round(x) + 'px';
+      btn.style.top = Math.round(y) + 'px';
+      btn.style.right = 'auto';
+    });
+
+    document.addEventListener('mouseup', () => {
+      if (!aArrastar) return;
+      aArrastar = false;
+      btn.style.cursor = 'grab';
+      if (moveu) guardarSitio();
+    });
+
+    btn.onclick = () => {
+      if (moveu) { moveu = false; return; }      // foi arrasto, não clique
+      const pn = document.getElementById('maestro-panel');
+      if (pn) pn.style.display = pn.style.display === 'none' ? 'block' : 'none';
     };
 
-    setTimeout(encostarAoLado, 1500);
-    setTimeout(encostarAoLado, 5000);
-    try { window.addEventListener('resize', encostarAoLado); } catch (e) { seErroDeCodigo(e, 'núcleo'); }
-    btn.onclick = async () => { const p = document.getElementById('maestro-panel'); p.style.display = p.style.display === 'none' ? 'block' : 'none'; };
+    /* Sítio guardado manda. Só quem nunca lhe mexeu é que apanha a posição
+     * calculada a partir da coluna do jogo. */
+    let sitio = null;
+    try { sitio = JSON.parse(localStorage.getItem(BTN_POS_KEY) || 'null'); } catch (e) {}
+
+    if (sitio && Number.isFinite(sitio.left) && Number.isFinite(sitio.top)) {
+      btn.style.left = Math.max(0, Math.min(window.innerWidth - 120, sitio.left)) + 'px';
+      btn.style.top = Math.max(0, Math.min(window.innerHeight - 40, sitio.top)) + 'px';
+      btn.style.right = 'auto';
+    } else {
+      /* Encostar por baixo do painel do PORTO, que é o último da coluna
+       * lateral direita.
+       *
+       * Medir a coluna inteira não funcionava: o #ui_box ocupa o ecrã todo, e
+       * o cálculo dava sempre o fundo da janela. O que identifica o sítio é a
+       * etiqueta "Porto" — o seu contentor termina exactamente onde queremos
+       * (medido no jogo: fundo aos 479 px). */
+      const encostarAoLado = () => {
+        try {
+          let fundo = 0;
+          document.querySelectorAll('.bottom_link, .nav').forEach((el) => {
+            const txt = (el.textContent || '').trim();
+            if (!/^(porto|harbor|hafen|puerto)$/i.test(txt)) return;
+            const r = el.getBoundingClientRect();
+            // Sem condição de largura: o jogo tem largura fixa e numa janela
+            // larga o painel fica bem à esquerda do meio do ecrã (medido: x=1168
+            // numa janela de 2551).
+            if (r.height > 5) fundo = Math.max(fundo, r.bottom);
+          });
+
+          // sem a etiqueta (idioma diferente?), usar o quartel como referência
+          if (!fundo) {
+            document.querySelectorAll('.bottom_link, .nav').forEach((el) => {
+              const txt = (el.textContent || '').trim();
+              if (!/^(quartel|barracks|kaserne|cuartel)$/i.test(txt)) return;
+              const r = el.getBoundingClientRect();
+              if (r.height > 5) fundo = Math.max(fundo, r.bottom + 90);
+            });
+          }
+
+          if (fundo > 60 && fundo < window.innerHeight - 40) {
+            btn.style.top = Math.round(fundo + 12) + 'px';
+
+            /* Alinhar também na horizontal com a coluna do jogo: numa janela
+             * larga, o jogo fica centrado e a barra colada à direita ficaria
+             * longe dele. */
+            let dir = null;
+            document.querySelectorAll('.bottom_link, .nav').forEach((el) => {
+              const txt = (el.textContent || '').trim();
+              if (!/^(porto|quartel|harbor|barracks)$/i.test(txt)) return;
+              const r = el.getBoundingClientRect();
+              if (r.width > 20) dir = Math.max(dir || 0, r.right);
+            });
+            if (dir && dir < window.innerWidth - 20) {
+              btn.style.right = Math.round(window.innerWidth - dir) + 'px';
+            }
+          }
+        } catch (e) { seErroDeCodigo(e, 'núcleo'); }
+      };
+
+      setTimeout(encostarAoLado, 1500);
+      setTimeout(encostarAoLado, 5000);
+      try { window.addEventListener('resize', encostarAoLado); } catch (e) {}
+    }
+
+    /* Nunca deixar o botão fora do ecrã depois de mudar a janela. */
+    try {
+      window.addEventListener('resize', () => {
+        const r = btn.getBoundingClientRect();
+        if (r.left > window.innerWidth - 40 || r.top > window.innerHeight - 20) {
+          btn.style.left = Math.max(0, window.innerWidth - 140) + 'px';
+          btn.style.top = Math.max(0, window.innerHeight - 60) + 'px';
+          btn.style.right = 'auto';
+          guardarSitio();
+        }
+      });
+    } catch (e) {}
+
     document.body.appendChild(btn);
 
     const p = document.createElement('div');
@@ -3683,6 +3689,45 @@
           font-size:9px; letter-spacing:.14em; text-transform:uppercase;
           color:var(--mFaint); font-weight:600;
         }
+
+        /* CASCA DE DUAS COLUNAS.
+         *
+         * O menu antigo era de entrar e sair: escolhias um módulo, ele ocupava
+         * tudo, voltavas atrás. Com 23 módulos isso é muito ir e vir. A lista
+         * passa para a esquerda e fica sempre à vista; o conteúdo troca à
+         * direita. */
+        #maestro-panel .mDuas{ display:flex; align-items:stretch; gap:0; }
+        #maestro-panel .mRail{
+          width:168px; flex:0 0 168px; border-right:1px solid var(--mLine);
+          padding:8px 0 10px; margin-right:12px;
+        }
+        #maestro-panel .mRailGrupo{
+          font-size:9px; letter-spacing:.14em; text-transform:uppercase;
+          color:var(--mFaint); font-weight:600; padding:13px 11px 4px;
+          display:flex; align-items:center; gap:6px;
+        }
+        #maestro-panel .mRailItem{
+          display:flex; align-items:center; gap:8px; cursor:pointer;
+          padding:5px 11px; font-size:13px; color:var(--mTxt);
+          border-left:2px solid transparent;
+        }
+        #maestro-panel .mRailItem:hover{ background:var(--mSurf); }
+        #maestro-panel .mRailItem.mSel{
+          background:var(--mSurf2); border-left-color:var(--mBrass);
+        }
+        #maestro-panel .mRailItem.mApagado{ color:var(--mDim); }
+        #maestro-panel .mPonto{
+          width:6px; height:6px; border-radius:50%; flex:0 0 auto;
+          background:var(--mFaint);
+        }
+        #maestro-panel .mRailItem.mLigado .mPonto{ background:var(--mLive); }
+        #maestro-panel .mConteudo{ flex:1; min-width:0; padding-top:4px; }
+        #maestro-panel .mNums{
+          display:grid; grid-template-columns:repeat(3,minmax(0,1fr));
+          gap:8px; margin-bottom:10px;
+        }
+        #maestro-panel .mNum{ background:var(--mSurf); border-radius:6px; padding:9px 10px; }
+        #maestro-panel .mNumV{ font-size:21px; font-weight:600; margin-top:1px; }
 
         #maestro-panel .mCab{
           display:flex; align-items:baseline; gap:8px; cursor:move; user-select:none;
@@ -4318,109 +4363,20 @@
       return m.autoStart !== false;
     };
 
-    /* ---------------- vista: MENU de ícones ---------------- */
-    function desenharMenu() {
-      const jaVistos = new Set();
-      const blocos = [];
-
-      for (const g of GRUPOS) {
-        const mods = disponiveis.filter((m) => g.ids.indexOf(m.id) >= 0);
-        mods.forEach((m) => jaVistos.add(m.id));
-        if (mods.length) blocos.push({ nome: g.nome, mods });
-      }
-      const restantes = disponiveis.filter((m) => !jaVistos.has(m.id));
-      if (restantes.length) blocos.push({ nome: 'Outros', mods: restantes });
-
-      modsBox.innerHTML = blocos.map((g) => {
-        const on = g.mods.filter(estaAtivo).length;
-        return `
-        <div class="mGrupo">
-          <div class="mGrupoCab">
-            <span class="mEtiq">${g.nome} <span style="color:var(--mDim)">${on}/${g.mods.length}</span></span>
-            <span style="font-size:10px">
-              <a href="#" data-grupo-on="${g.nome}">ligar todos</a>
-              <span style="color:var(--mFaint);margin:0 3px">·</span>
-              <a href="#" data-grupo-off="${g.nome}">desligar</a>
-            </span>
-          </div>
-          <div class="mGrelha">
-            ${g.mods.map((m) => {
-              const ic = ICONES[m.id] || { icone: '⚙️', curto: m.nome };
-              const ativo = estaAtivo(m);
-              return `<div data-abrir="${m.id}" title="${m.nome}" class="mCartao ${ativo ? 'mOn' : 'mOff'}">
-                <div class="mIcone">${ic.icone}</div>
-                <div class="mRotulo">${ic.curto}</div>
-                <input type="checkbox" class="mVisto" data-do-grupo="${g.nome}"
-                  id="maestro-ativo-${m.id}"${ativo ? ' checked' : ''} title="ligar ou desligar">
-              </div>`;
-            }).join('')}
-          </div>
-        </div>`;
-      }).join('');
-
-      // abrir um módulo
-      modsBox.querySelectorAll('[data-abrir]').forEach((el) => {
-        el.addEventListener('click', (ev) => {
-          if (ev.target && ev.target.tagName === 'INPUT') return;   // o visto não abre
-          moduloAberto = el.getAttribute('data-abrir');
-          desenhar();
-        });
-      });
-
-      // ligar/desligar individual
-      modsBox.querySelectorAll('[id^="maestro-ativo-"]').forEach((el) => {
-        el.addEventListener('change', (e) => {
-          const id = el.id.replace('maestro-ativo-', '');
-          const mod = MODULES.find((x) => x.id === id);
-          // criar o estado se ainda não existir (maestro parado)
-          if (!modState[id]) modState[id] = { ativo: e.target.checked, proximaExec: Date.now(), aCorrer: false };
-          modState[id].ativo = e.target.checked;
-          const esc = lerEscolhas() || { perfil: 'main', ativos: {} };
-          esc.ativos[id] = e.target.checked;
-          guardarEscolhas(esc);
-          const st = modState[id];
-          log('core', e.target.checked
-            ? `▶ ${mod ? mod.nome : id}: ligado.`
-            : `⏹ ${mod ? mod.nome : id}: desligado${st && st.aCorrer ? ' — vai parar já' : ''}.`);
-          desenharMenu();
-        });
-      });
-
-      // grupos
-      const mexer = (nomeGrupo, ligar) => {
-        const g = blocos.find((x) => x.nome === nomeGrupo);
-        if (!g) return;
-        const esc = lerEscolhas() || { perfil: 'main', ativos: {} };
-        let n = 0;
-        for (const m of g.mods) {
-          if (estaAtivo(m) === ligar) continue;
-          if (!modState[m.id]) modState[m.id] = { ativo: ligar, proximaExec: Date.now(), aCorrer: false };
-          modState[m.id].ativo = ligar;
-          esc.ativos[m.id] = ligar;
-          n++;
-        }
-        guardarEscolhas(esc);
-        log('core', `Grupo "${nomeGrupo}": ${n} módulo(s) ${ligar ? 'ligados' : 'desligados'}.`);
-        desenharMenu();
-      };
-      modsBox.querySelectorAll('[data-grupo-on]').forEach((a) => {
-        a.onclick = (e) => { e.preventDefault(); mexer(a.getAttribute('data-grupo-on'), true); };
-      });
-      modsBox.querySelectorAll('[data-grupo-off]').forEach((a) => {
-        a.onclick = (e) => { e.preventDefault(); mexer(a.getAttribute('data-grupo-off'), false); };
-      });
-    }
+    /* ---------------- vista: UM módulo, à direita ---------------- */
+    
 
     /* ---------------- vista: UM módulo ---------------- */
     function desenharModulo(id) {
       const m = disponiveis.find((x) => x.id === id);
-      if (!m) { moduloAberto = ''; desenharMenu(); return; }
+      if (!m) { moduloAberto = ''; desenhar(); return; }
       const ic = ICONES[m.id] || { icone: '⚙️' };
       const ativo = estaAtivo(m);
 
-      modsBox.innerHTML = `
+      const caixaDir = modsBox.querySelector('#mConteudo') || modsBox;
+      caixaDir.innerHTML = `
         <div class="mModCab">
-          <button id="maestro-voltar" style="padding:3px 9px">‹ Módulos</button>
+          <button id="maestro-voltar" style="padding:3px 9px">‹ Hoje</button>
           <span style="font-size:16px">${ic.icone}</span>
           <b style="flex:1;font-size:13px">${m.nome}</b>
           <label style="font-size:11px;display:flex;align-items:center;gap:5px;cursor:pointer">
@@ -4496,9 +4452,170 @@
       }
     }
 
+    /* A LISTA DA ESQUERDA.
+     *
+     * Mostra os módulos agrupados, com um ponto a dizer se estão ligados, e
+     * fica sempre à vista. Trocar de módulo deixa de ser voltar ao menu. */
+    function desenharRail(blocos) {
+      const rail = modsBox.querySelector('#mRail');
+      if (!rail) return;
+
+      const item = (id, rotulo, ligado, extra) => `
+        <div class="mRailItem ${moduloAberto === id ? 'mSel' : ''} ${ligado ? 'mLigado' : 'mApagado'}"
+             data-ir="${id}" title="${rotulo}">
+          <span class="mPonto"></span>
+          <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${rotulo}</span>
+          ${extra || ''}
+        </div>`;
+
+      rail.innerHTML = `
+        <div class="mRailItem ${moduloAberto === '' ? 'mSel' : ''} mLigado" data-ir="">
+          <span class="mPonto"></span><span style="flex:1">Hoje</span>
+        </div>
+        ${blocos.map((g) => {
+          const on = g.mods.filter(estaAtivo).length;
+          return `
+          <div class="mRailGrupo">
+            <span style="flex:1">${g.nome}</span>
+            <span style="color:var(--mDim)">${on}/${g.mods.length}</span>
+            <a href="#" data-grupo-off="${g.nome}" title="desligar todos"
+               style="font-size:9px;color:var(--mFaint)">off</a>
+          </div>
+          ${g.mods.map((m) => item(m.id, m.nome, estaAtivo(m))).join('')}`;
+        }).join('')}`;
+
+      rail.querySelectorAll('[data-ir]').forEach((el) => {
+        el.addEventListener('click', () => {
+          moduloAberto = el.getAttribute('data-ir');
+          desenhar();
+        });
+      });
+      rail.querySelectorAll('[data-grupo-off]').forEach((a2) => {
+        a2.addEventListener('click', (ev) => {
+          ev.preventDefault(); ev.stopPropagation();
+          const g = blocos.find((x) => x.nome === a2.getAttribute('data-grupo-off'));
+          if (!g) return;
+          for (const m of g.mods) {
+            if (!estaAtivo(m)) continue;
+            if (!modState[m.id]) modState[m.id] = { ativo: false, proximaExec: Date.now(), aCorrer: false };
+            modState[m.id].ativo = false;
+            const esc = lerEscolhas() || { perfil: 'main', ativos: {} };
+            esc.ativos[m.id] = false; guardarEscolhas(esc);
+          }
+          log('core', `Grupo "${g.nome}": desligado.`);
+          desenhar();
+        });
+      });
+    }
+
+    /* A PÁGINA INICIAL.
+     *
+     * Responde às três perguntas de todos os dias: o que corre agora, como
+     * está a frota, e o que precisa de mim. Antes, nada disto se via sem
+     * correr comandos na consola. */
+    function desenharHoje() {
+      const caixa = modsBox.querySelector('#mConteudo');
+      if (!caixa) return;
+
+      const ligados = disponiveis.filter(estaAtivo).length;
+      let travoes = 0;
+      try { travoes = Number(uw.__maestroTravoes && uw.__maestroTravoes()) || 0; } catch (e) {}
+      let erros = 0;
+      try { erros = (uw.__maestroErrosDeCodigo && uw.__maestroErrosDeCodigo() || []).length; } catch (e) {}
+
+      /* O que vem a seguir, pelos módulos que estão à espera da sua vez. */
+      const proximos = disponiveis
+        .filter((m) => modState[m.id] && modState[m.id].ativo && modState[m.id].proximaExec)
+        .map((m) => ({ nome: m.nome, falta: Math.round((modState[m.id].proximaExec - Date.now()) / 1000) }))
+        .sort((x, y) => x.falta - y.falta)
+        .slice(0, 4);
+
+      const aCorrer = disponiveis.filter((m) => modState[m.id] && modState[m.id].aCorrer)
+        .map((m) => m.nome);
+
+      caixa.innerHTML = `
+        <div class="mNums">
+          <div class="mNum">
+            <div class="mEtiq">módulos ligados</div>
+            <div class="mNumV">${ligados}<span style="font-size:12px;color:var(--mFaint)">/${disponiveis.length}</span></div>
+          </div>
+          <div class="mNum">
+            <div class="mEtiq">erros de código</div>
+            <div class="mNumV" style="color:${erros ? 'var(--mStop)' : 'var(--mLive)'}">${erros}</div>
+          </div>
+          <div class="mNum">
+            <div class="mEtiq">429 na última hora</div>
+            <div class="mNumV" style="color:${travoes ? 'var(--mBrass)' : 'inherit'}">${travoes}</div>
+          </div>
+        </div>
+
+        <div class="mCaixa" style="margin-bottom:10px">
+          <div class="mEtiq" style="margin-bottom:5px">a tocar agora</div>
+          <div style="font-size:12px">${aCorrer.length ? aCorrer.join(', ') : 'nada neste instante'}</div>
+          <div class="mEtiq" style="margin:9px 0 5px">a seguir</div>
+          ${proximos.length
+            ? proximos.map((x) => `<div style="font-size:12px;display:flex;gap:8px">
+                <span style="flex:1">${x.nome}</span>
+                <span style="color:var(--mDim)">${emBreve(x.falta)}</span></div>`).join('')
+            : '<div style="font-size:12px;color:var(--mDim)">o Maestro está parado</div>'}
+        </div>
+
+        <div id="mHojeFrota" class="mCaixa">
+          <div class="mEtiq" style="margin-bottom:5px">frota</div>
+          <div style="font-size:12px;color:var(--mDim)">a ler…</div>
+        </div>`;
+
+      /* A frota vem do Firebase e demora — desenha-se quando chegar, para a
+       * página aparecer logo. */
+      (async () => {
+        const alvo = modsBox.querySelector('#mHojeFrota');
+        if (!alvo) return;
+        try {
+          const fb = uw.__maestroFb;
+          if (!fb || !fb.url || !fb.url()) {
+            alvo.innerHTML = '<div class="mEtiq" style="margin-bottom:5px">frota</div>'
+              + '<div style="font-size:12px;color:var(--mDim)">sem Firebase configurado</div>';
+            return;
+          }
+          const d = await fb.ler(`frota/${WORLD}`) || {};
+          const contas = Object.keys(d).map((k) => d[k]).filter((x) => x && x.conta);
+          const agora = Math.floor(Date.now() / 1000);
+          const caladas = contas.filter((x) => agora - Number(x.quando || 0) > 1200);
+          const velhas = contas.filter((x) => String(x.versao) !== String(MAESTRO_VERSAO));
+          const comErro = contas.filter((x) => (x.errosCodigo || []).length);
+          const linha = (cor, txt) => `<div style="font-size:12px;color:${cor}">${txt}</div>`;
+          alvo.innerHTML = '<div class="mEtiq" style="margin-bottom:5px">frota</div>'
+            + linha('var(--mTxt)', `${contas.length} conta(s) a dar sinal`)
+            + (caladas.length ? linha('var(--mStop)', `${caladas.length} calada(s) há mais de 20 min`) : '')
+            + (velhas.length ? linha('var(--mBrass)', `${velhas.length} numa versão antiga`) : '')
+            + (comErro.length ? linha('var(--mStop)', `${comErro.length} com erros de código`) : '')
+            + (!caladas.length && !velhas.length && !comErro.length
+              ? linha('var(--mLive)', 'todas alinhadas') : '');
+        } catch (e) {
+          alvo.innerHTML = '<div class="mEtiq" style="margin-bottom:5px">frota</div>'
+            + '<div style="font-size:12px;color:var(--mDim)">não consegui ler</div>';
+        }
+      })();
+    }
+
     function desenhar() {
+      const jaVistos = new Set();
+      const blocos = [];
+      for (const g of GRUPOS) {
+        const mods = disponiveis.filter((m) => g.ids.indexOf(m.id) >= 0);
+        mods.forEach((m) => jaVistos.add(m.id));
+        if (mods.length) blocos.push({ nome: g.nome, mods });
+      }
+      const restantes = disponiveis.filter((m) => !jaVistos.has(m.id));
+      if (restantes.length) blocos.push({ nome: 'Outros', mods: restantes });
+
+      if (!modsBox.querySelector('#mRail')) {
+        modsBox.innerHTML = '<div class="mDuas"><div id="mRail" class="mRail"></div>'
+          + '<div id="mConteudo" class="mConteudo"></div></div>';
+      }
+      desenharRail(blocos);
       if (moduloAberto) desenharModulo(moduloAberto);
-      else desenharMenu();
+      else desenharHoje();
     }
 
     /* Guardar a referência: o perfil chega DEPOIS do painel estar desenhado,
@@ -5974,7 +6091,7 @@ function makeConstrucaoModule(opts) {
     } catch (e) { seErroDeCodigo(e, 'Construcao'); }
     return tpl;
   }
-  function templateVazio() { return { modo: 'blocos', blocos: [novoBlocoVazio()] }; }
+  
 
   function esc(s) { return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
 
@@ -6131,7 +6248,7 @@ function makeConstrucaoModule(opts) {
     const tpl = templatesEdicao[grupoSelecionado];
 
     let html = `
-      <div style="font-size:11px;opacity:.85;margin-bottom:4px">Configuração por grupo — aplica a regra a todas as cidades do grupo.</div>
+      <div style="font-size:13px;opacity:.85;margin-bottom:4px">Configuração por grupo — aplica a regra a todas as cidades do grupo.</div>
       <div style="display:flex;gap:4px;align-items:center;margin-bottom:6px;flex-wrap:wrap">
         <select id="con-grupo" style="flex:1;min-width:90px">
           ${grupos.map((g) => `<option value="${esc(g)}"${g === grupoSelecionado ? ' selected' : ''}>${esc(g)}${templatesEdicao[g] ? ' ✓' : ''}</option>`).join('')}
@@ -6140,7 +6257,7 @@ function makeConstrucaoModule(opts) {
           </optgroup>` : ''}
         </select>
         <button id="con-criar" style="cursor:pointer">Ativar grupo</button>
-        <button id="con-apagar" style="cursor:pointer;color:#f88">Apagar</button>
+        <button id="con-apagar" style="cursor:pointer;color:var(--mStop)">Apagar</button>
       </div>
 
       ${(() => {
@@ -6148,7 +6265,7 @@ function makeConstrucaoModule(opts) {
          * e refazer tudo do zero é trabalho a mais. Copia-se e ajusta-se. */
         const outros = Object.keys(templatesEdicao).filter((g) => g !== grupoSelecionado);
         if (!outros.length) return '';
-        return `<div style="display:flex;gap:4px;align-items:center;margin-bottom:6px;font-size:11px">
+        return `<div style="display:flex;gap:4px;align-items:center;margin-bottom:6px;font-size:13px">
           <span style="opacity:.75;flex:0 0 auto">copiar de</span>
           <select id="con-copiar-de" style="flex:1">
             <option value="">— escolher grupo —</option>
@@ -6160,8 +6277,8 @@ function makeConstrucaoModule(opts) {
 
       <div style="display:flex;gap:4px;align-items:center;margin-bottom:6px">
         <input type="text" id="con-busca" placeholder="procurar edifício (ex.: muralha)"
-          value="${esc(buscaEdificio || '')}" style="flex:1;font-size:11px">
-        ${buscaEdificio ? '<button id="con-busca-limpar" style="cursor:pointer;font-size:10px">limpar</button>' : ''}
+          value="${esc(buscaEdificio || '')}" style="flex:1;font-size:13px">
+        ${buscaEdificio ? '<button id="con-busca-limpar" style="cursor:pointer;font-size:12px">limpar</button>' : ''}
       </div>`;
 
     /* RESULTADO DA PESQUISA: onde é que este edifício aparece, e em que
@@ -6179,13 +6296,13 @@ function makeConstrucaoModule(opts) {
         });
       });
 
-      html += `<div style="background:#0d141c;padding:7px;border-radius:4px;margin-bottom:6px">
-        <b style="font-size:11px">${achados.length
+      html += `<div style="background:var(--mSurf);padding:7px;border-radius:4px;margin-bottom:6px">
+        <b style="font-size:13px">${achados.length
           ? `${achados.length} ocorrência(s) de "${esc(buscaEdificio)}"`
           : `"${esc(buscaEdificio)}" não está neste template`}</b>`;
 
       if (achados.length) {
-        html += `<table style="width:100%;border-collapse:collapse;margin-top:4px;font-size:11px">`;
+        html += `<table style="width:100%;border-collapse:collapse;margin-top:4px;font-size:13px">`;
         for (const a of achados) {
           html += `<tr>
             <td style="padding:2px 3px;opacity:.7;width:60px">
@@ -6198,12 +6315,12 @@ function makeConstrucaoModule(opts) {
             </td>
             <td style="padding:2px 3px;width:20px;text-align:right">
               <a href="#" data-act="edif-del" data-bi="${a.bi}" data-ii="${a.ii}"
-                 style="text-decoration:none;color:#f88">🗑️</a>
+                 style="text-decoration:none;color:var(--mStop)">🗑️</a>
             </td>
           </tr>`;
         }
         html += `</table>
-          <div style="opacity:.6;font-size:10px;margin-top:3px">
+          <div style="opacity:.6;font-size:12px;margin-top:3px">
             Alterar aqui é o mesmo que alterar no bloco.
           </div>`;
       }
@@ -6211,7 +6328,7 @@ function makeConstrucaoModule(opts) {
     }
 
     if (orfaos.includes(grupoSelecionado)) {
-      html += `<div style="font-size:11px;padding:6px;background:#2a1a10;border:1px solid #5a3a20;
+      html += `<div style="font-size:13px;padding:6px;background:#2a1a10;border:1px solid #5a3a20;
         border-radius:4px;margin-bottom:6px">
         ⚠ O grupo "<b>${esc(grupoSelecionado)}</b>" <b>não existe no jogo</b> — este template
         nunca é aplicado. Cria o grupo com este nome, ou carrega em "Apagar" para o remover.
@@ -6219,7 +6336,7 @@ function makeConstrucaoModule(opts) {
     }
 
     if (!tpl) {
-      html += `<div style="font-size:11px;opacity:.8;padding:6px;background:#0d141c;border-radius:4px">
+      html += `<div style="font-size:13px;opacity:.8;padding:6px;background:var(--mSurf);border-radius:4px">
         O grupo "<b>${esc(grupoSelecionado)}</b>" ainda não tem template. Carrega em "Ativar grupo" para o configurar.</div>`;
       container.innerHTML = html;
       ligarTopo(container);
@@ -6244,14 +6361,14 @@ function makeConstrucaoModule(opts) {
           <span>
             ${tpl.modo === 'blocos' ? `<a href="#" data-act="bloco-up" data-bi="${bi}" style="text-decoration:none">⬆️</a>
             <a href="#" data-act="bloco-down" data-bi="${bi}" style="text-decoration:none">⬇️</a>
-            <a href="#" data-act="bloco-del" data-bi="${bi}" style="text-decoration:none;color:#f88">🗑️</a>` : ''}
+            <a href="#" data-act="bloco-del" data-bi="${bi}" style="text-decoration:none;color:var(--mStop)">🗑️</a>` : ''}
           </span>
         </div>`;
       bloco.forEach((item, ii) => {
         html += `<div style="display:flex;gap:3px;align-items:center;margin-bottom:3px">
           <select data-act="edif" data-bi="${bi}" data-ii="${ii}" style="flex:1">${optionsEdificios(item.b)}</select>
           <input type="number" min="0" max="${MAX_LVL[item.b] || 45}" value="${item.alvo}" data-act="alvo" data-bi="${bi}" data-ii="${ii}" style="width:42px">
-          <a href="#" data-act="edif-del" data-bi="${bi}" data-ii="${ii}" style="text-decoration:none;color:#f88">🗑️</a>
+          <a href="#" data-act="edif-del" data-bi="${bi}" data-ii="${ii}" style="text-decoration:none;color:var(--mStop)">🗑️</a>
         </div>`;
         // Avisar se o template não chega aos níveis que este edifício exige.
         // O jogo expõe-nos em GameData.buildings[x].dependencies — por exemplo,
@@ -6260,7 +6377,7 @@ function makeConstrucaoModule(opts) {
         if (faltas.length) {
           // no modo com blocos, só contam os blocos anteriores + o atual
           const cadeia = resolverRequisitos(tpl, item.b, item.alvo, tpl.modo === 'blocos' ? bi + 1 : null);
-          html += `<div style="font-size:10px;color:#fc8;margin:-2px 0 4px 6px;line-height:1.4">
+          html += `<div style="font-size:12px;color:#fc8;margin:-2px 0 4px 6px;line-height:1.4">
             ⚠ ${NOMES_PT[item.b] || item.b} exige ${faltas.map((f) => `${NOMES_PT[f.edificio] || f.edificio} ${f.exigido}`).join(', ')}
             — o template só prevê ${faltas.map((f) => `${f.previsto}`).join(', ')}.
             ${cadeia.length ? `<a href="#" data-act="resolver" data-bi="${bi}" data-ii="${ii}"
@@ -6268,7 +6385,7 @@ function makeConstrucaoModule(opts) {
           </div>`;
         }
       });
-      html += `<button data-act="edif-add" data-bi="${bi}" style="cursor:pointer;font-size:11px;margin-top:2px">+ Adicionar edifício</button>
+      html += `<button data-act="edif-add" data-bi="${bi}" style="cursor:pointer;font-size:13px;margin-top:2px">+ Adicionar edifício</button>
       </div>`;
     });
 
@@ -6279,21 +6396,21 @@ function makeConstrucaoModule(opts) {
     }
     const faltam = porPreencher(tpl);
     if (faltam) {
-      html += `<div style="font-size:11px;color:#fc8;margin:4px 0">
+      html += `<div style="font-size:13px;color:#fc8;margin:4px 0">
         ${faltam} linha(s) sem edifício escolhido — vão ser ignoradas.</div>`;
     }
     html += `
-    <label style="display:block;font-size:11px;margin:4px 0">
+    <label style="display:block;font-size:13px;margin:4px 0">
       <input type="checkbox" id="con-gratis"${cfgGratis() ? ' checked' : ''}>
       <b>Concluir de graça nos últimos 5 min</b>
-      <span style="opacity:.6;font-size:10px">— adianta a obra e liberta a fila; não custa ouro</span>
+      <span style="opacity:.6;font-size:12px">— adianta a obra e liberta a fila; não custa ouro</span>
     </label>`;
 
     const cdP = cfgDemolir();
     html += `
-    <div style="background:#1a1410;border:1px solid #4a3a2a;border-radius:4px;padding:7px;margin:6px 0;font-size:11px">
+    <div style="background:#1a1410;border:1px solid #4a3a2a;border-radius:4px;padding:7px;margin:6px 0;font-size:13px">
       <b>🔨 Demolir o que estiver acima do template</b>
-      <div style="opacity:.65;font-size:10px;margin:2px 0 5px">
+      <div style="opacity:.65;font-size:12px;margin:2px 0 5px">
         Útil em cidades conquistadas. Exige o Senado no nível
         ${(() => { try { return Number(uw.GameData.min_main_level_for_tear_down) || 10; } catch (e) { return 10; } })()}.
       </div>
@@ -6301,13 +6418,13 @@ function makeConstrucaoModule(opts) {
         Baixar os que estão <b>acima do alvo</b> do template</label>
       <label style="display:block"><input type="checkbox" id="con-dem-fora"${cdP.foraDoTemplate ? ' checked' : ''}>
         Demolir os que <b>não estão no template</b>
-        <span style="color:#fc8;font-size:10px">— cuidado: um edifício esquecido no template é demolido</span></label>
+        <span style="color:#fc8;font-size:12px">— cuidado: um edifício esquecido no template é demolido</span></label>
       <label style="display:block"><input type="checkbox" id="con-dem-sim"${cdP.simular ? ' checked' : ''}>
-        só simular <span style="opacity:.6;font-size:10px">(demolir é irreversível)</span></label>
+        só simular <span style="opacity:.6;font-size:12px">(demolir é irreversível)</span></label>
       <div style="margin-top:4px">
         Nunca demolir: <input type="text" id="con-dem-poupar" value="${esc((cdP.poupar || []).join(', '))}"
           placeholder="thermal, tower" style="width:150px">
-        <div style="opacity:.6;font-size:10px">As Termas vêm aqui por omissão — dão 10% de população.</div>
+        <div style="opacity:.6;font-size:12px">As Termas vêm aqui por omissão — dão 10% de população.</div>
       </div>
     </div>`;
     /* Edifícios que o módulo desistiu de tentar, com botão para os repor.
@@ -6322,9 +6439,9 @@ function makeConstrucaoModule(opts) {
     }
     if (bloqueados.length) {
       html += `
-      <div style="background:#1a1410;border:1px solid #4a3a2a;border-radius:4px;padding:7px;margin:6px 0;font-size:11px">
+      <div style="background:#1a1410;border:1px solid #4a3a2a;border-radius:4px;padding:7px;margin:6px 0;font-size:13px">
         <b>⚠ ${bloqueados.length} edifício(s) que deixei de tentar</b>
-        <div style="opacity:.65;font-size:10px;margin:2px 0 4px">
+        <div style="opacity:.65;font-size:12px;margin:2px 0 4px">
           Não avançaram 10 rondas seguidas sem ser por falta de recursos. A causa mais
           comum é a população estar esgotada. Voltam a ser tentados ao fim de 6 h.
         </div>
@@ -6336,7 +6453,7 @@ function makeConstrucaoModule(opts) {
           }).join('')}
           ${bloqueados.length > 12 ? `<div style="opacity:.6">e mais ${bloqueados.length - 12}</div>` : ''}
         </div>
-        <button id="con-desbloquear" style="cursor:pointer;width:100%;margin-top:5px;font-size:11px">
+        <button id="con-desbloquear" style="cursor:pointer;width:100%;margin-top:5px;font-size:13px">
           Tentar todos outra vez
         </button>
       </div>`;
@@ -6350,7 +6467,7 @@ function makeConstrucaoModule(opts) {
         const doGrupo = lista.filter((b) => postos.indexOf(b) >= 0);
         if (doGrupo.length > 1) {
           html += `<div style="background:#2a1a10;border:1px solid #5a3a20;border-radius:4px;
-            padding:6px;margin-bottom:6px;font-size:11px">
+            padding:6px;margin-bottom:6px;font-size:13px">
             ⚠ Tens <b>${doGrupo.map((b) => esc(NOMES_PT[b] || b)).join(' e ')}</b> no template,
             e são ambos do <b>grupo ${gn}</b> — só se pode ter um deles por cidade.
             O segundo nunca vai ser construído.
@@ -7369,7 +7486,7 @@ function makePesquisaModule(opts) {
     return `Marcadas: <b>${nMarcadas}</b> · custo <b>${orc.custo}</b> pontos`
       + ` · exige academia <b>${orc.nivelNecessario}</b>${orc.nivelPrevisto ? ` (template prevê ${orc.nivelPrevisto})` : ''}`
       + aviso
-      + `<div style="opacity:.6;font-size:10px;margin-top:2px">A ordem da lista é a prioridade quando faltam pontos.</div>`;
+      + `<div style="opacity:.6;font-size:12px;margin-top:2px">A ordem da lista é a prioridade quando faltam pontos.</div>`;
   }
 
   function corOrcamento(orc) {
@@ -7408,14 +7525,14 @@ function makePesquisaModule(opts) {
     }
     const tpl = templatesEdicao[grupoSelecionado];
     const avisoOrfao = orfaos.indexOf(grupoSelecionado) >= 0
-      ? `<div style="font-size:11px;padding:6px;background:#2a1a10;border:1px solid #5a3a20;
+      ? `<div style="font-size:13px;padding:6px;background:#2a1a10;border:1px solid #5a3a20;
           border-radius:4px;margin-bottom:6px">
           ⚠ O grupo "<b>${esc(grupoSelecionado)}</b>" <b>não existe no jogo</b> — este template
           nunca é aplicado. Cria o grupo com este nome, ou carrega em "Apagar".
         </div>` : '';
 
     let html = avisoOrfao + `
-      <div style="font-size:11px;opacity:.85;margin-bottom:4px">Pesquisas do modelo — aplica a todas as cidades do grupo.</div>
+      <div style="font-size:13px;opacity:.85;margin-bottom:4px">Pesquisas do modelo — aplica a todas as cidades do grupo.</div>
       <div style="display:flex;gap:4px;align-items:center;margin-bottom:6px;flex-wrap:wrap">
         <select id="pes-grupo" style="flex:1;min-width:90px">
           ${grupos.map((g) => `<option value="${esc(g)}"${g === grupoSelecionado ? ' selected' : ''}>${esc(g)}${templatesEdicao[g] ? ' ✓' : ''}</option>`).join('')}
@@ -7424,14 +7541,14 @@ function makePesquisaModule(opts) {
           </optgroup>` : ''}
         </select>
         <button id="pes-criar" style="cursor:pointer">Ativar grupo</button>
-        <button id="pes-apagar" style="cursor:pointer;color:#f88">Apagar</button>
+        <button id="pes-apagar" style="cursor:pointer;color:var(--mStop)">Apagar</button>
       </div>
 
       ${(() => {
         /* Copiar de outro grupo: os templates costumam ser parecidos. */
         const outros = Object.keys(templatesEdicao).filter((g) => g !== grupoSelecionado);
         if (!outros.length) return '';
-        return `<div style="display:flex;gap:4px;align-items:center;margin-bottom:6px;font-size:11px">
+        return `<div style="display:flex;gap:4px;align-items:center;margin-bottom:6px;font-size:13px">
           <span style="opacity:.75;flex:0 0 auto">copiar de</span>
           <select id="pes-copiar-de" style="flex:1">
             <option value="">— escolher grupo —</option>
@@ -7442,7 +7559,7 @@ function makePesquisaModule(opts) {
       })()}`;
 
     if (!tpl) {
-      html += `<div style="font-size:11px;opacity:.8;padding:6px;background:#0d141c;border-radius:4px">
+      html += `<div style="font-size:13px;opacity:.8;padding:6px;background:var(--mSurf);border-radius:4px">
         O grupo "<b>${esc(grupoSelecionado)}</b>" ainda não tem template de pesquisa. Carrega em "Ativar grupo".</div>`;
       container.innerHTML = html;
       ligarTopo(container);
@@ -7463,9 +7580,9 @@ function makePesquisaModule(opts) {
     const idsDoMundo = new Set(techs.map((t) => t.id));
     const foraDesteMundo = marcadas.filter((id) => !idsDoMundo.has(id));
     if (foraDesteMundo.length) {
-      html += `<div style="background:#0d141c;padding:6px 8px;border-radius:4px;margin-bottom:6px;font-size:11px">
+      html += `<div style="background:var(--mSurf);padding:6px 8px;border-radius:4px;margin-bottom:6px;font-size:13px">
         <b>${foraDesteMundo.length} pesquisa(s) marcada(s) que não existem neste mundo</b>
-        <div style="opacity:.65;font-size:10px;margin-top:2px">
+        <div style="opacity:.65;font-size:12px;margin-top:2px">
           ${foraDesteMundo.map((x) => esc(nomePesquisaPT(x) || x)).join(', ')} —
           são ignoradas, não é preciso fazer nada. As pesquisas mudam conforme o
           mundo é de revolta ou de cerco.
@@ -7473,15 +7590,15 @@ function makePesquisaModule(opts) {
       </div>`;
     }
     if (!techs.length) {
-      html += `<div style="font-size:11px;opacity:.8">Lista de tecnologias indisponível (GameData não carregado).</div>`;
+      html += `<div style="font-size:13px;opacity:.8">Lista de tecnologias indisponível (GameData não carregado).</div>`;
     } else {
-      html += `<div style="max-height:220px;overflow:auto;background:#0d141c;padding:4px;border-radius:4px">`;
+      html += `<div style="max-height:220px;overflow:auto;background:var(--mSurf);padding:4px;border-radius:4px">`;
       for (const t of techs) {
         const on = marcadas.indexOf(t.id) >= 0;
         // Ícone do próprio jogo: as classes "research_icon research <id>"
         // apontam para a folha de sprites que a Academia usa, por isso o
         // desenho fica igual ao do jogo sem descarregar nada.
-        html += `<label style="display:flex;align-items:center;gap:6px;padding:2px 3px;font-size:11px;cursor:pointer">
+        html += `<label style="display:flex;align-items:center;gap:6px;padding:2px 3px;font-size:13px;cursor:pointer">
           <input type="checkbox" data-tech="${esc(t.id)}"${on ? ' checked' : ''}>
           <div style="flex:0 0 26px;height:26px;overflow:hidden;position:relative">
             <div class="research_icon research ${esc(t.id)}" style="position:absolute;top:0;left:0;transform:scale(.52);transform-origin:top left"></div>
@@ -7502,7 +7619,7 @@ function makePesquisaModule(opts) {
             partes.push(`precisa de ${v.pesquisas.map(nomePesquisaPT).join(', ')} marcada(s) antes`);
           }
           if (partes.length) {
-            html += `<div style="font-size:10px;color:#fc8;margin:-1px 0 3px 24px;line-height:1.4">⚠ ${partes.join('<br>⚠ ')}.</div>`;
+            html += `<div style="font-size:12px;color:#fc8;margin:-1px 0 3px 24px;line-height:1.4">⚠ ${partes.join('<br>⚠ ')}.</div>`;
           }
         }
       }
@@ -7521,15 +7638,15 @@ function makePesquisaModule(opts) {
       } else if (orc.semTemplateConstrucao) {
         avisoO = `<br><span style="opacity:.6">Sem template de construção neste grupo para comparar.</span>`;
       }
-      html += `<div id="pes-orcamento" style="font-size:11px;margin:4px 0;color:${corO};background:#0d141c;padding:5px;border-radius:4px">
+      html += `<div id="pes-orcamento" style="font-size:13px;margin:4px 0;color:${corO};background:var(--mSurf);padding:5px;border-radius:4px">
         ${htmlOrcamento(orc, marcadas.length)}
       </div>`;
     }
     html += `
-    <label style="display:block;font-size:11px;margin:4px 0">
+    <label style="display:block;font-size:13px;margin:4px 0">
       <input type="checkbox" id="pes-gratis"${cfgGratis() ? ' checked' : ''}>
       <b>Concluir de graça nos últimos 5 min</b>
-      <span style="opacity:.6;font-size:10px">— não custa ouro</span>
+      <span style="opacity:.6;font-size:12px">— não custa ouro</span>
     </label>`;
     html += `<button id="pes-guardar" style="cursor:pointer;width:100%;background:#48d;color:#fff;padding:5px;border:none;border-radius:4px">Guardar pesquisas</button>`;
 
@@ -9051,17 +9168,17 @@ function makeRecrutamentoModule(opts) {
         try { return Number(niveisDoTemplate(nomeGrupo).thermal) > 0; } catch (e) { return false; }
       })();
 
-      return `<div style="background:#0d141c;padding:6px;border-radius:4px;margin-bottom:6px;font-size:11px">
+      return `<div style="background:var(--mSurf);padding:6px;border-radius:4px;margin-bottom:6px;font-size:13px">
         <b>População do template${nomeGrupo && nomeGrupo !== 'todos' ? ' — ' + esc(nomeGrupo) : ''}</b>
-        <span style="opacity:.55;font-size:10px">— com a construção e a pesquisa completas</span>
-        <table style="width:100%;border-collapse:collapse;margin-top:3px;font-size:11px">
+        <span style="opacity:.55;font-size:12px">— com a construção e a pesquisa completas</span>
+        <table style="width:100%;border-collapse:collapse;margin-top:3px;font-size:13px">
           <tr><td style="opacity:.75">Quinta nível ${orc.quintaFim}</td><td style="text-align:right">${(POP_QUINTA[orc.quintaFim] || orc.maxFinal).toLocaleString('pt-PT')}</td></tr>
           ${temTermas ? `<tr><td style="opacity:.75">+ Termas (10%)</td><td style="text-align:right">+${Math.round((POP_QUINTA[orc.quintaFim] || 0) * 0.10).toLocaleString('pt-PT')}</td></tr>` : ''}
           ${bonT.arado ? '<tr><td style="opacity:.75">+ Arado</td><td style="text-align:right">+200</td></tr>' : ''}
           <tr><td style="opacity:.75">− edifícios do template</td><td style="text-align:right">−${orc.gastoFinal.toLocaleString('pt-PT')}</td></tr>
           <tr><td><b>= livre para tropas</b></td><td style="text-align:right"><b>${orc.livreFinal.toLocaleString('pt-PT')}</b></td></tr>
         </table>
-        ${!temTermas || !bonT.arado ? `<div style="opacity:.6;font-size:10px;margin-top:2px">
+        ${!temTermas || !bonT.arado ? `<div style="opacity:.6;font-size:12px;margin-top:2px">
           ${!temTermas ? 'Sem Termas no template de construção. ' : ''}${!bonT.arado ? 'Sem Arado no template de pesquisa.' : ''}
         </div>` : ''}
         ${(() => {
@@ -9084,10 +9201,10 @@ function makeRecrutamentoModule(opts) {
           const sobraFim = Math.max(0, orc.livreFinal - usa.total);
           const cabemFim = Math.floor(sobraFim / popU);
 
-          return `<div style="margin-top:5px;padding-top:4px;border-top:1px solid #223;font-size:11px">
+          return `<div style="margin-top:5px;padding-top:4px;border-top:1px solid #223;font-size:13px">
             <b>+ ~${cabemFim.toLocaleString('pt-PT')} voadores</b>
             <span style="opacity:.6">com os ${sobraFim.toLocaleString('pt-PT')} de população que sobram</span>
-            <div style="opacity:.6;font-size:10px">
+            <div style="opacity:.6;font-size:12px">
               Valor aproximado: cada deus tem o seu voador e custam entre
               ${Math.min(...custos)} e ${Math.max(...custos)} de população.
             </div>
@@ -9096,7 +9213,7 @@ function makeRecrutamentoModule(opts) {
         <div style="margin-top:5px;padding-top:4px;border-top:1px solid #223">
           Alvos definidos: <b style="color:${cor}">${usa.total.toLocaleString('pt-PT')}/${orc.livreFinal.toLocaleString('pt-PT')}</b>
           <span style="opacity:.6">(${usa.terra.toLocaleString('pt-PT')} terra · ${usa.mar.toLocaleString('pt-PT')} mar)</span>
-          ${excede ? `<br><span style="color:#f88">⛔ Excede em ${(usa.total - orc.livreFinal).toLocaleString('pt-PT')} — não caberá tudo.</span>` : ''}
+          ${excede ? `<br><span style="color:var(--mStop)">⛔ Excede em ${(usa.total - orc.livreFinal).toLocaleString('pt-PT')} — não caberá tudo.</span>` : ''}
           <div style="background:#0a0f16;height:6px;border-radius:3px;margin-top:3px;overflow:hidden">
             <div style="height:100%;width:${pct}%;background:${cor}"></div>
           </div>
@@ -10116,7 +10233,7 @@ function makeRecrutamentoModule(opts) {
      * o template desse grupo passa a mostrar quantos voadores vão caber. */
     const gVoa = grupoVoadores();
     const avisoOrfao = orfaos.indexOf(grupoSel) >= 0
-      ? `<div style="font-size:11px;padding:6px;background:#2a1a10;border:1px solid #5a3a20;
+      ? `<div style="font-size:13px;padding:6px;background:#2a1a10;border:1px solid #5a3a20;
           border-radius:4px;margin-bottom:6px">
           ⚠ O grupo "<b>${esc(grupoSel)}</b>" <b>não existe no jogo</b> — este template nunca é
           aplicado. Cria o grupo com este nome, ou carrega em "Apagar".
@@ -10136,19 +10253,19 @@ function makeRecrutamentoModule(opts) {
               `<option value="${esc(g)}"${gVoa === g ? ' selected' : ''}>${esc(g)}</option>`).join('')}
           </select>
         </div>
-        <div style="opacity:.6;font-size:10px;margin-top:3px">
+        <div style="opacity:.6;font-size:12px;margin-top:3px">
           Essas cidades fazem as unidades do template do seu grupo e gastam
           <b>toda a população restante</b> no voador do seu deus.<br>
           Zeus→Manticora · Hera→Harpia · Atena→Pégaso · Ártemis→Grifo · Ares→Ladão
         </div>
         ${voadoresLigados() ? `
-          <div style="opacity:.7;font-size:10px;margin-top:4px;color:#fc8">
+          <div style="opacity:.7;font-size:12px;margin-top:4px;color:#fc8">
             ⚠ Os voadores gastam <b>favor</b>. Numa conta cujo favor serve para ser
             roubado (as multis), isto consome o que a main iria buscar.
           </div>` : ''}
       </div>
 
-      <div style="font-size:11px;opacity:.85;margin-bottom:4px">Alvos de tropas — o script recruta até atingir estas quantidades.</div>
+      <div style="font-size:13px;opacity:.85;margin-bottom:4px">Alvos de tropas — o script recruta até atingir estas quantidades.</div>
       <div style="display:flex;gap:4px;align-items:center;margin-bottom:6px;flex-wrap:wrap">
         <select id="rec-grupo" style="flex:1;min-width:90px">
           ${grupos.map((g) => `<option value="${esc(g)}"${g === grupoSel ? ' selected' : ''}>${esc(g)}${tplEdicao[g] ? ' ✓' : ''}</option>`).join('')}
@@ -10157,14 +10274,14 @@ function makeRecrutamentoModule(opts) {
           </optgroup>` : ''}
         </select>
         <button id="rec-criar" style="cursor:pointer">Ativar grupo</button>
-        <button id="rec-apagar" style="cursor:pointer;color:#f88">Apagar</button>
+        <button id="rec-apagar" style="cursor:pointer;color:var(--mStop)">Apagar</button>
       </div>
 
       ${(() => {
         /* Copiar de outro grupo: os templates costumam ser parecidos. */
         const outros = Object.keys(tplEdicao).filter((g) => g !== grupoSel);
         if (!outros.length) return '';
-        return `<div style="display:flex;gap:4px;align-items:center;margin-bottom:6px;font-size:11px">
+        return `<div style="display:flex;gap:4px;align-items:center;margin-bottom:6px;font-size:13px">
           <span style="opacity:.75;flex:0 0 auto">copiar de</span>
           <select id="rec-copiar-de" style="flex:1">
             <option value="">— escolher grupo —</option>
@@ -10175,7 +10292,7 @@ function makeRecrutamentoModule(opts) {
       })()}`;
 
     if (!tpl) {
-      html += `<div style="font-size:11px;opacity:.8;padding:6px;background:#0d141c;border-radius:4px">
+      html += `<div style="font-size:13px;opacity:.8;padding:6px;background:var(--mSurf);border-radius:4px">
         O grupo "<b>${esc(grupoSel)}</b>" ainda não tem alvos. Carrega em "Ativar grupo".</div>`;
       container.innerHTML = html;
       ligarTopo(container);
@@ -10186,15 +10303,15 @@ function makeRecrutamentoModule(opts) {
     const lista = unidadesOrdenadas();
 
     // linhas de unidade (só as que têm alvo definido) + seletor para adicionar
-    html += `<div style="background:#0d141c;padding:4px;border-radius:4px;max-height:180px;overflow:auto">`;
+    html += `<div style="background:var(--mSurf);padding:4px;border-radius:4px;max-height:180px;overflow:auto">`;
     const comAlvo = Object.keys(alvos);
-    if (!comAlvo.length) html += `<div style="font-size:11px;opacity:.6;padding:4px">Ainda sem unidades. Adiciona abaixo.</div>`;
+    if (!comAlvo.length) html += `<div style="font-size:13px;opacity:.6;padding:4px">Ainda sem unidades. Adiciona abaixo.</div>`;
     for (const id of comAlvo) {
       const u = gameUnits()[id] || {};
       html += `<div style="display:flex;gap:4px;align-items:center;margin-bottom:3px">
-        <span style="flex:1;font-size:11px">${esc(u.name || id)}${u.is_naval ? ' ⚓' : ''}</span>
+        <span style="flex:1;font-size:13px">${esc(u.name || id)}${u.is_naval ? ' ⚓' : ''}</span>
         <input type="number" min="0" value="${Number(alvos[id]) || 0}" data-alvo="${esc(id)}" style="width:60px">
-        <a href="#" data-rem="${esc(id)}" style="text-decoration:none;color:#f88">🗑️</a>
+        <a href="#" data-rem="${esc(id)}" style="text-decoration:none;color:var(--mStop)">🗑️</a>
       </div>`;
       // Validação cruzada: o template de CONSTRUÇÃO deste grupo chega aos
       // níveis que esta unidade exige? Sem isto, podia-se pedir colonizadores
@@ -10214,7 +10331,7 @@ function makeRecrutamentoModule(opts) {
         if (v.pesquisas.length) {
           partes.push(`falta investigar ${v.pesquisas.map(nomePesquisa).join(', ')} no template de pesquisa`);
         }
-        html += `<div style="font-size:10px;color:#fc8;margin:-2px 0 4px 6px;line-height:1.4">
+        html += `<div style="font-size:12px;color:#fc8;margin:-2px 0 4px 6px;line-height:1.4">
           ⚠ ${partes.join('<br>⚠ ')}.
         </div>`;
       }
@@ -10241,14 +10358,14 @@ function makeRecrutamentoModule(opts) {
     html += `<div id="rec-pop-orcamento">${htmlOrcamentoPop(alvos, grupoSel)}</div>`;
 
     // alvo genérico de voadores (adapta-se ao deus de cada cidade)
-    html += `<div style="background:#0d141c;padding:5px;border-radius:4px;margin-bottom:6px;font-size:11px">
+    html += `<div style="background:var(--mSurf);padding:5px;border-radius:4px;margin-bottom:6px;font-size:13px">
 
       </div>
     </div>`;
 
     // requisitos de arranque e mínimo de armazém
     const rq = tpl.requisitos = tpl.requisitos || {};
-    html += `<div style="background:#0d141c;padding:5px;border-radius:4px;margin-bottom:6px;font-size:11px">
+    html += `<div style="background:var(--mSurf);padding:5px;border-radius:4px;margin-bottom:6px;font-size:13px">
       <b>Só começar a recrutar com:</b><br>
       Quinta <input type="number" min="0" value="${Number(rq.farm) || 0}" data-req="farm" style="width:40px"> ·
       Armazém <input type="number" min="0" value="${Number(rq.storage) || 0}" data-req="storage" style="width:40px"><br>
@@ -10269,9 +10386,9 @@ function makeRecrutamentoModule(opts) {
           <span style="color:${chega ? '#7d7' : '#f88'}">(tens ${tem})</span>
         </label>`;
       };
-      return `<div style="background:#0d141c;padding:6px;border-radius:4px;margin-bottom:6px;font-size:11px">
+      return `<div style="background:var(--mSurf);padding:6px;border-radius:4px;margin-bottom:6px;font-size:13px">
         <label><input type="checkbox" id="rec-feiticos"${cf.ativo ? ' checked' : ''}> <b>Acelerar com feitiços</b></label>
-        <div style="opacity:.65;font-size:10px;margin:2px 0 4px 18px">
+        <div style="opacity:.65;font-size:12px;margin:2px 0 4px 18px">
           Lançado ANTES da ordem, acelera tudo o que for recrutado nas 4 h seguintes.
           A cidade não precisa de venerar o deus — basta teres o favor.
         </div>
@@ -10280,11 +10397,11 @@ function makeRecrutamentoModule(opts) {
         <div style="margin-top:4px">
           Só a partir de <input type="number" min="1" id="rec-feit-min" value="${cf.minPopulacao}" style="width:56px">
           de população a recrutar
-          <div style="opacity:.6;font-size:10px">Evita gastar 80 de favor para acelerar meia dúzia de unidades.</div>
+          <div style="opacity:.6;font-size:12px">Evita gastar 80 de favor para acelerar meia dúzia de unidades.</div>
         </div>
       </div>`;
     })()}
-    <div style="background:#0d141c;padding:5px;border-radius:4px;margin-bottom:6px;font-size:11px">
+    <div style="background:var(--mSurf);padding:5px;border-radius:4px;margin-bottom:6px;font-size:13px">
       Só recrutar se a ordem valer pelo menos
       <input type="number" min="0" max="2000" value="${Number(tpl.minPopOrdem) || 60}" id="rec-minpop" style="width:56px">
       de população<br>
@@ -10295,10 +10412,10 @@ function makeRecrutamentoModule(opts) {
       senão o remate ficava por fazer para sempre.</span>
     </div>
 
-    <div style="background:#0d141c;padding:6px;border-radius:4px;margin-bottom:6px;font-size:11px">
+    <div style="background:var(--mSurf);padding:6px;border-radius:4px;margin-bottom:6px;font-size:13px">
       <label><input type="checkbox" id="rec-nc-cont"${tpl.ncContinuo ? ' checked' : ''}>
         <b>Depois do template cumprido, fazer colonizadores sem parar</b></label>
-      <div style="opacity:.65;font-size:10px;margin:2px 0 4px 18px">
+      <div style="opacity:.65;font-size:12px;margin:2px 0 4px 18px">
         Cada cidade faz os seus quando conseguir juntar os recursos. Só começa
         quando as outras tropas do template já estiverem feitas.<br>
         <b>Funciona bem com a Fábrica de colonizadores:</b> ela junta recursos
@@ -10307,7 +10424,7 @@ function makeRecrutamentoModule(opts) {
       </div>
       <div style="margin-left:18px">
         Parar aos <input type="number" min="0" id="rec-nc-max" value="${Number(tpl.ncMax) || 0}" style="width:56px">
-        colonizadores <span style="opacity:.6;font-size:10px">(0 = sem limite)</span>
+        colonizadores <span style="opacity:.6;font-size:12px">(0 = sem limite)</span>
       </div>
     </div>`;
 
@@ -10319,8 +10436,8 @@ function makeRecrutamentoModule(opts) {
   }
 
   function caixa(titulo, valor) {
-    return `<div style="background:#0d141c;padding:5px;border-radius:4px">
-      <div style="font-size:10px;opacity:.7">${titulo}</div>
+    return `<div style="background:var(--mSurf);padding:5px;border-radius:4px">
+      <div style="font-size:12px;opacity:.7">${titulo}</div>
       <div style="font-weight:bold">${Number(valor).toLocaleString('pt-PT')}</div>
     </div>`;
   }
@@ -12155,23 +12272,23 @@ function makeHeroisModule(opts) {
     if (oferta) {
       const nw = (herois[oferta.wisdom] && herois[oferta.wisdom].name) || oferta.wisdom || '—';
       const ng = (herois[oferta.war] && herois[oferta.war].name) || oferta.war || '—';
-      html += `<div style="background:#0d141c;padding:5px;border-radius:4px;font-size:11px;margin-bottom:6px">
+      html += `<div style="background:var(--mSurf);padding:5px;border-radius:4px;font-size:13px;margin-bottom:6px">
         <b>Oferta de hoje</b><br>Sabedoria: ${esc(nw)} · Guerra: ${esc(ng)}<br>
         <span style="opacity:.7">Slots livres: ${meta.slotsLivres}</span></div>`;
     }
 
-    html += `<label style="display:block;font-size:11px;margin-bottom:2px">
+    html += `<label style="display:block;font-size:13px;margin-bottom:2px">
       <input type="checkbox" id="her-trocar"${cfgEdicao.trocarMoedas !== false ? ' checked' : ''}>
       trocar moedas quando faltar para comprar
     </label>
-    <div style="opacity:.6;font-size:10px;margin:0 0 6px 18px">
+    <div style="opacity:.6;font-size:12px;margin:0 0 6px 18px">
       Se faltar sabedoria e sobrar guerra (ou o inverso), troca só o que falta.
       O câmbio piora a cada troca, por isso nunca troca de mais.
     </div>
 
-    <div style="font-size:11px;opacity:.8;margin-bottom:3px">
+    <div style="font-size:13px;opacity:.8;margin-bottom:3px">
       <b>C</b> = comprar · <b>N</b> = subir nível · <b>R</b> = rodar para a cidade onde o bónus dele rende mais</div>
-      <div style="max-height:200px;overflow:auto;background:#0d141c;padding:4px;border-radius:4px">`;
+      <div style="max-height:200px;overflow:auto;background:var(--mSurf);padding:4px;border-radius:4px">`;
     for (const h of lista) {
       const meu = tenho[h.id];
       const c = cfgEdicao.comprar.indexOf(h.id) >= 0;
@@ -12183,7 +12300,7 @@ function makeHeroisModule(opts) {
       const tituloR = b
         ? ('ajuda: ' + b.tipos.join('+') + ' de ' + (b.unidades.length > 3 ? b.unidades.length + ' unidades' : b.unidades.join(', ')))
         : (be ? ('ajuda: ' + be.tipos.join('+') + ' de construção de edifícios') : '');
-      html += `<div style="display:flex;align-items:center;gap:4px;font-size:11px;padding:1px 2px">
+      html += `<div style="display:flex;align-items:center;gap:4px;font-size:13px;padding:1px 2px">
         <label title="comprar"><input type="checkbox" data-c="${esc(h.id)}"${c ? ' checked' : ''}>C</label>
         <label title="subir nível"><input type="checkbox" data-n="${esc(h.id)}"${n ? ' checked' : ''}>N</label>
         ${podeRodar ? `<label title="${esc(tituloR)}"><input type="checkbox" data-r="${esc(h.id)}"${r ? ' checked' : ''}>R</label>` : '<span style="width:26px;display:inline-block"></span>'}
@@ -12195,14 +12312,14 @@ function makeHeroisModule(opts) {
     html += `</div>`;
 
     const faltam = cfgEdicao.comprar.some((t) => !tenho[t]);
-    html += `<div style="font-size:11px;opacity:.75;margin:5px 0">
+    html += `<div style="font-size:13px;opacity:.75;margin:5px 0">
       Reserva: ${faltam ? `<b>${RESERVA_MOEDAS}</b> de cada guardadas para comprar` : 'libertada (já tens todos os marcados)'} — o resto vai para níveis.</div>`;
 
     const pz = pesosTipo();
     html += `
-    <details id="her-avancado" style="background:#0d141c;padding:6px 8px;border-radius:4px;margin:6px 0;font-size:11px">
+    <details id="her-avancado" style="background:var(--mSurf);padding:6px 8px;border-radius:4px;margin:6px 0;font-size:13px">
       <summary style="cursor:pointer;opacity:.8">Como escolhe as cidades</summary>
-      <div style="opacity:.7;font-size:10px;margin:5px 0">
+      <div style="opacity:.7;font-size:12px;margin:5px 0">
         A <b>Anysia</b> vai primeiro, e só para cidades com unidades que custam favor
         (voadores, míticas, enviados divinos).<br>
         Os restantes competem pelo <b>rendimento</b> — unidades por fazer × quanto o
@@ -12212,7 +12329,7 @@ function makeHeroisModule(opts) {
       </div>
 
       <div style="border-top:1px solid #223;margin-top:5px;padding-top:5px">
-        <div style="opacity:.65;font-size:10px;margin-bottom:4px">
+        <div style="opacity:.65;font-size:12px;margin-bottom:4px">
           <b>Avançado.</b> Para comparar heróis é preciso saber quanto vale cada tipo de
           bónus: 20% de custo não é o mesmo que 20% de velocidade. Estes números só
           importam quando dois heróis disputam a mesma cidade.
@@ -12224,7 +12341,7 @@ function makeHeroisModule(opts) {
           <input type="number" step="0.1" min="0" id="her-p-vel" value="${pz.velocidade}">
           <span>Custo <i>e</i> velocidade</span>
           <input type="number" step="0.1" min="0" id="her-p-ambos" value="${pz.ambos}">
-          <span>Favor <span style="opacity:.6;font-size:10px">(Anysia)</span></span>
+          <span>Favor <span style="opacity:.6;font-size:12px">(Anysia)</span></span>
           <input type="number" step="0.1" min="0" id="her-p-favor" value="${pz.favor}">
         </div>
       </div>
@@ -12236,8 +12353,8 @@ function makeHeroisModule(opts) {
   }
 
   function caixa(t, v) {
-    return `<div style="background:#0d141c;padding:4px;border-radius:4px;text-align:center">
-      <div style="font-size:10px;opacity:.7">${t}</div><div style="font-weight:bold">${v}</div></div>`;
+    return `<div style="background:var(--mSurf);padding:4px;border-radius:4px;text-align:center">
+      <div style="font-size:12px;opacity:.7">${t}</div><div style="font-weight:bold">${v}</div></div>`;
   }
 
   function ligar(container) {
@@ -12728,25 +12845,25 @@ function makeBandidosModule(opts) {
         <input type="checkbox" id="ban-on"${c.ativo ? ' checked' : ''}>
         <b>Atacar o ponto da ilha</b>
       </label>
-      <div style="opacity:.6;font-size:10px;margin:0 0 8px 18px">
+      <div style="opacity:.6;font-size:12px;margin:0 0 8px 18px">
         O alvo que aparece na ilha. Cada vitória dá pontos de combate e sobe o
         nível; de vez em quando dá tropa ou recursos. Ataca-se de 3 em 3 minutos.
       </div>
 
-      ${p ? `<div style="background:#0d141c;padding:6px 8px;border-radius:4px;margin-bottom:6px;font-size:11px">
+      ${p ? `<div style="background:var(--mSurf);padding:6px 8px;border-radius:4px;margin-bottom:6px;font-size:13px">
         <div>nível <b>${p.level}</b> · defesa: ${defesa || '—'}</div>
         <div style="opacity:.75">${espera > 0 ? `em espera, faltam ${espera}s` : 'pronto a atacar'}${
-          p.reward_available ? ' · <b style="color:#4fc7a1">recompensa por recolher</b>' : ''}</div>
-      </div>` : '<div style="opacity:.6;font-size:11px;margin-bottom:6px">Sem ponto de ataque nesta conta.</div>'}
+          p.reward_available ? ' · <b style="color:var(--mLive)">recompensa por recolher</b>' : ''}</div>
+      </div>` : '<div style="opacity:.6;font-size:13px;margin-bottom:6px">Sem ponto de ataque nesta conta.</div>'}
 
-      <div style="font-size:11px">
+      <div style="font-size:13px">
         Guardar em casa:
         <input type="number" id="ban-reserva" value="${c.reservaPct}" min="0" max="90"
           style="width:52px">%
-        <span style="opacity:.6;font-size:10px">— da tropa da cidade</span>
+        <span style="opacity:.6;font-size:12px">— da tropa da cidade</span>
       </div>
 
-      <div style="font-size:11px;margin-top:4px">
+      <div style="font-size:13px;margin-top:4px">
         Parar no nível:
         <input type="number" id="ban-max" value="${c.maxNivel || ''}" min="0" placeholder="sem limite"
           style="width:76px">
@@ -13186,30 +13303,30 @@ function makeSentinelasModule(opts) {
         <input type="checkbox" id="sen-on"${c.ativo ? ' checked' : ''}>
         <b>Pôr sentinelas nas cidades aliadas</b>
       </label>
-      <div style="opacity:.6;font-size:10px;margin:0 0 8px 18px">
+      <div style="opacity:.6;font-size:12px;margin:0 0 8px 18px">
         Manda algumas unidades a cada cidade aliada das ilhas onde tens cidades.
         Quando essa cidade é atacada, chega-te um relatório de defesa — é como
         saberes o que se passa na ilha sem lá estares.
       </div>
 
-      <div style="background:#0d141c;padding:6px 8px;border-radius:4px;margin-bottom:6px;font-size:11px">
+      <div style="background:var(--mSurf);padding:6px 8px;border-radius:4px;margin-bottom:6px;font-size:13px">
         <div>alianças amigas: <b>${amigas.size}</b>${
           c.incluirPactos ? ' <span style="opacity:.6">(a minha + pactos de paz)</span>' : ''}</div>
         <div style="opacity:.75">sentinelas registadas: ${Object.keys(registo).length}</div>
       </div>
 
-      <div style="font-size:11px">
+      <div style="font-size:13px">
         Quantas por cidade:
         <input type="number" id="sen-quantas" value="${c.quantas}" min="1" max="20" style="width:52px">
-        <span style="opacity:.6;font-size:10px">— com 19 aliados na ilha, ${c.quantas} × 19 = ${c.quantas * 19}</span>
+        <span style="opacity:.6;font-size:12px">— com 19 aliados na ilha, ${c.quantas} × 19 = ${c.quantas * 19}</span>
       </div>
 
-      <label style="display:block;font-size:11px;margin-top:5px">
+      <label style="display:block;font-size:13px;margin-top:5px">
         <input type="checkbox" id="sen-pactos"${c.incluirPactos ? ' checked' : ''}>
         incluir alianças com pacto de paz
       </label>
 
-      <div style="font-size:11px;margin-top:5px">
+      <div style="font-size:13px;margin-top:5px">
         Guardar em casa:
         <input type="number" id="sen-reserva" value="${c.reservaPct}" min="0" max="90" style="width:52px">%
       </div>
@@ -13481,20 +13598,20 @@ function makeDiariaModule(opts) {
         <input type="checkbox" id="dia-on"${c.ativo ? ' checked' : ''}>
         <b>Recolher a recompensa diária</b>
       </label>
-      <div style="opacity:.6;font-size:10px;margin:0 0 8px 18px">
+      <div style="opacity:.6;font-size:12px;margin:0 0 8px 18px">
         A caixa que o jogo dá por entrares. Abre-a e guarda o que sair no
         inventário.
       </div>
 
-      <div style="background:#0d141c;padding:6px 8px;border-radius:4px;margin-bottom:6px;font-size:11px">
+      <div style="background:var(--mSurf);padding:6px 8px;border-radius:4px;margin-bottom:6px;font-size:13px">
         ${estado}
       </div>
 
-      <label style="display:block;font-size:11px">
+      <label style="display:block;font-size:13px">
         <input type="checkbox" id="dia-tropas"${c.descartarTropas ? ' checked' : ''}>
         descartar quando sai tropa
       </label>
-      <div style="opacity:.55;font-size:10px;margin:0 0 6px 18px">
+      <div style="opacity:.55;font-size:12px;margin:0 0 6px 18px">
         A tropa das caixas ocupa população e raramente é a que queres.
       </div>
 
@@ -14253,28 +14370,28 @@ function makeFabricaNCModule(opts) {
         <input type="checkbox" id="fnc-on"${c.ativo ? ' checked' : ''}>
         <b>Fábrica de colonizadores</b>
       </label>
-      <div style="opacity:.6;font-size:10px;margin:0 0 8px 18px">
+      <div style="opacity:.6;font-size:12px;margin:0 0 8px 18px">
         Em vez de todas as cidades juntarem recursos ao mesmo tempo e nenhuma
         chegar ao fim, concentra-se numa: enche-se, faz-se a maior ordem que
         couber, passa-se à seguinte. Com o Argus lá, o custo baixa muito.
       </div>
 
-      <div style="background:#0d141c;padding:6px 8px;border-radius:4px;margin-bottom:6px;font-size:11px">
+      <div style="background:var(--mSurf);padding:6px 8px;border-radius:4px;margin-bottom:6px;font-size:13px">
         <div><b>${grandes}</b> cidade(s) com armazém de ${c.armazemMinimo}+${
           comOrdem ? ` · <b>${comOrdem}</b> já a produzir` : ''}</div>
         <div style="opacity:.75;margin-top:2px">a encher: ${linhaAlvo}</div>
       </div>
 
-      <div style="font-size:11px">
+      <div style="font-size:13px">
         Armazém mínimo
         <input type="number" id="fnc-arm" value="${c.armazemMinimo}" min="5000" step="1000" style="width:74px">
-        <div style="opacity:.6;font-size:10px;margin-bottom:4px">
+        <div style="opacity:.6;font-size:12px;margin-bottom:4px">
           Só cidades acima disto servem de fábrica.
         </div>
 
         Mínimo por ordem
         <input type="number" id="fnc-min" value="${c.minimoPorOrdem}" min="1" max="10" style="width:44px">
-        <div style="opacity:.6;font-size:10px;margin-bottom:5px">
+        <div style="opacity:.6;font-size:12px;margin-bottom:5px">
           Espera até dar para este número, em vez de fazer um de cada vez.
         </div>
 
@@ -14282,7 +14399,7 @@ function makeFabricaNCModule(opts) {
           <input type="checkbox" id="fnc-feitico"${c.usarFeitico !== false ? ' checked' : ''}>
           Chamamento do oceano antes da ordem
         </label>
-        <div style="opacity:.6;font-size:10px;margin-left:18px">
+        <div style="opacity:.6;font-size:12px;margin-left:18px">
           60 de favor de Poseidon, porto ao dobro durante 4 h. A cidade não
           precisa de venerar Poseidon — basta teres o favor.
         </div>
@@ -14971,7 +15088,7 @@ function makeFeiticosModule(opts) {
       const quanto = acaba > agora
         ? `protegida mais ${Math.round((acaba - agora) / 60)} min`
         : 'sem proteção conhecida';
-      return `<div style="font-size:11px;opacity:.8">${esc(String(nome))} — ${quanto}`
+      return `<div style="font-size:13px;opacity:.8">${esc(String(nome))} — ${quanto}`
         + `<span style="opacity:.7">${saiEm(id)}</span></div>`;
     }).join('');
 
@@ -14987,12 +15104,12 @@ function makeFeiticosModule(opts) {
       ? minhas.map((t) => {
         const id = Number(t.id);
         const on = marcadas.has(id);
-        return `<label style="display:block;font-size:11px">`
+        return `<label style="display:block;font-size:13px">`
           + `<input type="checkbox" class="fei-cid" data-id="${id}"${on ? ' checked' : ''}> `
           + `${esc(String(t.name || id))}`
           + `<span style="opacity:.55">${on ? saiEm(id) : ''}</span></label>`;
       }).join('')
-      : '<div style="opacity:.55;font-size:11px">Não consegui ler as tuas cidades.</div>';
+      : '<div style="opacity:.55;font-size:13px">Não consegui ler as tuas cidades.</div>';
 
     /* Identificadores marcados que não são cidades minhas. */
     const idsMinhas = new Set(minhas.map((t) => Number(t.id)));
@@ -15024,7 +15141,7 @@ function makeFeiticosModule(opts) {
           .filter((a) => minhasCidades.has(Number(a.home_town_id)));
 
         if (!meus.length) {
-          return '<div style="opacity:.55;font-size:11px">Não tens ataques a caminho.</div>';
+          return '<div style="opacity:.55;font-size:13px">Não tens ataques a caminho.</div>';
         }
 
         const opcoes = feiticosDeAtaque(true);
@@ -15044,15 +15161,15 @@ function makeFeiticosModule(opts) {
             ? new Date(Number(a.arrival_at) * 1000).toLocaleTimeString().slice(0, 5)
             : '?';
 
-          return `<div style="background:#0d141c;padding:5px 6px;border-radius:4px;margin-bottom:4px">
-            <div style="font-size:11px">
+          return `<div style="background:var(--mSurf);padding:5px 6px;border-radius:4px;margin-bottom:4px">
+            <div style="font-size:13px">
               <b>${esc(String(a.town_name_destination || a.target_town_id))}</b>
               <span style="opacity:.6">chega ${chega}</span>
             </div>
-            <div style="opacity:.7;font-size:10px;margin:1px 0 3px">
+            <div style="opacity:.7;font-size:12px;margin:1px 0 3px">
               ${esc(leva || 'não vejo o que leva')}
             </div>
-            <select class="fei-ref" data-cmd="${cid}" style="width:100%;font-size:11px">
+            <select class="fei-ref" data-cmd="${cid}" style="width:100%;font-size:13px">
               <option value="">— sem feitiço —</option>
               ${opcoes.map((id) => `<option value="${id}"${escolhido === id ? ' selected' : ''}>`
                 + `${esc(nomeDoFeitico(id))} (${custoDoFeitico(id)} de ${deusDoFeitico(id) || '?'})`
@@ -15063,7 +15180,7 @@ function makeFeiticosModule(opts) {
             </div>
           </div>`;
         }).join('');
-      } catch (e) { return '<div style="opacity:.55;font-size:11px">Não consegui ler os ataques.</div>'; }
+      } catch (e) { return '<div style="opacity:.55;font-size:13px">Não consegui ler os ataques.</div>'; }
     })();
 
     container.innerHTML = `
@@ -15071,35 +15188,35 @@ function makeFeiticosModule(opts) {
         <input type="checkbox" id="fei-on"${c.ativo ? ' checked' : ''}>
         <b>Auto-feitiços — Proteção de Cidade</b>
       </label>
-      <div style="opacity:.6;font-size:10px;margin:0 0 8px 18px">
+      <div style="opacity:.6;font-size:12px;margin:0 0 8px 18px">
         Mantém a Proteção de Cidade sempre activa nas cidades indicadas,
         repondo-a assim que expira. É a única defesa contra o narcisismo: a
         Purificação não a remove, mas também não a pode lançar quem já a tem.
       </div>
 
-      <div style="background:#0d141c;padding:6px 8px;border-radius:4px;margin-bottom:6px;font-size:11px">
+      <div style="background:var(--mSurf);padding:6px 8px;border-radius:4px;margin-bottom:6px;font-size:13px">
         <div>favor de Atena: <b>${favor}</b> · cada proteção custa <b>130</b></div>
         ${linhas || '<div style="opacity:.6">nenhuma cidade indicada</div>'}
       </div>
 
-      <div style="font-size:11px">
+      <div style="font-size:13px">
         Cidades a proteger — marca as que queres
-        <div style="max-height:150px;overflow:auto;background:#0d141c;padding:4px 6px;border-radius:4px;margin:3px 0">
+        <div style="max-height:150px;overflow:auto;background:var(--mSurf);padding:4px 6px;border-radius:4px;margin:3px 0">
           ${htmlMinhas}
         </div>
-        <label style="display:block;opacity:.8;font-size:10px;margin-bottom:3px">
+        <label style="display:block;opacity:.8;font-size:12px;margin-bottom:3px">
           <input type="checkbox" id="fei-renovar"> dar 24 horas novas a todas as marcadas ao guardar
         </label>
-        <div style="opacity:.6;font-size:10px;margin-bottom:5px">
+        <div style="opacity:.6;font-size:12px;margin-bottom:5px">
           Uma cidade marcada sai da lista sozinha ao fim de 24 horas — a
           proteção é para uma ameaça concreta, não para sempre. As que já
           estavam marcadas mantêm o prazo que tinham.
         </div>
 
         De outras contas (identificadores, um por linha)
-        <textarea id="fei-outras" rows="2" style="width:100%;box-sizing:border-box;font-size:11px"
+        <textarea id="fei-outras" rows="2" style="width:100%;box-sizing:border-box;font-size:13px"
           >${esc(outras.join('\n'))}</textarea>
-        <div style="opacity:.6;font-size:10px;margin-bottom:5px">
+        <div style="opacity:.6;font-size:12px;margin-bottom:5px">
           Vê o identificador no diagnóstico da cidade ou no endereço do jogo.
           Contam as mesmas 24 horas.
         </div>
@@ -15113,23 +15230,23 @@ function makeFeiticosModule(opts) {
           <input type="checkbox" id="fei-temp"${c.tempestades ? ' checked' : ''}>
           <b>Tempestades contra colonizadores</b>
         </label>
-        <div style="opacity:.6;font-size:10px;margin:2px 0 4px 18px">
+        <div style="opacity:.6;font-size:12px;margin:2px 0 4px 18px">
           Quando um colonizador vem a caminho, lança a Tempestade do Mar
           (Poseidon, 280) para afundar navios. Se o atacante já lá pôs um
           feitiço, purifica primeiro com Artemis (200) — só cabe um por
           ataque.<br>
           O resultado vê-se nos relatórios do jogo.
         </div>
-        <div style="margin-left:18px;font-size:11px">
+        <div style="margin-left:18px;font-size:13px">
           No máximo <input type="number" id="fei-maxtemp" value="${c.maxTempestades}" min="1" max="10" style="width:44px">
           por ataque
-          <span style="opacity:.6;font-size:10px">(cada uma destrói 10-30%)</span>
+          <span style="opacity:.6;font-size:12px">(cada uma destrói 10-30%)</span>
         </div>
       </div>
 
       <div style="border-top:1px solid #234;margin:8px 0 6px;padding-top:6px">
-        <b style="font-size:11px">Reforços nos meus ataques</b>
-        <div style="opacity:.6;font-size:10px;margin:2px 0 5px">
+        <b style="font-size:13px">Reforços nos meus ataques</b>
+        <div style="opacity:.6;font-size:12px;margin:2px 0 5px">
           Escolhe o feitiço para cada ataque em curso. Ele lança e, se
           purificarem, volta a lançar. Só cabe um por ataque.
         </div>
@@ -15587,12 +15704,7 @@ function makeAldeiasModule(opts) {
     } catch (e) { return fallback; }
   }
 
-  function overallStaysOk(villageId, give, ratio, cfg) {
-    const k = capKey(villageId);
-    const g = (villageGiven[k] || 0) + give;
-    const r = (villageReceived[k] || 0) + give * ratio;
-    return g > 0 && (r / g) >= (1 - cfg.RATIO_TOLERANCE);
-  }
+  
 
   // Aldeias da ilha desta cidade, com o que se dá/recebe e o rácio.
   function getFarmVillagesForTown(townId) {
@@ -16306,12 +16418,12 @@ function makeAldeiasModule(opts) {
       }
     } catch (err) {}
     container.innerHTML = `
-      <div style="font-size:11px;line-height:1.6;background:#0d141c;padding:5px;border-radius:4px;margin-bottom:5px">
+      <div style="font-size:13px;line-height:1.6;background:var(--mSurf);padding:5px;border-radius:4px;margin-bottom:5px">
         <b>Recolha</b> — só <b>exige</b> recursos (nunca saqueia), opção de <b>${mins} min</b>.<br>
         Via: <b>${cap ? 'em massa (Capitão ativo)' : 'aldeia a aldeia'}</b><br>
         Prontas agora: <b>${prontas.length}</b> (~${total} recursos)
       </div>
-      <div style="font-size:11px;line-height:1.7;background:#0d141c;padding:5px;border-radius:4px">
+      <div style="font-size:13px;line-height:1.7;background:var(--mSurf);padding:5px;border-radius:4px">
         <label><input type="checkbox" id="ald-trocas-on"${c.ativo ? ' checked' : ''}> <b>Equilibrar recursos com as aldeias</b></label><br>
         Rácio mínimo: <input type="number" step="0.05" min="0.5" max="2" value="${c.ratioFloor}" id="ald-ratio" style="width:52px"><br>
         Troca mínima: <input type="number" min="0" step="100" value="${c.minTrade}" id="ald-min" style="width:62px"> ·
@@ -16320,17 +16432,17 @@ function makeAldeiasModule(opts) {
         Máx. trocas por cidade: <input type="number" min="1" value="${c.maxTradesPerCity}" id="ald-maxr" style="width:42px"><br>
         Correr trocas a cada <input type="number" min="1" max="60" value="${c.aCadaNPassagens}" id="ald-cada" style="width:42px"> passagens
         <span style="opacity:.6">(~${(c.aCadaNPassagens || 6) * (opts.intervaloMin || 5)} min)</span>
-        <button id="ald-forcar-trocas" style="cursor:pointer;width:100%;margin-top:4px;font-size:11px;padding:3px">▶ Trocar agora (sem esperar)</button>
+        <button id="ald-forcar-trocas" style="cursor:pointer;width:100%;margin-top:4px;font-size:13px;padding:3px">▶ Trocar agora (sem esperar)</button>
       </div>
-      <div style="font-size:11px;line-height:1.7;background:#0d141c;padding:5px;border-radius:4px;margin-top:5px">
+      <div style="font-size:13px;line-height:1.7;background:var(--mSurf);padding:5px;border-radius:4px;margin-top:5px">
         <label><input type="checkbox" id="ald-evo-on"${e.ativo ? ' checked' : ''}> <b>Evoluir aldeias</b></label>
         <span style="opacity:.7">(pontos de combate: <b>${pontos}</b>)</span><br>
         Reservar <input type="number" min="0" step="100" value="${e.reservaPontos}" id="ald-evo-res" style="width:62px"> pontos<br>
         <label><input type="checkbox" id="ald-evo-unlock"${e.desbloquear ? ' checked' : ''}> desbloquear aldeias bloqueadas</label><br>
         <span style="opacity:.6">Por evoluir: ${porEvoluir} aldeia(s)</span>
-        <button id="ald-forcar-evo" style="cursor:pointer;width:100%;margin-top:4px;font-size:11px;padding:3px">▶ Evoluir agora (sem esperar)</button>
+        <button id="ald-forcar-evo" style="cursor:pointer;width:100%;margin-top:4px;font-size:13px;padding:3px">▶ Evoluir agora (sem esperar)</button>
       </div>
-      ${captchaAtivo() ? '<div style="background:#633;color:#fcc;padding:5px;border-radius:4px;margin-top:5px;font-size:11px">🛑 Suspenso: verificação de bot por resolver no jogo.</div>' : ''}
+      ${captchaAtivo() ? '<div style="background:#633;color:#fcc;padding:5px;border-radius:4px;margin-top:5px;font-size:13px">🛑 Suspenso: verificação de bot por resolver no jogo.</div>' : ''}
       <button id="ald-guardar" style="cursor:pointer;width:100%;margin-top:5px;background:#48d;color:#fff;padding:5px;border:none;border-radius:4px">Guardar</button>`;
 
     // Os botões chamam DIRECTAMENTE a função respectiva. Passar pelo run()
@@ -17547,15 +17659,15 @@ function makeAlertasModule(opts) {
     // ---- lista de atacantes ignorados ----
     const igAtual = lerIgnorados();
     const htmlIgnorar = `
-      <div style="background:#0d141c;padding:5px;border-radius:4px;margin-top:5px;font-size:11px">
+      <div style="background:var(--mSurf);padding:5px;border-radius:4px;margin-top:5px;font-size:13px">
         Consultar o servidor a cada
         <input type="number" id="alr-intervalo" min="15" max="300" value="${cfg().segundosEntreConsultas}" style="width:48px">s
         <span style="opacity:.6">(mais baixo = avisos mais rápidos, mais risco de o servidor limitar)</span>
         <hr style="border:0;border-top:1px solid #223;margin:5px 0">
         <b>Ignorar ataques de</b> <span style="opacity:.6">(um por linha; nome de jogador ou id)</span><br>
-        <textarea id="alr-ig-jog" rows="2" style="width:100%;box-sizing:border-box;font-size:11px" placeholder="Jogador">${igAtual.jogadores.join('\n')}</textarea>
+        <textarea id="alr-ig-jog" rows="2" style="width:100%;box-sizing:border-box;font-size:13px" placeholder="Jogador">${igAtual.jogadores.join('\n')}</textarea>
         <b>Ignorar alianças</b><br>
-        <textarea id="alr-ig-ali" rows="1" style="width:100%;box-sizing:border-box;font-size:11px" placeholder="No Cousins PLZ">${igAtual.aliancas.join('\n')}</textarea>
+        <textarea id="alr-ig-ali" rows="1" style="width:100%;box-sizing:border-box;font-size:13px" placeholder="No Cousins PLZ">${igAtual.aliancas.join('\n')}</textarea>
         <button id="alr-ig-guardar" style="cursor:pointer;width:100%;margin-top:4px;background:#48d;color:#fff;padding:4px;border:none;border-radius:4px">Guardar lista</button>
       </div>`;
     mUw = ctx.uw; mWorld = ctx.WORLD;
@@ -17567,22 +17679,22 @@ function makeAlertasModule(opts) {
     let lista = '';
     for (const a of acaminho.slice(0, 6)) {
       const alvo = coordsCidade(a.target_town_id);
-      lista += `<div style="font-size:11px;padding:2px 0;border-top:1px solid #223">
+      lista += `<div style="font-size:13px;padding:2px 0;border-top:1px solid #223">
         ${alvo ? alvo.nome : a.target_town_id} ← ${a.town_name_origin || '?'}<br>
         <span style="opacity:.7">chega ${hhmm(a.arrival_at)} (${duracaoLegivel(Number(a.arrival_at) - agora)})</span>
       </div>`;
     }
 
     container.innerHTML = `
-      <div style="font-size:11px;line-height:1.6">
+      <div style="font-size:13px;line-height:1.6">
         <label><input type="checkbox" id="alr-on"${c.ativo ? ' checked' : ''}> <b>Avisar ataques no Discord</b></label><br>
         <label><input type="checkbox" id="alr-apoios"${c.avisarApoios ? ' checked' : ''}> avisar também apoios recebidos</label><br>
         Calibração: <input type="number" id="alr-k" value="${c.K}" style="width:70px">
         <span style="opacity:.6">(afina se a estimativa puxar sempre para um lado)</span>
       </div>
-      <div style="background:#0d141c;padding:5px;border-radius:4px;margin-top:5px">
-        <b style="font-size:11px">A caminho: ${acaminho.length}</b>
-        ${lista || '<div style="font-size:11px;opacity:.6;padding-top:3px">Nada a chegar.</div>'}
+      <div style="background:var(--mSurf);padding:5px;border-radius:4px;margin-top:5px">
+        <b style="font-size:13px">A caminho: ${acaminho.length}</b>
+        ${lista || '<div style="font-size:13px;opacity:.6;padding-top:3px">Nada a chegar.</div>'}
       </div>
       <button id="alr-guardar" style="cursor:pointer;width:100%;margin-top:5px;background:#48d;color:#fff;padding:5px;border:none;border-radius:4px">Guardar</button>`;
 
@@ -19173,52 +19285,7 @@ function makeDeusesModule(opts) {
   // NOTA: o command_overview exige ADMINISTRADOR. Sem ele responde
   // "Necessita do administrador para aceder às visões gerais". Detecta-se uma
   // vez e não se insiste — as multis não o têm.
-  async function ataqueEmCurso(townId) {
-    /* O MODELO LOCAL PRIMEIRO — sem pedido nenhum ao servidor.
-     *
-     * Procura-se um ataque MEU desta cidade que ainda não esteja em casa.
-     * Os meus comandos têm o `started_at` preenchido; os recebidos vêm a null.
-     *
-     * CONTAM OS REGRESSOS. Antes saltavam-se, e por isso mandava-se um ataque
-     * novo enquanto a tropa do anterior ainda vinha a caminho — a cidade
-     * ficava com dois em curso e sem tropa em casa.
-     *
-     * O que interessa é: a tropa já voltou? Se não voltou, não se manda outro. */
-    try {
-      const mods = mUw.MM.getModels().MovementsUnits || {};
-      for (const k of Object.keys(mods)) {
-        const a = mods[k].attributes || {};
-        if (Number(a.home_town_id) !== Number(townId)) continue;
-        if (a.started_at == null) continue;                 // é recebido, não meu
-
-        const tipo = String(a.type || '');
-        const nome = String(a.command_name || '');
-        const ehAtaque = /attack/i.test(tipo);
-        const ehRegresso = /regress|return/i.test(nome) || /return/i.test(tipo);
-
-        // um ataque a caminho OU tropa a voltar de um ataque
-        if (ehAtaque || ehRegresso) return true;
-      }
-    } catch (e) { seErroDeCodigo(e, 'Deuses'); }
-
-    // Sem Administrador não dá para saber mais; assume-se que não há.
-    if (semAdministrador()) return false;
-    try {
-      const url = mUw.location.origin + '/game/town_overviews?town_id=' + Number(townId)
-        + '&action=command_overview&h=' + mUw.Game.csrfToken
-        + '&json=' + encodeURIComponent(JSON.stringify({ town_id: Number(townId), nl_init: true }))
-        + '&_=' + Date.now();
-      const r = await mUw.fetch(url, { headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include' });
-      if (r.status === 429) return true;   // servidor a limitar: não insistir
-      const j = await r.json();
-      const cmds = ((j && j.json && j.json.data) || {}).commands || [];
-      /* Também aqui contam os REGRESSOS: o `!cd.return` excluía a tropa que
-       * vinha de volta, e mandava-se outro ataque antes de ela chegar. */
-      return cmds.some((cd) =>
-        Number(cd.origin_town_id) === Number(townId)
-        && (String(cd.type) === 'attack' || cd.return));
-    } catch (e) { return false; }
-  }
+  
 
   // Cidades das multis nesta ilha, por ordem rotativa.
   async function alvosNaIlha(ix, iy, townIdBase, multis) {
@@ -19596,11 +19663,11 @@ function makeDeusesModule(opts) {
     deusesAtuais.forEach((d) => { if (tenho[d] != null) tenho[d]++; });
 
     const blocoPerfil = `
-      <div style="background:${c.simular ? '#2a2416' : '#0d141c'};padding:6px;border-radius:4px;margin-bottom:6px;font-size:11px">
+      <div style="background:${c.simular ? '#2a2416' : '#0d141c'};padding:6px;border-radius:4px;margin-bottom:6px;font-size:13px">
         <label style="display:block;margin-bottom:4px;cursor:pointer">
           <input type="checkbox" id="deu-simular"${c.simular ? ' checked' : ''}>
           <b>Simular</b> — decide e escreve no log, mas não muda nada
-          <div style="opacity:.65;font-size:10px;margin-left:18px">
+          <div style="opacity:.65;font-size:12px;margin-left:18px">
             Mudar de deus faz perder o favor acumulado e é irreversível. Deixa isto ligado
             até concordares com as decisões.
           </div>
@@ -19609,7 +19676,7 @@ function makeDeusesModule(opts) {
         <b>Perfil</b>
         <label style="margin-left:8px"><input type="radio" name="deu-perfil" value="multi"${!ehMain ? ' checked' : ''}> Multi</label>
         <label style="margin-left:8px"><input type="radio" name="deu-perfil" value="main"${ehMain ? ' checked' : ''}> Main</label>
-        <div style="opacity:.65;font-size:10px;margin-top:3px">
+        <div style="opacity:.65;font-size:12px;margin-top:3px">
           ${ehMain
             ? 'Main: as cidades veneram deuses conforme os pesos abaixo (mais cidades num deus = favor desse deus mais depressa).'
             : 'Multi: roda sempre para o deus com MAIS favor acumulado, para haver muito que roubar.'}
@@ -19621,11 +19688,11 @@ function makeDeusesModule(opts) {
      * ROTATÓRIO (o módulo escolhe conforme a procura de favor). */
     const farm = c.cidadesFarm || {};    // { townId: {tipo:'fixo'|'rotativo', deus:'zeus'} }
     const blocoFarm = ehMain ? `
-      <div style="background:#0d141c;padding:6px;border-radius:4px;margin-bottom:6px;font-size:11px">
+      <div style="background:var(--mSurf);padding:6px;border-radius:4px;margin-bottom:6px;font-size:13px">
         <b>Cidades que farmam favor</b>
         <span style="opacity:.6">— atacam as multis com enviados divinos</span>
         <div style="max-height:150px;overflow-y:auto;margin-top:4px">
-          <table style="width:100%;border-collapse:collapse;font-size:11px">
+          <table style="width:100%;border-collapse:collapse;font-size:13px">
             ${towns.map((t) => {
               const f = farm[t.id] || {};
               const ativa = !!f.tipo;
@@ -19638,11 +19705,11 @@ function makeDeusesModule(opts) {
                   <span style="opacity:.5">${dAtual ? NOMES[dAtual] : '(sem deus)'}</span>
                 </td>
                 <td style="padding:1px 3px;width:150px">
-                  <select data-farmtipo="${t.id}"${ativa ? '' : ' disabled'} style="font-size:11px">
+                  <select data-farmtipo="${t.id}"${ativa ? '' : ' disabled'} style="font-size:13px">
                     <option value="rotativo"${f.tipo !== 'fixo' ? ' selected' : ''}>rotatório</option>
                     <option value="fixo"${f.tipo === 'fixo' ? ' selected' : ''}>fixo</option>
                   </select>
-                  <select data-farmdeus="${t.id}"${f.tipo === 'fixo' ? '' : ' disabled'} style="font-size:11px">
+                  <select data-farmdeus="${t.id}"${f.tipo === 'fixo' ? '' : ' disabled'} style="font-size:13px">
                     ${DEUSES.map((d) => `<option value="${d}"${f.deus === d ? ' selected' : ''}>${NOMES[d]}</option>`).join('')}
                   </select>
                 </td>
@@ -19650,7 +19717,7 @@ function makeDeusesModule(opts) {
             }).join('')}
           </table>
         </div>
-        <div style="opacity:.6;font-size:10px;margin-top:3px">
+        <div style="opacity:.6;font-size:12px;margin-top:3px">
           <b>Rotatório:</b> o módulo escolhe o deus conforme a procura de favor
           (míticas por recrutar, feitiços). <b>Fixo:</b> mantém o deus que escolheres.
         </div>
@@ -19665,20 +19732,20 @@ function makeDeusesModule(opts) {
           Guardar em casa:
           <input type="number" id="deu-reserva" value="${c.reservaEnviados || 0}" min="0"
             style="width:56px"> enviados
-          <div style="opacity:.6;font-size:10px">
+          <div style="opacity:.6;font-size:12px">
             Podem ir vários ataques ao mesmo tempo — o favor continua a ser gasto
             enquanto eles voam. Isto é o que fica sempre na cidade.
           </div>
         </div>
           espadachins de escudo<br>
-          <div style="opacity:.6;font-size:10px;margin:0 0 4px 4px">
+          <div style="opacity:.6;font-size:12px;margin:0 0 4px 4px">
             A muralha mata-os a eles em vez dos enviados. Vão os que houver na cidade;
             o recrutamento repõe-nos. 0 = nenhum.
           </div>
           <label><input type="checkbox" id="deu-calc"${c.calcularEnviados !== false ? ' checked' : ''}>
             calcular quantos enviados mandar</label>
           ${c.calcularEnviados !== false ? `
-            <div style="opacity:.6;font-size:10px;margin:2px 0 4px 18px">
+            <div style="opacity:.6;font-size:12px;margin:2px 0 4px 18px">
               Enche até <input type="number" min="1" id="deu-tecto" value="${c.favorMaximo || 500}" style="width:44px">
               de favor, a <input type="number" min="1" id="deu-porenv" value="${c.favorPorEnviado || 5}" style="width:36px"> por enviado.<br>
               Com 213 de favor faltam 287 → manda 57 (não 58, que passaria dos 500).
@@ -19690,13 +19757,13 @@ function makeDeusesModule(opts) {
         </div>
         <div style="margin-top:6px;border-top:1px solid #223;padding-top:4px">
           <b>As minhas multis</b>
-          <button id="deu-procurar" style="cursor:pointer;font-size:11px;margin-left:6px">🔍 Procurar nas ilhas de farm</button>
+          <button id="deu-procurar" style="cursor:pointer;font-size:13px;margin-left:6px">🔍 Procurar nas ilhas de farm</button>
           <div id="deu-vizinhos" style="margin-top:4px;max-height:130px;overflow-y:auto">
             ${(c.multis || []).length
-              ? (c.multis || []).map((m) => `<label style="display:block;font-size:11px">
+              ? (c.multis || []).map((m) => `<label style="display:block;font-size:13px">
                   <input type="checkbox" data-multi="${esc(m)}" checked> ${esc(m)}
                 </label>`).join('')
-              : '<span style="opacity:.55;font-size:10px">Marca as cidades de farm acima e carrega em “Procurar”.</span>'}
+              : '<span style="opacity:.55;font-size:12px">Marca as cidades de farm acima e carrega em “Procurar”.</span>'}
           </div>
         </div>
       </div>` : '';
@@ -19720,13 +19787,13 @@ function makeDeusesModule(opts) {
     }).join(' · ');
 
     const blocoVoadores = ehMain ? `
-      <div style="background:#0d141c;padding:6px;border-radius:4px;margin-bottom:6px;font-size:11px">
+      <div style="background:var(--mSurf);padding:6px;border-radius:4px;margin-bottom:6px;font-size:13px">
         <b>Grupo de voadores</b>
         <select id="deu-grupovoa" style="max-width:150px;margin-left:6px">
           <option value=""${!gVoaAtual ? ' selected' : ''}>(nenhum)</option>
           ${gruposJogo.map((g) => `<option value="${esc(g)}"${gVoaAtual === g ? ' selected' : ''}>${esc(g)}</option>`).join('')}
         </select>
-        <div style="opacity:.65;font-size:10px;margin-top:3px">
+        <div style="opacity:.65;font-size:12px;margin-top:3px">
           As cidades deste grupo só recebem deuses que dêem voadores, repartidos entre eles:
           ${nomesVoadores}.<br>
           Atena fica de fora — o pégaso é rápido mas fraco a atacar.
@@ -19735,14 +19802,14 @@ function makeDeusesModule(opts) {
       </div>` : '';
 
     const blocoPesos = ehMain ? `
-      <div style="background:#0d141c;padding:6px;border-radius:4px;margin-bottom:6px;font-size:11px">
+      <div style="background:var(--mSurf);padding:6px;border-radius:4px;margin-bottom:6px;font-size:13px">
         <b>Distribuição por deus</b>
         <span style="opacity:.6">— tens <b id="deu-total">${towns.length}</b> cidades;
         atribuídas <b id="deu-atribuidas">0</b></span>
         <div style="margin:4px 0">
           <label style="cursor:pointer"><input type="radio" name="deu-modo" value="proporcao"${c.modoPesos !== 'quantidade' ? ' checked' : ''}> Peso relativo</label>
           <label style="cursor:pointer;margin-left:10px"><input type="radio" name="deu-modo" value="quantidade"${c.modoPesos === 'quantidade' ? ' checked' : ''}> Número de cidades</label>
-          <div style="opacity:.6;font-size:10px">
+          <div style="opacity:.6;font-size:12px">
             <b>Peso relativo:</b> não é percentagem — conta a razão entre os números.
             Hera 2 e Ártemis 1 dá o dobro de cidades a Hera, tal como Hera 20 e Ártemis 10.
             Reparte sempre todas as cidades e ajusta-se sozinho quando ganhas ou perdes cidades.<br>
@@ -19750,7 +19817,7 @@ function makeDeusesModule(opts) {
             As que sobrarem ficam como estão e seguem o favor.
           </div>
         </div>
-        <table style="width:100%;border-collapse:collapse;margin-top:3px;font-size:11px">
+        <table style="width:100%;border-collapse:collapse;margin-top:3px;font-size:13px">
           ${DEUSES.map((d) => `<tr>
             <td style="padding:1px 3px">${NOMES[d]}</td>
             <td style="padding:1px 3px;width:52px">
@@ -19761,7 +19828,7 @@ function makeDeusesModule(opts) {
             </td>
           </tr>`).join('')}
         </table>
-        <div style="opacity:.55;font-size:10px;margin-top:2px">
+        <div style="opacity:.55;font-size:12px;margin-top:2px">
           Deixa tudo a 0 para repartir igualmente pelos 8. A coluna da direita mostra
           quantas cidades tens nesse deus face às que os pesos pedem.
         </div>
@@ -19784,11 +19851,11 @@ function makeDeusesModule(opts) {
 
     // No perfil MAIN as opções de farm não se aplicam — só confundem.
     const htmlFarm = ehMain ? '' : `
-      <div style="font-size:11px;line-height:1.7">
+      <div style="font-size:13px;line-height:1.7">
         <label><input type="checkbox" id="deu-on"${c.ativo ? ' checked' : ''}> <b>Rodar deus na cidade de farm</b></label><br>
         <div style="margin:4px 0">
           <b>Ilhas de farm</b>
-          <span style="opacity:.6;font-size:10px">— podem ser várias (até 8, uma por deus)</span>
+          <span style="opacity:.6;font-size:12px">— podem ser várias (até 8, uma por deus)</span>
           <div style="display:flex;gap:4px;align-items:center;margin-top:2px">
             <input type="text" id="deu-ilha-nova" placeholder="499:507" style="width:90px">
             <button id="deu-ilha-add" style="cursor:pointer;padding:2px 8px">+ juntar</button>
@@ -19797,13 +19864,13 @@ function makeDeusesModule(opts) {
           </div>
           ${(() => {
             const ls = listaDeIlhasFarm(c);
-            if (!ls.length) return '<div style="opacity:.5;font-size:10px;margin-top:3px">Nenhuma ilha indicada.</div>';
+            if (!ls.length) return '<div style="opacity:.5;font-size:12px;margin-top:3px">Nenhuma ilha indicada.</div>';
             return `<div style="margin-top:3px">${ls.map((k) => {
               const quantas = (ctxPainel ? ctxPainel.getMyTowns() : []).filter((t) => {
                 const i = ilhaDa(t.id); return i && `${i.x}:${i.y}` === k;
               }).length;
-              return `<span style="display:inline-block;background:#0d141c;border:1px solid #2c3e50;
-                border-radius:4px;padding:2px 6px;margin:2px 3px 0 0;font-size:11px">
+              return `<span style="display:inline-block;background:var(--mSurf);border:1px solid #2c3e50;
+                border-radius:4px;padding:2px 6px;margin:2px 3px 0 0;font-size:13px">
                 ${k} <span style="opacity:.55">${quantas} cidade(s)</span>
                 <a href="#" data-tirar-ilha="${k}" style="color:#d9705f;text-decoration:none;margin-left:4px">×</a>
               </span>`;
@@ -19811,7 +19878,7 @@ function makeDeusesModule(opts) {
           })()}
         </div>
         Rodar abaixo de <input type="number" id="deu-lim" value="${c.limiteFavor}" style="width:52px"> de favor
-        <div style="opacity:.6;font-size:10px;margin:1px 0 4px 4px">
+        <div style="opacity:.6;font-size:12px;margin:1px 0 4px 4px">
           O que estiver no deus antigo <b>perde-se</b> ao mudar. Um valor baixo (30)
           desperdiça pouco; um valor alto roda mais cedo mas deita fora mais.
         </div>
@@ -19819,7 +19886,7 @@ function makeDeusesModule(opts) {
         Deuses distintos entre as cidades de farm:
         <input type="number" min="1" max="${DEUSES.length}" id="deu-dist"
           value="${c.minDeusesDistintos != null ? c.minDeusesDistintos : 1}" style="width:42px">
-        <div style="opacity:.6;font-size:10px;margin:1px 0 4px 4px">
+        <div style="opacity:.6;font-size:12px;margin:1px 0 4px 4px">
           O favor é por CONTA e por deus, não por cidade — as cidades desta conta que
           estejam no mesmo deus descem juntas quando a main lhes rouba, e rodam juntas.
           Tendem a convergir.<br>
@@ -19830,10 +19897,10 @@ function makeDeusesModule(opts) {
         </div>
         <label><input type="checkbox" id="deu-mit"${c.protegerMiticas ? ' checked' : ''}> não rodar se houver míticas na cidade</label>
 
-        <div style="background:#0d141c;padding:6px 8px;border-radius:4px;margin-top:7px">
+        <div style="background:var(--mSurf);padding:6px 8px;border-radius:4px;margin-top:7px">
           <label><input type="checkbox" id="deu-pesos-on"${c.distribuirPorPesos ? ' checked' : ''}>
             <b>Distribuir as cidades que sobram pelos pesos</b></label>
-          <div style="opacity:.65;font-size:10px;margin:3px 0 5px 18px">
+          <div style="opacity:.65;font-size:12px;margin:3px 0 5px 18px">
             Por ordem: primeiro <b>um de cada deus</b> (oito cidades), depois as
             <b>ilhas de farm</b>, e só o que sobrar segue os pesos.<br>
             Útil para ter mais Poseidon, Hera ou Ares — os feitiços deles aceleram
@@ -19843,12 +19910,12 @@ function makeDeusesModule(opts) {
             const pw = c.pesos || {};
             return `<div style="display:flex;flex-wrap:wrap;gap:3px">
               ${DEUSES.map((d) => `<span style="display:inline-flex;align-items:center;gap:2px">
-                <span style="font-size:10px;opacity:.8;width:52px">${NOMES[d]}</span>
+                <span style="font-size:12px;opacity:.8;width:52px">${NOMES[d]}</span>
                 <input type="number" min="0" max="100" data-peso="${d}"
-                  value="${Number(pw[d]) || 0}" style="width:42px;font-size:10px">
+                  value="${Number(pw[d]) || 0}" style="width:42px;font-size:12px">
               </span>`).join('')}
             </div>
-            <div style="opacity:.55;font-size:10px;margin-top:3px">
+            <div style="opacity:.55;font-size:12px;margin-top:3px">
               Proporções, não números de cidades. 0 = esse deus não recebe extras.
             </div>`;
           })()}
@@ -19858,7 +19925,7 @@ function makeDeusesModule(opts) {
     // No perfil MAIN as míticas também se protegem, mas a caixa vive no bloco
     // de farm — repete-se aqui para continuar acessível.
     const htmlMiticasMain = ehMain ? `
-      <div style="font-size:11px;margin-bottom:6px">
+      <div style="font-size:13px;margin-bottom:6px">
         <label><input type="checkbox" id="deu-mit"${c.protegerMiticas ? ' checked' : ''}> não mudar o deus de cidades que tenham míticas dele</label>
       </div>` : '';
 
@@ -19878,24 +19945,24 @@ function makeDeusesModule(opts) {
     const escolhidosAfro = new Set((c.gruposAfrodite || []).map(String));
 
     const blocoAfrodite = gruposTodos.length ? `
-      <div style="background:#0d141c;padding:5px;border-radius:4px;margin-top:5px;font-size:11px">
+      <div style="background:var(--mSurf);padding:5px;border-radius:4px;margin-top:5px;font-size:13px">
         <b>Afrodite — onde pode entrar</b>
-        <div style="opacity:.6;font-size:10px;margin:2px 0 4px">
+        <div style="opacity:.6;font-size:12px;margin:2px 0 4px">
           Uma cidade por grupo antes de qualquer grupo ter a segunda. Máximo
           duas por grupo. As sereias servem para as combinações do encaixe.
         </div>
         <div style="display:flex;flex-wrap:wrap;gap:6px">
-          ${gruposTodos.map((g) => `<label style="font-size:11px">
+          ${gruposTodos.map((g) => `<label style="font-size:13px">
             <input type="checkbox" class="deu-afro" value="${esc(g)}"${escolhidosAfro.has(g) ? ' checked' : ''}> ${esc(g)}
           </label>`).join('')}
         </div>
-        <div style="opacity:.55;font-size:10px;margin-top:3px">
+        <div style="opacity:.55;font-size:12px;margin-top:3px">
           Nenhum marcado = sem regra especial para a Afrodite.
         </div>
       </div>` : '';
 
     const htmlComuns = blocoAfrodite + `
-      <div style="background:#0d141c;padding:5px;border-radius:4px;margin-top:5px;font-size:11px">
+      <div style="background:var(--mSurf);padding:5px;border-radius:4px;margin-top:5px;font-size:13px">
         <b>Favores:</b> ${linhaFavores}<br>
         <span style="opacity:.75">Cidades: ${towns.length} · deuses distintos: ${distintos}</span>
         ${ehMain ? '' : estado}
@@ -19951,17 +20018,17 @@ function makeDeusesModule(opts) {
       const alvo = container.querySelector('#deu-vizinhos');
       const jaMarcados = new Set(c.multis || []);
       const outros = jogs.filter((j) => j.jogador !== meu);
-      if (!outros.length) { alvo.innerHTML = '<span style="opacity:.6;font-size:10px">Nenhum outro jogador nessas ilhas.</span>'; return; }
+      if (!outros.length) { alvo.innerHTML = '<span style="opacity:.6;font-size:12px">Nenhum outro jogador nessas ilhas.</span>'; return; }
       alvo.innerHTML =
         `<div style="margin-bottom:4px">
-          <a href="#" id="deu-todos" style="color:#8cf;text-decoration:none;font-size:11px">marcar todos</a>
+          <a href="#" id="deu-todos" style="color:#8cf;text-decoration:none;font-size:13px">marcar todos</a>
           <span style="opacity:.4">·</span>
-          <a href="#" id="deu-nenhum" style="color:#8cf;text-decoration:none;font-size:11px">nenhum</a>
-          <span style="opacity:.5;font-size:10px;margin-left:6px">${outros.length} jogador(es) · ordenados dos mais pequenos para os maiores</span>
+          <a href="#" id="deu-nenhum" style="color:#8cf;text-decoration:none;font-size:13px">nenhum</a>
+          <span style="opacity:.5;font-size:12px;margin-left:6px">${outros.length} jogador(es) · ordenados dos mais pequenos para os maiores</span>
         </div>`
         + outros.map((j) => {
             const media = Math.round(j.pontos / Math.max(1, j.cidades.length));
-            return `<label style="display:block;font-size:11px;padding:1px 0">
+            return `<label style="display:block;font-size:13px;padding:1px 0">
               <input type="checkbox" data-multi="${esc(j.jogador)}"${jaMarcados.has(j.jogador) ? ' checked' : ''}>
               <b>${esc(j.jogador)}</b>
               <span style="opacity:.55">— ${j.cidades.length} cidade(s), ~${media} pts cada`
@@ -22447,20 +22514,20 @@ function makeEsquivaModule(opts) {
     mUw = ctx.uw; mWorld = ctx.WORLD;
     const c = cfg();
     container.innerHTML = `
-      <div style="font-size:11px;line-height:1.7">
+      <div style="font-size:13px;line-height:1.7">
         <label><input type="checkbox" id="esq-on"${c.ativo ? ' checked' : ''}> <b>Esquivar ataques</b></label><br>
         <label><input type="checkbox" id="esq-mil"${c.milicia ? ' checked' : ''}> ativar milícia ao esquivar</label><br>
         <label><input type="checkbox" id="esq-nc"${c.naoEsquivarNC ? ' checked' : ''}>
           não esvaziar se vier <b>só</b> colonizador</label>
-        <div style="opacity:.65;font-size:10px;margin:2px 0 4px 18px">
+        <div style="opacity:.65;font-size:12px;margin:2px 0 4px 18px">
           Colonizador sozinho: a tropa fica e mata-o — esvaziar entregaria a cidade.<br>
           Colonizador com limpezas à frente: a tropa sai e volta antes dele, escapando
           aos primeiros ataques.
         </div>
       </div>
-      <div style="background:#1a2416;padding:6px;border-radius:4px;margin-top:6px;font-size:11px">
+      <div style="background:#1a2416;padding:6px;border-radius:4px;margin-top:6px;font-size:13px">
         <label><input type="checkbox" id="esq-farm"${c.modoFarm ? ' checked' : ''}> <b>Modo farm de favores</b></label>
-        <div style="opacity:.7;font-size:10px;margin:2px 0 4px 18px">
+        <div style="opacity:.7;font-size:12px;margin:2px 0 4px 18px">
           Para as multis. Com isto ligado a milícia <b>NUNCA</b> é activada nesta conta —
           ela mata os enviados divinos e dura horas sem se poder desligar. A cidade é
           esvaziada na mesma, para os enviados sobreviverem e o farm continuar.<br>
@@ -22468,33 +22535,33 @@ function makeEsquivaModule(opts) {
           render quando ela expirar.
         </div>
         A minha main (um por linha):<br>
-        <span style="opacity:.65;font-size:10px">
+        <span style="opacity:.65;font-size:12px">
           Põe o <b>NOME DAS CIDADES</b> de onde a main ataca — é o que funciona.
           Um <b>prefixo com ponto</b> apanha todas: <code>34.</code> reconhece a
           34.1, a 34.2 e as seguintes.<br>
           O ID do jogador <b>não serve</b>: nos ataques recebidos, o jogo devolve
           o ID do DONO da cidade atacada (o teu), não o do atacante.
         </span><br>
-        <textarea id="esq-farm-jog" rows="2" style="width:100%;box-sizing:border-box;font-size:11px">${(c.jogadoresFarm || []).join('\n')}</textarea>
+        <textarea id="esq-farm-jog" rows="2" style="width:100%;box-sizing:border-box;font-size:13px">${(c.jogadoresFarm || []).join('\n')}</textarea>
         Sair <input type="number" id="esq-antes" value="${c.antesDoImpacto}" style="width:46px">s antes ·
         voltar <input type="number" id="esq-depois" value="${c.depoisDoImpacto}" style="width:46px">s depois<br>
         Com colonizador, estar em casa <input type="number" id="esq-nc-antes" value="${c.antesDoNC}" style="width:40px">s antes dele bater
       </div>
-      <div style="background:#0d141c;padding:5px;border-radius:4px;margin-top:5px;font-size:10px;opacity:.8">
+      <div style="background:var(--mSurf);padding:5px;border-radius:4px;margin-top:5px;font-size:12px;opacity:.8">
         Ao cancelar, a tropa volta a demorar o mesmo que já viajou — é isso que dá
         o controlo do instante do regresso. A janela de cancelamento é de
         ${c.janelaCancelamento}s, logo o máximo fora são ${c.janelaCancelamento * 2}s.
       </div>
-      <div style="background:#0d141c;padding:7px 8px;border-radius:4px;margin:6px 0;font-size:11px">
+      <div style="background:var(--mSurf);padding:7px 8px;border-radius:4px;margin:6px 0;font-size:13px">
         <b>Cidades — esquivar ou não</b>
-        <div style="opacity:.65;font-size:10px;margin:3px 0 5px">
+        <div style="opacity:.65;font-size:12px;margin:3px 0 5px">
           Numa cidade de <b>defesa</b> costuma valer mais receber o ataque: as tropas
           defendem, a muralha aguenta e não te levam recursos. Numa cidade de
           <b>ataque</b> vale mais esquivar para não perder as tropas.
         </div>
 
         <input type="text" id="esq-filtro" placeholder="filtrar por nome…"
-          value="${esc(filtroCidades || '')}" style="width:100%;font-size:11px;margin-bottom:5px">
+          value="${esc(filtroCidades || '')}" style="width:100%;font-size:13px;margin-bottom:5px">
 
         <div style="max-height:260px;overflow:auto">
           ${(() => {
@@ -22503,13 +22570,13 @@ function makeEsquivaModule(opts) {
               .filter((t) => !termo || String(t.name).toLowerCase().indexOf(termo) >= 0);
             if (!lista.length) return '<div style="opacity:.6">nenhuma cidade com esse nome.</div>';
 
-            return `<table style="width:100%;border-collapse:collapse;font-size:11px">`
+            return `<table style="width:100%;border-collapse:collapse;font-size:13px">`
               + lista.map((t) => {
                 const naoEsquiva = regraDaCidade(t.id) === 'nada';
                 return `<tr style="border-top:1px solid #1a2430">
                   <td style="padding:3px">${esc(t.name)}</td>
                   <td style="padding:3px;text-align:right;width:130px">
-                    <select data-regra="${t.id}" style="font-size:10px;width:100%;
+                    <select data-regra="${t.id}" style="font-size:12px;width:100%;
                       ${naoEsquiva ? 'color:#f99' : 'color:#9d9'}">
                       <option value="tudo"${!naoEsquiva ? ' selected' : ''}>esquivar</option>
                       <option value="nada"${naoEsquiva ? ' selected' : ''}>NÃO esquivar</option>
@@ -22521,8 +22588,8 @@ function makeEsquivaModule(opts) {
         </div>
 
         <div style="display:flex;gap:4px;margin-top:5px">
-          <button id="esq-todas-tudo" style="flex:1;font-size:10px">todas: esquivar</button>
-          <button id="esq-todas-nada" style="flex:1;font-size:10px">todas: não esquivar</button>
+          <button id="esq-todas-tudo" style="flex:1;font-size:12px">todas: esquivar</button>
+          <button id="esq-todas-nada" style="flex:1;font-size:12px">todas: não esquivar</button>
         </div>
       </div>
 
@@ -22533,10 +22600,10 @@ function makeEsquivaModule(opts) {
         const ag = agoraJogo();
         const velhos = ag == null ? 0 : Object.keys(p2)
           .filter((k) => { const f = Number(p2[k].casa) || 0; return f && (ag - f) > 3600; }).length;
-        return `<div style="background:#0d141c;padding:6px 8px;border-radius:4px;margin:6px 0;font-size:11px">
+        return `<div style="background:var(--mSurf);padding:6px 8px;border-radius:4px;margin:6px 0;font-size:13px">
           <b>${n} esquiva(s) agendada(s)</b>
           ${velhos ? `<span style="opacity:.6"> — ${velhos} já cumprida(s)</span>` : ''}
-          <button id="esq-limpar-planos" style="cursor:pointer;width:100%;margin-top:4px;font-size:10px">
+          <button id="esq-limpar-planos" style="cursor:pointer;width:100%;margin-top:4px;font-size:12px">
             Limpar as já cumpridas
           </button>
         </div>`;
@@ -22737,8 +22804,8 @@ function makeCulturaModule(opts) {
   const CFG_KEY = 'grepoCultura_cfg_v1';
   // Aprendido em jogo: o jogo permite mais do que uma celebração por cidade?
   const UMA_KEY = 'grepoCultura_uma_por_cidade_v1';
-  function umaPorCidade() { try { return armazem.getItem(UMA_KEY) === '1'; } catch (e) { return false; } }
-  function marcarUmaPorCidade() { try { armazem.setItem(UMA_KEY, '1'); } catch (e) { seErroDeCodigo(e, 'Cultura'); } }
+  
+  
   const CUSTO_KEY = 'grepoCultura_custo_procissao_v1';
   const RESERVA_KEY = 'grepoCultura_reserva_pontos_v1';
 
@@ -23157,13 +23224,13 @@ function makeCulturaModule(opts) {
     const custo = custoProcissao();
 
     container.innerHTML = `
-      <div style="background:#0d141c;padding:5px;border-radius:4px;font-size:11px;line-height:1.6">
+      <div style="background:var(--mSurf);padding:5px;border-radius:4px;font-size:13px;line-height:1.6">
         ${p ? `Nível cultural <b>${p.nivel}</b> · ${p.pontos}/${p.proximo} para o próximo<br>
         Pontos disponíveis: <b>${p.disponiveis}</b><br>` : ''}
         A celebrar: <b>${towns.length - livres}</b> · livres: <b>${livres}</b><br>
         Pontos de combate: <b>${pontosDeCombate()}</b>${custo ? ` · procissão custa ${custo}` : ' · custo da procissão ainda por aprender'}
       </div>
-      <div style="font-size:11px;line-height:1.7;margin-top:5px">
+      <div style="font-size:13px;line-height:1.7;margin-top:5px">
         <label><input type="checkbox" id="cul-on"${c.ativo ? ' checked' : ''}> <b>Celebrar automaticamente</b></label><br>
         <label><input type="checkbox" id="cul-teatro"${c.teatro ? ' checked' : ''}> peça de teatro (se a cidade tiver teatro)</label><br>
         <label><input type="checkbox" id="cul-festa"${c.festa ? ' checked' : ''}> festa</label><br>
@@ -23171,7 +23238,7 @@ function makeCulturaModule(opts) {
         <div style="margin-left:18px;opacity:.85">
           Guardar pelo menos <input type="number" min="0" id="cul-minpts"
             value="${Number(c.minPontosCombate) || 0}" style="width:70px"> pontos de combate
-          <div style="opacity:.65;font-size:10px">
+          <div style="opacity:.65;font-size:12px">
             Abaixo disto não faz mais desfiles. Cada um custa
             ${(CUSTOS.triumph && CUSTOS.triumph.pontosCombate) || 300}.
             Tens agora <b>${pontosDeCombate().toLocaleString('pt-PT')}</b>.
@@ -23604,7 +23671,7 @@ function makeGrutaModule(opts) {
     }
 
     container.innerHTML = `
-      <div style="font-size:11px;line-height:1.7">
+      <div style="font-size:13px;line-height:1.7">
         <label><input type="checkbox" id="gru-on"${c.ativo ? ' checked' : ''}> <b>Guardar prata na gruta</b></label><br>
         Guardar <input type="number" id="gru-pct" min="1" max="100" value="${c.percentagem}" style="width:48px">%
         da prata quando o armazém encher<br>
@@ -23639,32 +23706,32 @@ function makeGrutaModule(opts) {
             <td style="padding:1px 4px">${x.nome}</td>
             <td style="padding:1px 4px;opacity:.7">nv${x.nv}</td>
             <td style="padding:1px 4px;text-align:right;color:${cor}">${x.val != null ? x.val.toLocaleString('pt-PT') : '?'}</td>
-            <td style="padding:1px 4px;opacity:.55;font-size:10px">${
+            <td style="padding:1px 4px;opacity:.55;font-size:12px">${
               x.cap ? '/' + x.cap.toLocaleString('pt-PT')
                     : (x.val != null && totalConhecido ? Math.round(x.val / totalConhecido * 100) + '%' : '')
             }</td>
-            <td style="padding:1px 4px;opacity:.45;font-size:10px">${idade}</td>
+            <td style="padding:1px 4px;opacity:.45;font-size:12px">${idade}</td>
           </tr>`;
         };
 
         const top = dados.slice().sort((a, b) => (b.val || -1) - (a.val || -1)).slice(0, 10);
 
-        return `<div style="background:#0d141c;padding:5px;border-radius:4px;margin-top:5px;font-size:11px">
+        return `<div style="background:var(--mSurf);padding:5px;border-radius:4px;margin-top:5px;font-size:13px">
           <div style="display:flex;justify-content:space-between;align-items:center">
             <b>Prata nas grutas</b>
-            <span style="opacity:.6;font-size:10px">total ${total.toLocaleString('pt-PT')} · ${conhecidas}/${dados.length} lidas</span>
+            <span style="opacity:.6;font-size:12px">total ${total.toLocaleString('pt-PT')} · ${conhecidas}/${dados.length} lidas</span>
           </div>
-          <input id="gru-procura" placeholder="procurar cidade..." style="width:100%;box-sizing:border-box;margin:4px 0;font-size:11px;padding:2px">
+          <input id="gru-procura" placeholder="procurar cidade..." style="width:100%;box-sizing:border-box;margin:4px 0;font-size:13px;padding:2px">
           <table id="gru-tabela" style="width:100%;border-collapse:collapse">${top.map(linha).join('')}</table>
           <table id="gru-tabela-todas" style="width:100%;border-collapse:collapse;display:none">${dados.slice().sort((a, b) => String(a.nome).localeCompare(String(b.nome))).map(linha).join('')}</table>
-          <div style="opacity:.5;font-size:10px;margin-top:3px">A mostrar as 10 com mais prata${dados.length > 10 ? ` de ${dados.length}` : ''} — escreve acima para procurar as restantes.</div>
+          <div style="opacity:.5;font-size:12px;margin-top:3px">A mostrar as 10 com mais prata${dados.length > 10 ? ` de ${dados.length}` : ''} — escreve acima para procurar as restantes.</div>
         </div>`;
       })()}
-      <div style="background:#0d141c;padding:5px;border-radius:4px;margin-top:5px;font-size:11px">
+      <div style="background:var(--mSurf);padding:5px;border-radius:4px;margin-top:5px;font-size:13px">
         Cidades com armazém cheio de prata agora: <b>${cheias}</b>
         ${semGruta ? `<br><span style="opacity:.7">${semGruta} cidade(s) sem gruta construída (ignoradas)</span>` : ''}
       </div>
-      <div style="font-size:10px;opacity:.7;margin-top:5px">
+      <div style="font-size:12px;opacity:.7;margin-top:5px">
         O conteúdo de cada gruta é lido da resposta do jogo ao depositar — por
         isso o módulo deposita 1 moeda de sonda quando não sabe. O valor desce a
         cada espionagem, e é relido de tempos a tempos.
@@ -23877,22 +23944,7 @@ function makeTrocaCidadesModule(opts) {
   }
 
   // Cidades com alguma ordem em curso (construção, pesquisa ou recrutamento).
-  function cidadesOcupadas() {
-    const ocupadas = new Set();
-    const marcar = (nome, campo) => {
-      try {
-        const col = (mUw.MM.getCollections()[nome] || [])[0];
-        for (const m of ((col && col.models) || [])) {
-          const a = m.attributes || {};
-          if (a[campo] != null) ocupadas.add(Number(a[campo]));
-        }
-      } catch (e) { seErroDeCodigo(e, 'TrocaCidades'); }
-    };
-    marcar('BuildingOrder', 'town_id');
-    marcar('ResearchOrder', 'town_id');
-    marcar('UnitOrder', 'town_id');
-    return ocupadas;
-  }
+  
 
   // O jogo diz, por edifício, se faltam recursos — sinal direto de bloqueio.
   /* Esta cidade AINDA tem coisas para fazer?
@@ -24381,37 +24433,37 @@ function makeTrocaCidadesModule(opts) {
     try { ({ dadores, carentes } = classificar(towns, c)); } catch (e) { seErroDeCodigo(e, 'TrocaCidades'); }
 
     container.innerHTML = `
-      <div style="font-size:11px;line-height:1.7">
+      <div style="font-size:13px;line-height:1.7">
         <label><input type="checkbox" id="tc-on"${c.ativo ? ' checked' : ''}> <b>Enviar recursos entre cidades</b></label>
-        <div style="opacity:.65;font-size:10px;margin:2px 0 5px 18px">
+        <div style="opacity:.65;font-size:12px;margin:2px 0 5px 18px">
           Quem já não precisa manda a quem está a meio de uma ordem. Conta o que
           já vai a caminho, o espaço no armazém do destino e a capacidade do
           mercado.
         </div>
 
-        <div style="background:#0d141c;padding:5px 7px;border-radius:4px;margin-bottom:5px">
-          <b style="font-size:11px">Quem envia</b>
+        <div style="background:var(--mSurf);padding:5px 7px;border-radius:4px;margin-bottom:5px">
+          <b style="font-size:13px">Quem envia</b>
           <div style="opacity:.8;margin-top:2px">
             templates cumpridos → deixa
             <input type="number" id="tc-deixar-vazio" min="0" max="90" value="${c.deixarCumprida}" style="width:44px">%<br>
             cumpridos mas com a fila cheia → deixa
             <input type="number" id="tc-deixar" min="0" max="90" value="${c.deixarParada}" style="width:44px">%
           </div>
-          <div style="opacity:.55;font-size:10px;margin-top:3px">
+          <div style="opacity:.55;font-size:12px;margin-top:3px">
             Uma cidade parada volta a precisar quando a fila esvaziar, por isso
             guarda mais. Entretanto continua a farmar, e a fila são sete lugares.
           </div>
         </div>
 
         Encher quem recebe até <input type="number" id="tc-encher" min="20" max="100" value="${c.encherAte}" style="width:46px">%
-        <span style="opacity:.65;font-size:10px">do armazém</span>
+        <span style="opacity:.65;font-size:12px">do armazém</span>
       </div>
-      <div style="background:#0d141c;padding:5px;border-radius:4px;margin-top:5px;font-size:11px">
+      <div style="background:var(--mSurf);padding:5px;border-radius:4px;margin-top:5px;font-size:13px">
         A precisar: <b>${carentes.length}</b> · com excedente: <b>${dadores.length}</b>
         ${carentes.length ? `<br><span style="opacity:.75">Mais carente: ${carentes[0].t.name} (${Math.floor(carentes[0].menorPct)}%)</span>` : ''}
         ${dadores.length ? `<br><span style="opacity:.75">Capacidade de comércio disponível: ${dadores.reduce((s2, d) => s2 + d.capacidade, 0)}</span>` : ''}
       </div>
-      <div style="font-size:10px;opacity:.7;margin-top:5px">
+      <div style="font-size:12px;opacity:.7;margin-top:5px">
         Recebe quem tem construção ou recrutamento parados por falta de recursos.
       </div>
       <button id="tc-guardar" style="cursor:pointer;width:100%;margin-top:5px;background:#48d;color:#fff;padding:5px;border:none;border-radius:4px">Guardar</button>`;
@@ -25825,11 +25877,11 @@ function makeEncaixeModule(opts) {
       box.innerHTML = `
         <div style="background:linear-gradient(#2b3a4d,#1d2836);padding:5px 8px;border-radius:5px 5px 0 0;font-weight:bold;letter-spacing:.3px;display:flex;justify-content:space-between;align-items:center">
           <span>⏱️ ENCAIXE DE COMANDOS</span>
-          <span id="encj-alvo-nome" style="font-weight:normal;opacity:.75;font-size:10px"></span>
+          <span id="encj-alvo-nome" style="font-weight:normal;opacity:.75;font-size:12px"></span>
         </div>
         <div style="padding:7px 8px">
 
-          <div style="font-size:10px;letter-spacing:.5px;opacity:.65;margin-bottom:3px">DATA DE CHEGADA</div>
+          <div style="font-size:12px;letter-spacing:.5px;opacity:.65;margin-bottom:3px">DATA DE CHEGADA</div>
           <div style="display:flex;gap:4px;align-items:center;margin-bottom:8px">
             <select id="encj-dia" style="flex:0 0 74px"><option value="0">Hoje</option><option value="1">Amanhã</option></select>
             <input id="encj-h" type="number" min="0" max="23" placeholder="HH" style="width:46px;text-align:center">
@@ -25855,18 +25907,18 @@ function makeEncaixeModule(opts) {
             <span id="encj-aviso-margem"></span>
           </div>
 
-          <div style="border:1px solid #2c3e50;border-radius:5px;padding:6px;margin-bottom:8px;font-size:11px">
-            <div style="font-size:10px;letter-spacing:.5px;opacity:.65;margin-bottom:3px">TOLERÂNCIA</div>
+          <div style="border:1px solid #2c3e50;border-radius:5px;padding:6px;margin-bottom:8px;font-size:13px">
+            <div style="font-size:12px;letter-spacing:.5px;opacity:.65;margin-bottom:3px">TOLERÂNCIA</div>
             <div id="encj-tolerancia" style="opacity:.8">a ver...</div>
-          <div id="encj-carga" style="margin-top:5px;padding-top:5px;border-top:1px solid #2c3e50;font-size:11px"></div>
-          <div id="encj-combos" style="margin-top:5px;padding-top:5px;border-top:1px solid #2c3e50;font-size:11px"></div>
-            <div style="font-size:10px;opacity:.5;margin-top:2px">
+          <div id="encj-carga" style="margin-top:5px;padding-top:5px;border-top:1px solid #2c3e50;font-size:13px"></div>
+          <div id="encj-combos" style="margin-top:5px;padding-top:5px;border-top:1px solid #2c3e50;font-size:13px"></div>
+            <div style="font-size:12px;opacity:.5;margin-top:2px">
               Muda-se no painel do Maestro, em Encaixe. Se puseres um colonizador
               nas unidades, usa a tolerância dos colonizadores.
             </div>
           </div>
 
-          <div style="display:flex;gap:5px;align-items:center;margin-bottom:8px;font-size:11px">
+          <div style="display:flex;gap:5px;align-items:center;margin-bottom:8px;font-size:13px">
             <span>Tentativas:</span>
             <input id="encj-max" type="number" min="1" max="80" value="${c.maxTentativas}" style="width:48px">
             <span style="opacity:.5">·</span>
@@ -25889,10 +25941,10 @@ function makeEncaixeModule(opts) {
             <button id="encj-sup" style="flex:1;cursor:pointer;padding:5px;background:#2e5a7a;color:#eef;border:none;border-radius:4px;font-weight:bold">🛡 Programar apoio</button>
           </div>
 
-          <div id="encj-info" style="margin-top:6px;background:#0d141c;padding:5px;border-radius:4px;min-height:15px;font-size:11px"></div>
+          <div id="encj-info" style="margin-top:6px;background:var(--mSurf);padding:5px;border-radius:4px;min-height:15px;font-size:13px"></div>
           <!-- SCROLL: com muitos envios agendados a lista cobria o ecrã todo. -->
-          <div id="encj-agendados" style="margin-top:4px;font-size:11px;max-height:180px;overflow-y:auto"></div>
-          <div style="opacity:.5;margin-top:4px;font-size:10px">O jogo varia a viagem ~6s. Com ±3s costuma acertar à primeira; margens apertadas exigem muitas tentativas.</div>
+          <div id="encj-agendados" style="margin-top:4px;font-size:13px;max-height:180px;overflow-y:auto"></div>
+          <div style="opacity:.5;margin-top:4px;font-size:12px">O jogo varia a viagem ~6s. Com ±3s costuma acertar à primeira; margens apertadas exigem muitas tentativas.</div>
         </div>`;
       cont.insertBefore(box, cont.firstChild);
 
@@ -26014,25 +26066,25 @@ function makeEncaixeModule(opts) {
               <span style="white-space:nowrap">
                 <a href="#" data-editar="${p.id}" title="mudar a hora ou o tipo"
                    style="color:#8bf;text-decoration:none;margin-right:6px">editar</a>
-                <a href="#" data-canc="${p.id}" style="color:#f88;text-decoration:none">✕</a>
+                <a href="#" data-canc="${p.id}" style="color:var(--mStop);text-decoration:none">✕</a>
               </span>
             </div>
             <div style="opacity:.85">chega <b>${hh(p.chegada)}</b></div>
-            <div style="opacity:.9;font-size:10px">${tropas || '<span style="opacity:.5">sem unidades</span>'}</div>
+            <div style="opacity:.9;font-size:12px">${tropas || '<span style="opacity:.5">sem unidades</span>'}</div>
 
-            <div data-edicao="${p.id}" style="display:none;background:#0d141c;padding:5px 6px;border-radius:4px;margin-top:4px">
-              <div style="font-size:10px;opacity:.7;margin-bottom:3px">
+            <div data-edicao="${p.id}" style="display:none;background:var(--mSurf);padding:5px 6px;border-radius:4px;margin-top:4px">
+              <div style="font-size:12px;opacity:.7;margin-bottom:3px">
                 A hora é a de CHEGADA, no relógio do jogo.
               </div>
               <div style="display:flex;gap:4px;align-items:center;flex-wrap:wrap">
                 <input type="text" data-hora="${p.id}" value="${hh(p.chegada)}"
-                  placeholder="hh:mm:ss" style="width:78px;font-size:11px">
-                <select data-tipo="${p.id}" style="font-size:11px">
+                  placeholder="hh:mm:ss" style="width:78px;font-size:13px">
+                <select data-tipo="${p.id}" style="font-size:13px">
                   <option value="attack"${p.tipo === 'attack' ? ' selected' : ''}>⚔ ataque</option>
                   <option value="support"${p.tipo === 'support' ? ' selected' : ''}>🛡 apoio</option>
                   <option value="colonize"${p.tipo === 'colonize' ? ' selected' : ''}>🚢 colonização</option>
                 </select>
-                <button data-guardar="${p.id}" style="cursor:pointer;font-size:10px;background:#48d;color:#fff;border:none;border-radius:3px;padding:3px 8px">guardar</button>
+                <button data-guardar="${p.id}" style="cursor:pointer;font-size:12px;background:#48d;color:#fff;border:none;border-radius:3px;padding:3px 8px">guardar</button>
               </div>
             </div>
           </div>`;
@@ -26478,13 +26530,13 @@ function makeEncaixeModule(opts) {
             el.innerHTML = `<b>${total}</b> de carga${comPoroes ? ' (com porões)' : ''} · `
               + `cabe <b>${Math.round(fatia * 100)}%</b> da tropa`
               + `<div style="opacity:.7;margin-top:2px">${sug}</div>`
-              + '<div style="opacity:.5;font-size:10px">proporcional ao que tens — escolhe unidades para ver quanto falta</div>';
+              + '<div style="opacity:.5;font-size:12px">proporcional ao que tens — escolhe unidades para ver quanto falta</div>';
             return;
           }
 
           /* Já há coisas escolhidas: dizer quanto ainda cabe, e de quê. */
           if (livre < 0) {
-            el.innerHTML = `<b style="color:#f88">${usado}</b> de ${total} — passa em ${-livre}. `
+            el.innerHTML = `<b style="color:var(--mStop)">${usado}</b> de ${total} — passa em ${-livre}. `
               + 'Tira tropa ou acrescenta transportes.';
             return;
           }
@@ -26604,9 +26656,9 @@ function makeEncaixeModule(opts) {
           const escrita = [h, m2, s2].some((x) => x && String(x.value).trim() !== '');
 
           if (!escrita) {
-            el.innerHTML = '<div style="font-size:10px;letter-spacing:.5px;opacity:.65;margin-bottom:3px">'
+            el.innerHTML = '<div style="font-size:12px;letter-spacing:.5px;opacity:.65;margin-bottom:3px">'
               + 'TENTATIVAS PARA O MESMO SEGUNDO</div>'
-              + '<div style="opacity:.55;font-size:10px">Escreve a hora de chegada '
+              + '<div style="opacity:.55;font-size:12px">Escreve a hora de chegada '
               + 'para ver as composições possíveis desta cidade.</div>';
             return;
           }
@@ -26617,9 +26669,9 @@ function makeEncaixeModule(opts) {
           /* Sem tropa nos campos o jogo não mostra a duração da viagem, e sem
            * ela não há como deduzir as composições mais lentas. */
           if (!duracaoDaJanela()) {
-            el.innerHTML = '<div style="font-size:10px;letter-spacing:.5px;opacity:.65;margin-bottom:3px">'
+            el.innerHTML = '<div style="font-size:12px;letter-spacing:.5px;opacity:.65;margin-bottom:3px">'
               + 'TENTATIVAS PARA O MESMO SEGUNDO</div>'
-              + '<div style="opacity:.55;font-size:10px">Escolhe as unidades primeiro — '
+              + '<div style="opacity:.55;font-size:12px">Escolhe as unidades primeiro — '
               + 'preciso do tempo de viagem que o jogo mostra para calcular as '
               + 'composições mais lentas.</div>';
             return;
@@ -26630,9 +26682,9 @@ function makeEncaixeModule(opts) {
 
           const hh = (t) => new Date((t + desvioFuso()) * 1000).toISOString().substr(11, 8);
 
-          el.innerHTML = '<div style="font-size:10px;letter-spacing:.5px;opacity:.65;margin-bottom:3px">'
+          el.innerHTML = '<div style="font-size:12px;letter-spacing:.5px;opacity:.65;margin-bottom:3px">'
             + 'TENTATIVAS PARA O MESMO SEGUNDO</div>'
-            + '<div style="opacity:.55;font-size:10px;margin-bottom:4px">'
+            + '<div style="opacity:.55;font-size:12px;margin-bottom:4px">'
             + 'Cada composição tem uma velocidade diferente, portanto sai a uma hora '
             + 'diferente para chegar ao mesmo instante. Se a primeira acertar, leva a '
             + 'tropa e as outras falham sozinhas.</div>'
@@ -26645,14 +26697,14 @@ function makeEncaixeModule(opts) {
                 <span style="opacity:.7">— ${c2.nome}</span>${jaPassou ? ' <i>(hora passada)</i>' : ''}
               </label>`;
             }).join('')
-            + '<div style="display:flex;gap:5px;align-items:center;margin-top:5px;font-size:11px">'
+            + '<div style="display:flex;gap:5px;align-items:center;margin-top:5px;font-size:13px">'
             + '<span style="opacity:.7">enviar como</span>'
             + '<select id="encj-tipo-combo" style="flex:1">'
             + `<option value="attack"${tipoEnvio !== 'support' ? ' selected' : ''}>⚔ ataque</option>`
             + `<option value="support"${tipoEnvio === 'support' ? ' selected' : ''}>🛡 apoio</option>`
             + '</select></div>'
             + '<button id="encj-combos-go" style="cursor:pointer;width:100%;margin-top:4px;'
-            + 'background:#3a6ea5;color:#fff;padding:4px;border:none;border-radius:4px;font-size:11px">'
+            + 'background:#3a6ea5;color:#fff;padding:4px;border:none;border-radius:4px;font-size:13px">'
             + 'Agendar as marcadas</button>';
 
           const bt = el.querySelector('#encj-combos-go');
@@ -26845,14 +26897,14 @@ function makeEncaixeModule(opts) {
         return '#' + p.alvoId;
       })();
 
-      return `<div style="border-top:1px solid #223;padding:5px 0;font-size:11px">
+      return `<div style="border-top:1px solid #223;padding:5px 0;font-size:13px">
         <div style="display:flex;justify-content:space-between;align-items:center">
           <b>${icone} ${lim(origem)} → ${lim(alvoTxt)}</b>
-          <a href="#" data-cancelar="${p.id}" style="color:#f88;text-decoration:none" title="cancelar este agendamento">✕ cancelar</a>
+          <a href="#" data-cancelar="${p.id}" style="color:var(--mStop);text-decoration:none" title="cancelar este agendamento">✕ cancelar</a>
         </div>
         <div>sai <b>${envio}</b> · chega ${hh(p.chegada)}${dia(p.chegada)} <span style="opacity:.7">(${quando})</span></div>
         <div style="opacity:.9">${tropas || '<span style="opacity:.5">sem unidades</span>'}</div>
-        <div style="opacity:.6;font-size:10px">±${margUsada}s ${
+        <div style="opacity:.6;font-size:12px">±${margUsada}s ${
           dirUsada === 'antes' ? 'só antes' : dirUsada === 'depois' ? 'só depois' : 'antes e depois'
         } <span style="opacity:.8">(${nomeTipo})</span></div>
         ${p.duracaoJogo ? '' : '<div style="color:#fc8">⚠ duração estimada — o alvo não tinha coordenadas</div>'}
@@ -26860,42 +26912,42 @@ function makeEncaixeModule(opts) {
     }).join('');
 
     container.innerHTML = `
-      <div style="font-size:11px;line-height:1.6">
+      <div style="font-size:13px;line-height:1.6">
         <label><input type="checkbox" id="enc-on"${c.ativo ? ' checked' : ''}> <b>Encaixe de comandos ativo</b></label><br>
         <span style="opacity:.7">A hora, a margem e a direção definem-se na janela de ataque/apoio da cidade alvo.</span><br>
-        <label style="font-size:10px;opacity:.85">
+        <label style="font-size:12px;opacity:.85">
           <input type="checkbox" id="enc-vies"${(() => {
             try { return armazem.getItem('grepoEncaixe_corrigirVies_v1') === '1' ? ' checked' : ''; }
             catch (e) { return ''; }
           })()}>
           corrigir pelo desvio das tentativas anteriores
         </label>
-        <div style="opacity:.6;font-size:10px;margin-left:18px">
+        <div style="opacity:.6;font-size:12px;margin-left:18px">
           Normalmente <b>piora</b> — mexe no que definiste na janela. Se o envio sair
           adiantado ou atrasado, ajusta antes o “começar antes”.
         </div>
       </div>
-      ${(() => { const e = estatisticaDesvios(); return e ? `<div style="background:#0d141c;padding:5px;border-radius:4px;margin-top:5px;font-size:11px">
+      ${(() => { const e = estatisticaDesvios(); return e ? `<div style="background:var(--mSurf);padding:5px;border-radius:4px;margin-top:5px;font-size:13px">
         <b>Variação observada</b> (${e.n} tentativas): de ${e.min >= 0 ? '+' : ''}${e.min}s a ${e.max >= 0 ? '+' : ''}${e.max}s · mediana ${e.mediana >= 0 ? '+' : ''}${e.mediana}s
       </div>` : ''; })()}
-      <div style="background:#0d141c;padding:6px 8px;border-radius:4px;margin-top:5px">
-        <b style="font-size:11px">Ajudas na janela do jogo</b>
-        <label style="display:block;font-size:11px;margin-top:3px">
+      <div style="background:var(--mSurf);padding:6px 8px;border-radius:4px;margin-top:5px">
+        <b style="font-size:13px">Ajudas na janela do jogo</b>
+        <label style="display:block;font-size:13px;margin-top:3px">
           <input type="checkbox" id="enc-carga"${c.mostrarCarga !== false ? ' checked' : ''}>
           quanta tropa cabe nos barcos
         </label>
-        <label style="display:block;font-size:11px">
+        <label style="display:block;font-size:13px">
           <input type="checkbox" id="enc-combos"${c.mostrarCombos !== false ? ' checked' : ''}>
           composições com velocidades diferentes
         </label>
-        <div style="opacity:.55;font-size:10px;margin-top:2px">
+        <div style="opacity:.55;font-size:12px;margin-top:2px">
           Desliga se preferires fazer as contas tu — o encaixe funciona na mesma.
         </div>
       </div>
 
-      <div style="background:#0d141c;padding:6px 8px;border-radius:4px;margin-top:5px">
-        <b style="font-size:11px">Desvios por tipo</b>
-        <div style="opacity:.6;font-size:10px;margin-bottom:4px">
+      <div style="background:var(--mSurf);padding:6px 8px;border-radius:4px;margin-top:5px">
+        <b style="font-size:13px">Desvios por tipo</b>
+        <div style="opacity:.6;font-size:12px;margin-bottom:4px">
           O que cada tipo usa quando não escolhes nada na janela do jogo. Assim
           programas os envios sem te preocupares com isto de cada vez.
         </div>
@@ -26904,13 +26956,13 @@ function makeEncaixeModule(opts) {
           const nome = tipo === 'attack' ? '⚔️ Ataques'
             : (tipo === 'support' ? '🤝 Apoios' : '🚢 Colonizadores');
           return `<div style="display:flex;gap:5px;align-items:center;margin-bottom:3px">
-            <span style="flex:0 0 108px;font-size:11px">${nome}</span>
-            <span style="font-size:10px;opacity:.7">±</span>
+            <span style="flex:0 0 108px;font-size:13px">${nome}</span>
+            <span style="font-size:12px;opacity:.7">±</span>
             <input type="number" min="0" max="10" data-tipomarg="${tipo}"
               value="${d.margemSeg != null ? d.margemSeg : c.margemSeg}"
-              style="width:38px;font-size:11px">
-            <span style="font-size:10px;opacity:.7">s</span>
-            <select data-tipodir="${tipo}" style="flex:1;font-size:10px">
+              style="width:38px;font-size:13px">
+            <span style="font-size:12px;opacity:.7">s</span>
+            <select data-tipodir="${tipo}" style="flex:1;font-size:12px">
               <option value="ambos"${(d.direcao || 'ambos') === 'ambos' ? ' selected' : ''}>antes e depois</option>
               <option value="antes"${d.direcao === 'antes' ? ' selected' : ''}>só antes</option>
               <option value="depois"${d.direcao === 'depois' ? ' selected' : ''}>só depois</option>
@@ -26919,10 +26971,10 @@ function makeEncaixeModule(opts) {
         }).join('')}
       </div>
 
-      <div style="background:#0d141c;padding:5px;border-radius:4px;margin-top:5px">
-        <b style="font-size:11px">Agendados: ${planos.length}</b>
+      <div style="background:var(--mSurf);padding:5px;border-radius:4px;margin-top:5px">
+        <b style="font-size:13px">Agendados: ${planos.length}</b>
         <div style="max-height:260px;overflow-y:auto;margin-top:3px">
-          ${lista || '<div style="font-size:11px;opacity:.6;padding-top:3px">Nenhum.</div>'}
+          ${lista || '<div style="font-size:13px;opacity:.6;padding-top:3px">Nenhum.</div>'}
         </div>
       </div>`;
 
@@ -27118,12 +27170,7 @@ function makeMissoesModule(opts) {
     } catch (e) { return []; }
   }
 
-  function relacoes() {
-    try {
-      const col = mUw.MM.getCollections().IslandQuestPlayerRelation[0];
-      return (col.models || []).map((m) => m.attributes || {});
-    } catch (e) { return []; }
-  }
+  
 
   // Moeda que esta variante dá: 'coins_of_wisdom' ou 'coins_of_war'.
   function moedaDa(missao) {
@@ -27300,15 +27347,7 @@ function makeMissoesModule(opts) {
   }
 
   // Já foram entregues as unidades pedidas?
-  function unidadesJaLa(missao) {
-    const pedido = unidadesPedidas(missao);
-    if (!pedido) return true;
-    const feito = ((missao.progress || {}).units) || {};
-    for (const k of Object.keys(pedido.unidades)) {
-      if ((Number(feito[k]) || 0) < pedido.unidades[k]) return false;
-    }
-    return true;
-  }
+  
 
   /* ---------------------- pedidos --------------------------------------- */
 
@@ -28393,51 +28432,51 @@ function makeMissoesModule(opts) {
     }).join('') : '<tr><td colspan="4" style="opacity:.6;padding:3px">Nenhuma missão neste momento.</td></tr>';
 
     container.innerHTML = `
-      <div style="font-size:11px;line-height:1.7">
+      <div style="font-size:13px;line-height:1.7">
         <label><input type="checkbox" id="mis-on"${c.ativo ? ' checked' : ''}> <b>Fazer missões de ilha</b></label><br>
-      <label style="display:block;font-size:11px;margin-top:3px">
+      <label style="display:block;font-size:13px;margin-top:3px">
         <input type="checkbox" id="mis-guia"${c.guiaInicial === true ? ' checked' : ''}>
         fechar as missões do guia inicial
       </label>
-      <div style="opacity:.55;font-size:10px;margin:0 0 4px 18px">
+      <div style="opacity:.55;font-size:12px;margin:0 0 4px 18px">
         As do painel lateral — construir, recrutar, vencer combates.<br>
-        <b style="color:#c96">Desligado por omissão:</b> a recompensa entra, mas
+        <b style="color:var(--mBrass)">Desligado por omissão:</b> a recompensa entra, mas
         a lista do jogo fica dessincronizada e deixa de mostrar missões até
         recarregares. Liga por tua conta.
       </div>
         <label><input type="checkbox" id="mis-sab"${c.preferirSabedoria ? ' checked' : ''}> preferir moedas de sabedoria</label>
-        <span style="opacity:.6;font-size:10px">(nas de ameaça, é também a de defender)</span><br>
+        <span style="opacity:.6;font-size:12px">(nas de ameaça, é também a de defender)</span><br>
         <label><input type="checkbox" id="mis-res"${c.darRecursos ? ' checked' : ''}> entregar recursos</label>
         até <input type="number" min="0" id="mis-max" value="${c.maxRecursosPorMissao}" style="width:64px"> por missão,
         deixando <input type="number" min="0" max="90" id="mis-reserva" value="${c.reservaPct}" style="width:42px">% no armazém<br>
         <label><input type="checkbox" id="mis-tropas"${c.enviarTropas ? ' checked' : ''}> aceitar missões que peçam enviar tropas</label>
-        <span style="opacity:.6;font-size:10px">(só se as tiver)</span><br>
+        <span style="opacity:.6;font-size:12px">(só se as tiver)</span><br>
         <label><input type="checkbox" id="mis-mil"${c.milicia ? ' checked' : ''}> activar milícia nas de defesa sem tropas</label><br>
         Feitiço da recompensa:
-        <select id="mis-recomp" style="font-size:11px">
+        <select id="mis-recomp" style="font-size:13px">
           <option value="stash"${c.recompensaAcao !== 'use' ? ' selected' : ''}>guardar no inventário</option>
           <option value="use"${c.recompensaAcao === 'use' ? ' selected' : ''}>usar já</option>
         </select>
-        <span style="opacity:.6;font-size:10px">(as moedas vêm sempre)</span><br>
+        <span style="opacity:.6;font-size:12px">(as moedas vêm sempre)</span><br>
         <label><input type="checkbox" id="mis-descartar"${c.descartarTropas ? ' checked' : ''}>
           descartar as recompensas de <b>tropas</b></label>
-        <span style="opacity:.6;font-size:10px">— ocupam população</span><br>
+        <span style="opacity:.6;font-size:12px">— ocupam população</span><br>
         ${(() => {
           const t = tiposVistos();
           const ks = Object.keys(t);
           if (!ks.length) return '';
-          return `<div style="opacity:.55;font-size:10px;margin:2px 0 4px">
+          return `<div style="opacity:.55;font-size:12px;margin:2px 0 4px">
             Tipos de recompensa já vistos: ${ks.map((k) => `${esc(k)} (${t[k].vezes}×)`).join(', ')}.
           </div>`;
         })()}
         <label><input type="checkbox" id="mis-atk"${c.pedirAtaque ? ' checked' : ''}> pedir as vagas de ataque</label>
-        <span style="opacity:.6;font-size:10px">
+        <span style="opacity:.6;font-size:12px">
           (a missão não se perde se não os matares todos — cada vaga desgasta os atacantes
           e pode pedir-se outra depois de a milícia voltar)
         </span>
       </div>
 
-      <div style="background:#0d141c;padding:5px;border-radius:4px;margin-top:6px;font-size:11px">
+      <div style="background:var(--mSurf);padding:5px;border-radius:4px;margin-top:6px;font-size:13px">
         <b>Missões agora</b>
         <table style="width:100%;border-collapse:collapse;margin-top:3px">
           <tr style="opacity:.6"><td>missão</td><td>moedas</td><td>pede</td><td>estado</td></tr>
@@ -29312,13 +29351,13 @@ function makeColonosModule(opts) {
     const cidadesConhecidas = cidadesGuardadas();
 
     container.innerHTML = `
-      <div style="font-size:11px;line-height:1.7">
+      <div style="font-size:13px;line-height:1.7">
         <label><input type="checkbox" id="col-on"${c.ativo ? ' checked' : ''}> <b>Sistema de colonizadores</b></label><br>
 
-        <div style="background:#0d141c;padding:6px;border-radius:4px;margin:5px 0">
+        <div style="background:var(--mSurf);padding:6px;border-radius:4px;margin:5px 0">
           <label style="display:block"><input type="radio" name="col-modo" value="destino"${c.modo === 'destino' ? ' checked' : ''}>
             <b>Enviar para uma cidade</b>
-            <span style="opacity:.6;font-size:10px">— todas as cidades mandam os colonizadores
+            <span style="opacity:.6;font-size:12px">— todas as cidades mandam os colonizadores
             para a cidade que indicares; tu atacas quando quiseres</span></label>
           <div style="margin:2px 0 6px 18px">
             Cidade que recebe:
@@ -29336,19 +29375,19 @@ function makeColonosModule(opts) {
             const donos = Object.keys(partilhaCache || {})
               .filter((x) => x !== '__comum').sort();
             if (!donos.length) {
-              return `<div style="opacity:.5;font-size:10px;margin-top:3px">
+              return `<div style="opacity:.5;font-size:12px;margin-top:3px">
                 Ainda não recebi a lista das outras contas — escreve o número à mão.
               </div>`;
             }
             const donoSel = donoEscolhido || donos[0];
             const cidades = ((partilhaCache[donoSel] || {}).cidades) || [];
             return `<div style="display:flex;gap:4px;align-items:center;margin-top:4px">
-              <span style="opacity:.7;font-size:10px;flex:0 0 auto">ou escolhe:</span>
-              <select id="col-dono" style="flex:1;font-size:10px">
+              <span style="opacity:.7;font-size:12px;flex:0 0 auto">ou escolhe:</span>
+              <select id="col-dono" style="flex:1;font-size:12px">
                 ${donos.map((d) => `<option value="${esc(d)}"${d === donoSel ? ' selected' : ''}>
                   ${esc(d)}</option>`).join('')}
               </select>
-              <select id="col-cidade" style="flex:1;font-size:10px">
+              <select id="col-cidade" style="flex:1;font-size:12px">
                 <option value="">— cidade —</option>
                 ${cidades.map((ct) => `<option value="${ct.id}">${esc(ct.nome || ct.id)}</option>`).join('')}
               </select>
@@ -29357,7 +29396,7 @@ function makeColonosModule(opts) {
 
           <label style="display:block"><input type="radio" name="col-modo" value="rotacao"${c.modo !== 'destino' ? ' checked' : ''}>
             <b>Rotação entre duas equipas</b>
-            <span style="opacity:.6;font-size:10px">— cada equipa junta numa base e
+            <span style="opacity:.6;font-size:12px">— cada equipa junta numa base e
             ataca a base da outra</span></label>
 
           ${(() => {
@@ -29373,17 +29412,17 @@ function makeColonosModule(opts) {
               const cidades = donos.length
                 ? (((partilhaCache[donoSel] || {}).cidades) || []) : [];
               return `<div style="display:flex;gap:4px;align-items:center;margin:3px 0 0 20px">
-                <span style="opacity:.75;font-size:10px;width:58px">Base ${qual}</span>
+                <span style="opacity:.75;font-size:12px;width:58px">Base ${qual}</span>
                 <input type="text" id="col-base${qual}" value="${valor || ''}"
-                  placeholder="número da cidade" style="width:110px;font-size:10px">
-                ${donos.length ? `<select data-base="${qual}" style="flex:1;font-size:10px">
+                  placeholder="número da cidade" style="width:110px;font-size:12px">
+                ${donos.length ? `<select data-base="${qual}" style="flex:1;font-size:12px">
                   <option value="">— escolher —</option>
                   ${cidades.map((ct) => `<option value="${ct.id}">${esc(ct.nome || ct.id)}</option>`).join('')}
                 </select>` : ''}
               </div>`;
             };
             return linha('A', c.baseA) + linha('B', c.baseB)
-              + `<div style="opacity:.6;font-size:10px;margin:2px 0 0 20px">
+              + `<div style="opacity:.6;font-size:12px;margin:2px 0 0 20px">
                   A tua equipa junta os colonizadores na sua base e ataca a outra.<br>
                   <b>As bases e o modo são partilhados</b>: mudas aqui e as outras contas
                   aplicam-nos na passagem seguinte. A <b>equipa</b> vem da lista fixa,
@@ -29398,19 +29437,19 @@ function makeColonosModule(opts) {
           try { fixa = mUw.__maestroEquipa ? mUw.__maestroEquipa() : null; } catch (e) { seErroDeCodigo(e, 'Colonos'); }
           if (fixa) {
             return `Equipa: <b>${fixa}</b>
-              <span style="opacity:.6;font-size:10px">— definida pelo nome da conta,
+              <span style="opacity:.6;font-size:12px">— definida pelo nome da conta,
               igual em todos os mundos. Cada equipa ataca o depósito da outra.</span><br>`;
           }
           return `Equipa:
             <label style="margin-left:4px"><input type="radio" name="col-eq" value="A"${c.equipa === 'A' ? ' checked' : ''}> A</label>
             <label style="margin-left:8px"><input type="radio" name="col-eq" value="B"${c.equipa === 'B' ? ' checked' : ''}> B</label>
-            <span style="opacity:.6;font-size:10px">— cada equipa ataca o depósito da outra</span><br>`;
+            <span style="opacity:.6;font-size:12px">— cada equipa ataca o depósito da outra</span><br>`;
         })()}
 
         <div style="margin:4px 0">
           <b>Cidades-base</b>
-          <button id="col-atualizar" style="cursor:pointer;font-size:10px;margin-left:6px">🔄 procurar cidades das contas</button>
-          <div style="opacity:.6;font-size:10px">
+          <button id="col-atualizar" style="cursor:pointer;font-size:12px;margin-left:6px">🔄 procurar cidades das contas</button>
+          <div style="opacity:.6;font-size:12px">
             A base de cada equipa é uma cidade de qualquer conta dessa equipa — é para
             lá que todas enviam os colonizadores, e é essa que a equipa oposta ataca.
           </div>
@@ -29435,7 +29474,7 @@ function makeColonosModule(opts) {
           Atacar a base com
           <input type="number" id="col-popatk" value="${c.popAtaqueBase || 100}" min="10" style="width:56px">
           de população
-          <div style="opacity:.6;font-size:10px">
+          <div style="opacity:.6;font-size:12px">
             O ataque só serve para os colonizadores voltarem com ele. Manda-se o
             mínimo: se a esquiva da base falhar, não se perde a frota.
           </div>
@@ -29446,18 +29485,18 @@ function makeColonosModule(opts) {
 
         <label><input type="checkbox" id="col-enviar"${c.enviar ? ' checked' : ''}> juntar os colonizadores no depósito</label><br>
         <label><input type="checkbox" id="col-atacar"${c.atacar ? ' checked' : ''}> atacar o depósito da equipa oposta</label><br>
-        <div style="opacity:.6;font-size:10px;margin-top:3px">
+        <div style="opacity:.6;font-size:12px;margin-top:3px">
           Para <b>fundar</b> cidades, usa o módulo <i>Auto-fundação</i> — são coisas
           independentes.
         </div>
 
       </div>
 
-      <div style="background:#0d141c;padding:5px;border-radius:4px;margin-top:6px;font-size:11px">
+      <div style="background:var(--mSurf);padding:5px;border-radius:4px;margin-top:6px;font-size:13px">
         <b>Estado</b><br>
         Colonizadores meus: ${totalColonizadores()} ·
         pontos de cultura: ${pontosCultura()}
-        <div style="opacity:.6;font-size:10px;margin-top:2px">
+        <div style="opacity:.6;font-size:12px;margin-top:2px">
           Ataca a conta da minha equipa com MENOS cultura, para todas progredirem igual.
         </div>
       </div>
@@ -31330,7 +31369,7 @@ function makeApoioModule(opts) {
      * Soma a tropa toda desta conta e divide pelo que cada envio leva. */
     const podem = quantasPosso(c);
     const htmlPodem = podem ? `
-      <div style="background:#0d141c;padding:5px 7px;border-radius:4px;margin-bottom:6px;font-size:11px">
+      <div style="background:var(--mSurf);padding:5px 7px;border-radius:4px;margin-bottom:6px;font-size:13px">
         Cidades apoiadas: <b>${alvos.length}</b>
         · esta conta ainda consegue apoiar <b>${podem.quantas}</b>
         ${podem.limita ? `<span style="opacity:.6">(limitada por ${
@@ -31350,23 +31389,23 @@ function makeApoioModule(opts) {
         <td style="padding:2px 3px;opacity:.85">${t.total ? esc(det) + ` <span style="opacity:.6">(${t.cidades} cidade(s))</span>` : '<span style="opacity:.5">nada ainda</span>'}</td>
         <td style="padding:2px 3px;text-align:right;white-space:nowrap">
           <button data-reforcar="${id}" title="mandar mais envios para este alvo"
-            style="cursor:pointer;font-size:10px;background:#364;color:#dfd;border:none;border-radius:3px;padding:2px 5px">reforçar</button>
+            style="cursor:pointer;font-size:12px;background:#364;color:#dfd;border:none;border-radius:3px;padding:2px 5px">reforçar</button>
           ${perdeu ? `<button data-repor="${id}" title="repor o que esta conta perdeu aqui"
-            style="cursor:pointer;font-size:10px;background:#446;color:#ddf;border:none;border-radius:3px;padding:2px 5px">repor</button>` : ''}
-          <button data-remover="${id}" style="cursor:pointer;font-size:10px;background:#733;color:#fdd;border:none;border-radius:3px;padding:2px 5px">retirar</button>
+            style="cursor:pointer;font-size:12px;background:#446;color:#ddf;border:none;border-radius:3px;padding:2px 5px">repor</button>` : ''}
+          <button data-remover="${id}" style="cursor:pointer;font-size:12px;background:#733;color:#fdd;border:none;border-radius:3px;padding:2px 5px">retirar</button>
         </td>
       </tr>`;
     }).join('') : '<tr><td colspan="4" style="opacity:.6;padding:4px">Nenhum alvo na lista.</td></tr>';
 
     container.innerHTML = htmlPodem + `
-      <div style="font-size:11px;line-height:1.7">
+      <div style="font-size:13px;line-height:1.7">
         <label><input type="checkbox" id="ap-on"${c.ativo ? ' checked' : ''}> <b>Apoio distribuído</b></label><br>
 
         <div style="margin:5px 0">
           Acrescentar alvo:
           <input type="text" id="ap-novo" placeholder="123 ou [town]123[/town]" style="width:150px">
           <button id="ap-add" style="cursor:pointer;padding:2px 8px">+ adicionar</button>
-          <span style="opacity:.6;font-size:10px">grava logo, sem ter de guardar</span>
+          <span style="opacity:.6;font-size:12px">grava logo, sem ter de guardar</span>
         </div>
 
         <div style="margin:4px 0">
@@ -31379,7 +31418,7 @@ function makeApoioModule(opts) {
         <div style="margin-top:5px">
           <label><input type="checkbox" id="ap-sotr"${c.evitarTransporteGrande !== false ? ' checked' : ''}>
             não usar transportes grandes</label>
-          <div style="opacity:.6;font-size:10px;margin-left:18px">
+          <div style="opacity:.6;font-size:12px;margin-left:18px">
             O transporte grande anda a <b>24</b> e o rápido a <b>45</b>, tal como as
             birremes. Num envio único tudo viaja à velocidade do mais lento — com um
             transporte grande, o apoio demora o dobro.
@@ -31388,21 +31427,21 @@ function makeApoioModule(opts) {
         </div>
       </div>
 
-      <div style="background:#0d141c;padding:5px;border-radius:4px;margin-top:6px">
+      <div style="background:var(--mSurf);padding:5px;border-radius:4px;margin-top:6px">
         ${souAPrincipalDoApoio() ? '' :
           '<div style="background:#2a2416;border-left:3px solid #c96;padding:4px 6px;'
-          + 'margin-bottom:5px;font-size:10px;opacity:.85">'
+          + 'margin-bottom:5px;font-size:12px;opacity:.85">'
           + 'Esta conta só <b>lê</b> a lista. Acrescenta e retira alvos na conta '
           + 'principal — as outras seguem sozinhas.</div>'}
         <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px">
-          <b style="font-size:11px">Alvos apoiados</b>
-          <button id="ap-nomes" style="cursor:pointer;font-size:10px" title="traz a lista partilhada e procura os nomes que faltam">🔄 actualizar</button>
-          <button id="ap-adoptar" style="cursor:pointer;font-size:10px" title="regista o apoio que já está nos alvos, para o repor passar a saber o que se perde">📌 adoptar</button>
-          <button id="ap-fora" style="cursor:pointer;font-size:10px" title="lê a Ágora (separador Fora) de todas as tuas cidades e actualiza os números">🔎 ler a Ágora</button>
-          <span style="opacity:.55;font-size:10px">“retirar” tira o alvo da lista e manda o apoio de volta</span>
+          <b style="font-size:13px">Alvos apoiados</b>
+          <button id="ap-nomes" style="cursor:pointer;font-size:12px" title="traz a lista partilhada e procura os nomes que faltam">🔄 actualizar</button>
+          <button id="ap-adoptar" style="cursor:pointer;font-size:12px" title="regista o apoio que já está nos alvos, para o repor passar a saber o que se perde">📌 adoptar</button>
+          <button id="ap-fora" style="cursor:pointer;font-size:12px" title="lê a Ágora (separador Fora) de todas as tuas cidades e actualiza os números">🔎 ler a Ágora</button>
+          <span style="opacity:.55;font-size:12px">“retirar” tira o alvo da lista e manda o apoio de volta</span>
         </div>
         <div style="max-height:180px;overflow-y:auto">
-          <table style="width:100%;border-collapse:collapse;font-size:11px">
+          <table style="width:100%;border-collapse:collapse;font-size:13px">
             <tr style="opacity:.6"><td>cidade</td><td>jogador</td><td>tropas minhas lá</td><td></td></tr>
             ${linhas}
           </table>
@@ -32712,20 +32751,20 @@ function makeFundacaoModule(opts) {
     try { comNC = ctx.getMyTowns().filter((t) => colonizadoresEm(t.id) > 0).length; } catch (e) { seErroDeCodigo(e, 'Fundacao'); }
 
     container.innerHTML = `
-      <div style="font-size:11px;line-height:1.7">
+      <div style="font-size:13px;line-height:1.7">
         <label><input type="checkbox" id="fun-on"${c.ativo ? ' checked' : ''}> <b>Fundar cidades</b></label><br>
         <label><input type="checkbox" id="fun-sim"${c.simular ? ' checked' : ''}> só simular</label>
-        <span style="opacity:.6;font-size:10px">— diz onde fundaria sem gastar o colonizador</span><br>
+        <span style="opacity:.6;font-size:12px">— diz onde fundaria sem gastar o colonizador</span><br>
         <label><input type="checkbox" id="fun-ald"${c.exigirAldeias ? ' checked' : ''}> só ilhas grandes</label>
-        <span style="opacity:.6;font-size:10px">— as de 20 lugares</span><br>
+        <span style="opacity:.6;font-size:12px">— as de 20 lugares</span><br>
         <label><input type="checkbox" id="fun-uma"${c.umaPorIlha ? ' checked' : ''}> uma cidade por ilha</label>
-        <span style="opacity:.6;font-size:10px">— nesta conta; outras contas podem estar na mesma ilha</span>
+        <span style="opacity:.6;font-size:12px">— nesta conta; outras contas podem estar na mesma ilha</span>
 
         <div style="margin-top:6px">
           Fundar à volta da cidade:
           <input type="number" id="fun-centro" value="${c.centroId || ''}"
             placeholder="id" style="width:80px">
-          <div style="opacity:.6;font-size:10px;margin-top:2px">
+          <div style="opacity:.6;font-size:12px;margin-top:2px">
             Deixa vazio para fundar perto da cidade que envia o colonizador.
             Pondo um id, todas as contas fundam à volta dessa cidade — é assim
             que se faz um núcleo. Serve qualquer cidade do mapa.
@@ -32733,9 +32772,9 @@ function makeFundacaoModule(opts) {
         </div>
       </div>
 
-      <div style="background:#0d141c;padding:6px;border-radius:4px;margin-top:6px;font-size:11px">
+      <div style="background:var(--mSurf);padding:6px;border-radius:4px;margin-top:6px;font-size:13px">
         <b>Onde fundar</b>
-        <div style="opacity:.6;font-size:10px;margin-bottom:4px">
+        <div style="opacity:.6;font-size:12px;margin-bottom:4px">
           Abre a <i>Informação da ilha</i> no jogo e carrega em “Guardar para fundar”.
           Sem ilhas marcadas, usa os oceanos abaixo. <b>Sem uma coisa nem outra não funda
           nada</b> — para não gastar colonizadores em sítios que não escolheste.
@@ -32743,12 +32782,12 @@ function makeFundacaoModule(opts) {
 
         ${(c.ilhas || []).length ? `
           <div style="display:flex;justify-content:space-between;align-items:center;margin:5px 0 3px">
-            <span class="mEtiq" style="font-size:9px;letter-spacing:.12em;opacity:.55">
+            <span class="mEtiq" style="font-size:11px;letter-spacing:.12em;opacity:.55">
               ${(c.ilhas || []).length} ILHA(S) GUARDADA(S) — POR ORDEM DE PRIORIDADE</span>
-            <a href="#" id="fun-ver" style="font-size:10px;color:#8cf;text-decoration:none">ver lugares livres</a>
+            <a href="#" id="fun-ver" style="font-size:12px;color:#8cf;text-decoration:none">ver lugares livres</a>
           </div>
-          <table style="width:100%;border-collapse:collapse;font-size:11px">
-            <tr style="opacity:.4;font-size:9px;letter-spacing:.08em">
+          <table style="width:100%;border-collapse:collapse;font-size:13px">
+            <tr style="opacity:.4;font-size:11px;letter-spacing:.08em">
               <td></td><td style="padding:1px 4px">ILHA</td>
               <td style="padding:1px 4px;text-align:center">LUGARES</td>
               <td style="padding:1px 4px">ESTADO</td><td></td>
@@ -32789,12 +32828,12 @@ function makeFundacaoModule(opts) {
                 : '—';
 
               return `<tr style="border-top:1px solid #1a2430">
-                <td style="padding:3px 4px;width:16px;opacity:.45;font-size:10px">${i + 1}</td>
+                <td style="padding:3px 4px;width:16px;opacity:.45;font-size:12px">${i + 1}</td>
                 <td style="padding:3px 4px"><b>${esc(k)}</b>
-                  <span style="opacity:.5;font-size:10px">· oc. ${oc}</span></td>
-                <td style="padding:3px 4px;text-align:center;font-size:10px;opacity:.85"
+                  <span style="opacity:.5;font-size:12px">· oc. ${oc}</span></td>
+                <td style="padding:3px 4px;text-align:center;font-size:12px;opacity:.85"
                     title="lugares livres em ${LUGARES_POR_ILHA}">${lugares}</td>
-                <td style="padding:3px 4px;font-size:10px;color:${cor}">${etiqueta}</td>
+                <td style="padding:3px 4px;font-size:12px;color:${cor}">${etiqueta}</td>
                 <td style="padding:3px 4px;width:16px;text-align:right">
                   <a href="#" data-tirar="${esc(k)}"
                      title="${podeTirar ? 'já podes retirar esta ilha' : 'retirar da lista'}"
@@ -32803,10 +32842,10 @@ function makeFundacaoModule(opts) {
               </tr>`;
             }).join('')}
           </table>
-          <div style="opacity:.5;font-size:10px;margin-top:2px">
+          <div style="opacity:.5;font-size:12px;margin-top:2px">
             Tenta pela ordem de cima para baixo; a primeira com lugar livre leva o colonizador.
           </div>`
-          : '<div style="opacity:.5;font-size:10px;margin:4px 0">Nenhuma ilha marcada — abre uma ilha no jogo e carrega em “Guardar para fundar”.</div>'}
+          : '<div style="opacity:.5;font-size:12px;margin:4px 0">Nenhuma ilha marcada — abre uma ilha no jogo e carrega em “Guardar para fundar”.</div>'}
 
         <div style="margin-top:5px">
           Oceanos (separados por vírgula):
@@ -32815,7 +32854,7 @@ function makeFundacaoModule(opts) {
         </div>
       </div>
 
-      <div style="background:#0d141c;padding:5px;border-radius:4px;margin-top:6px;font-size:11px">
+      <div style="background:var(--mSurf);padding:5px;border-radius:4px;margin-top:6px;font-size:13px">
         <b>Estado</b><br>
         ${comNC ? `${comNC} cidade(s) com colonizador pronto.` : 'Nenhuma cidade tem colonizador.'}
       </div>
@@ -33134,30 +33173,30 @@ function makeRelatoriosModule(opts) {
     mUw = ctx.uw; mWorld = ctx.WORLD;
     const c = cfg();
     container.innerHTML = `
-      <div style="font-size:11px">
+      <div style="font-size:13px">
         <label><input type="checkbox" id="rel-on"${c.ativo ? ' checked' : ''}>
           <b>Apagar relatórios automaticamente</b></label>
-        <div style="opacity:.65;font-size:10px;margin:3px 0 6px 18px">
+        <div style="opacity:.65;font-size:12px;margin:3px 0 6px 18px">
           Os apoios entre contas enchem a caixa com centenas de entradas.
           <b>Apagar não se desfaz</b> — por isso vem desligado.
         </div>
 
-        <div style="background:#0d141c;padding:6px 8px;border-radius:4px;margin-bottom:6px">
+        <div style="background:var(--mSurf);padding:6px 8px;border-radius:4px;margin-bottom:6px">
           <label><input type="checkbox" id="rel-apoios"${c.apoios ? ' checked' : ''}>
             relatórios de <b>apoio</b></label>
-          <div style="opacity:.6;font-size:10px;margin:1px 0 3px 18px">
+          <div style="opacity:.6;font-size:12px;margin:1px 0 3px 18px">
             Apaga os avisos de apoio enviado e de regresso de tropas.
             Os de <b>"está a atacar o seu apoio"</b> são sempre guardados —
             esses dizem que perdeste tropa a defender.
           </div>
           
 
-        <div style="background:#0d141c;padding:6px 8px;border-radius:4px;margin-bottom:6px">
+        <div style="background:var(--mSurf);padding:6px 8px;border-radius:4px;margin-bottom:6px">
           Apagar até <input type="number" id="rel-max" min="10" max="500"
             value="${Number(c.maxPorPassagem) || 90}" style="width:56px"> por passagem,
           em lotes de <input type="number" id="rel-lote" min="5" max="100"
             value="${Number(c.porLote) || 30}" style="width:48px">
-          <div style="opacity:.6;font-size:10px;margin-top:2px">
+          <div style="opacity:.6;font-size:12px;margin-top:2px">
             Em lotes com pausas, para o servidor não recusar os pedidos.
           </div>
         </div>
@@ -33381,7 +33420,7 @@ function makeFrotaModule(opts) {
 
   function painel(container, ctx) {
     mUw = ctx.uw; mWorld = ctx.WORLD;
-    container.innerHTML = '<div style="font-size:11px;opacity:.7">A ler a frota…</div>';
+    container.innerHTML = '<div style="font-size:13px;opacity:.7">A ler a frota…</div>';
     desenhar(container, ctx);
   }
 
@@ -33393,7 +33432,7 @@ function makeFrotaModule(opts) {
     let temFb = false;
     try { temFb = !!(fb && fb.ler && fb.url && fb.url()); } catch (e) { seErroDeCodigo(e, 'Frota'); }
     if (!temFb) {
-      container.innerHTML = '<div style="font-size:11px;opacity:.7">'
+      container.innerHTML = '<div style="font-size:13px;opacity:.7">'
         + 'Sem Firebase configurado. Põe o endereço da base de dados no painel do núcleo '
         + 'e cada conta começa a dar sinal de vida.</div>';
       return;
@@ -33407,10 +33446,10 @@ function makeFrotaModule(opts) {
       .sort((a, b) => Number(a.quando || 0) - Number(b.quando || 0));
 
     if (!contas.length) {
-      container.innerHTML = '<div style="font-size:11px;opacity:.7">'
+      container.innerHTML = '<div style="font-size:13px;opacity:.7">'
         + 'Ainda não há sinais de vida neste mundo. Aparecem na primeira passagem '
         + 'de cada conta (5 em 5 minutos).</div>'
-        + '<button id="frota-rec" style="cursor:pointer;font-size:10px;margin-top:6px">🔄 actualizar</button>';
+        + '<button id="frota-rec" style="cursor:pointer;font-size:12px;margin-top:6px">🔄 actualizar</button>';
       const b0 = container.querySelector('#frota-rec');
       if (b0) b0.onclick = () => painel(container, ctx);
       return;
@@ -33430,30 +33469,30 @@ function makeFrotaModule(opts) {
 
       return `<tr style="${mudo ? 'opacity:.55' : ''}">
         <td style="padding:2px 4px">${esc(x.conta)}
-          <span style="opacity:.5;font-size:9px">${esc(x.perfil || '')}</span></td>
+          <span style="opacity:.5;font-size:11px">${esc(x.perfil || '')}</span></td>
         <td style="padding:2px 4px;color:${velha ? '#e8a33d' : 'inherit'}">${esc(x.versao)}</td>
         <td style="padding:2px 4px;color:${mudo ? '#f88' : 'inherit'}">${esc(haQuanto(x.quando))}</td>
         <td style="padding:2px 4px;text-align:center">${Number(x.captcha) ? '🛑' : ''}</td>
         <td style="padding:2px 4px;text-align:center;color:${Number(x.travoes) ? '#e8a33d' : 'inherit'}">${Number(x.travoes) || ''}</td>
         <td style="padding:2px 4px;text-align:center;color:${nErros ? '#f88' : 'inherit'}">${nErros || ''}</td>
-        <td style="padding:2px 4px;font-size:9px;opacity:.7">${esc(ultimo.slice(0, 70))}</td>
+        <td style="padding:2px 4px;font-size:11px;opacity:.7">${esc(ultimo.slice(0, 70))}</td>
       </tr>`;
     }).join('');
 
     container.innerHTML = `
-      <div style="background:#0d141c;padding:6px 8px;border-radius:4px;margin-bottom:6px;font-size:11px">
+      <div style="background:var(--mSurf);padding:6px 8px;border-radius:4px;margin-bottom:6px;font-size:13px">
         <b>${contas.length}</b> conta(s) neste mundo ·
         <span style="color:${caladas ? '#f88' : 'inherit'}">${caladas} calada(s)</span> ·
         <span style="color:${atrasadas ? '#e8a33d' : 'inherit'}">${atrasadas} noutra versão</span> ·
         <span style="color:${comErros ? '#f88' : 'inherit'}">${comErros} com erros</span>
-        ${comCaptcha ? ` · <span style="color:#f88">${comCaptcha} com captcha</span>` : ''}
-        <div style="opacity:.6;font-size:10px;margin-top:2px">
+        ${comCaptcha ? ` · <span style="color:var(--mStop)">${comCaptcha} com captcha</span>` : ''}
+        <div style="opacity:.6;font-size:12px;margin-top:2px">
           a minha versão é a ${esc(minhaVersao)} · calada = sem sinal há mais de ${Math.round(SEM_SINAL / 60)} min
         </div>
       </div>
 
       <div style="max-height:260px;overflow:auto">
-        <table style="width:100%;border-collapse:collapse;font-size:10px">
+        <table style="width:100%;border-collapse:collapse;font-size:12px">
           <tr style="opacity:.6;text-align:left">
             <th style="padding:2px 4px">conta</th>
             <th style="padding:2px 4px">versão</th>
@@ -33467,7 +33506,7 @@ function makeFrotaModule(opts) {
         </table>
       </div>
 
-      <button id="frota-rec" style="cursor:pointer;font-size:10px;margin-top:6px">🔄 actualizar</button>`;
+      <button id="frota-rec" style="cursor:pointer;font-size:12px;margin-top:6px">🔄 actualizar</button>`;
 
     const b = container.querySelector('#frota-rec');
     if (b) b.onclick = () => painel(container, ctx);
