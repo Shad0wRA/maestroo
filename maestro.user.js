@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.06.0830
+// @version      2026.09.06.1030
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1543,7 +1543,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.06.0830';
+  const MAESTRO_VERSAO = '2026.09.06.1030';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -2030,6 +2030,11 @@
     /* Quantas cidades desta conta já cumpriram o template. É um número DELA;
      * partilhado, todas as contas publicavam o da principal na frota. */
     'grepoConstru_semObra_v1',
+
+    /* Marcas horárias desta conta (colonizadores e pontos de combate), para
+     * medir o ritmo. Partilhadas, todas as contas herdavam o ritmo da
+     * principal e os números não queriam dizer nada. */
+    'grepoFrota_historico_v1',
 
     /* ---- REGISTOS DO QUE CADA CONTA FEZ --------------------------------
      *
@@ -4523,6 +4528,16 @@
       }
     }
 
+    /* Que grupos estão abertos na coluna. Guardado para o painel não esquecer
+     * de cada vez que se abre. */
+    function gruposAbertos() {
+      try { return JSON.parse(localStorage.getItem('maestro_gruposAbertos_v1') || '{}') || {}; }
+      catch (e) { return {}; }
+    }
+    function guardarGruposAbertos(d) {
+      try { localStorage.setItem('maestro_gruposAbertos_v1', JSON.stringify(d)); } catch (e) {}
+    }
+
     /* A LISTA DA ESQUERDA.
      *
      * Mostra os módulos agrupados, com um ponto a dizer se estão ligados, e
@@ -4543,6 +4558,15 @@
         </div>`;
       };
 
+      /* GRUPOS QUE SE ABREM E FECHAM.
+       *
+       * Vinte e três módulos numa lista é muito para procurar. Fechados,
+       * ficam seis linhas. O grupo do módulo aberto abre-se sozinho, e o que
+       * abrires fica assim guardado — o painel não te obriga a repetir o
+       * clique de cada vez. */
+      const abertos = gruposAbertos();
+      const doAberto = (blocos.find((g) => g.mods.some((m) => m.id === moduloAberto)) || {}).nome;
+
       rail.innerHTML = `
         <div class="mRailItem ${moduloAberto === '' ? 'mSel' : ''} mLigado" data-ir="">
           <span class="mPonto"></span>
@@ -4551,15 +4575,29 @@
         </div>
         ${blocos.map((g) => {
           const on = g.mods.filter(estaAtivo).length;
+          const aberto = abertos[g.nome] !== false && (abertos[g.nome] || g.nome === doAberto);
           return `
-          <div class="mRailGrupo">
+          <div class="mRailGrupo" data-grupo="${g.nome}" style="cursor:pointer">
+            <span style="width:9px;color:var(--mFaint)">${aberto ? '▾' : '▸'}</span>
             <span style="flex:1">${(ICONES_GRUPO[g.nome] || '')} ${g.nome}</span>
             <span style="color:var(--mDim)">${on}/${g.mods.length}</span>
             <a href="#" data-grupo-off="${g.nome}" title="desligar todos"
                style="font-size:9px;color:var(--mFaint)">off</a>
           </div>
-          ${g.mods.map((m) => item(m.id, m.nome, estaAtivo(m))).join('')}`;
+          ${aberto ? g.mods.map((m) => item(m.id, m.nome, estaAtivo(m))).join('') : ''}`;
         }).join('')}`;
+
+      rail.querySelectorAll('[data-grupo]').forEach((el) => {
+        el.addEventListener('click', (ev) => {
+          if (ev.target && ev.target.getAttribute('data-grupo-off')) return;   // é o "off"
+          const nome = el.getAttribute('data-grupo');
+          const ab = gruposAbertos();
+          const estava = ab[nome] !== false && (ab[nome] || nome === doAberto);
+          ab[nome] = !estava;
+          guardarGruposAbertos(ab);
+          desenhar();
+        });
+      });
 
       rail.querySelectorAll('[data-ir]').forEach((el) => {
         el.addEventListener('click', () => {
@@ -33691,6 +33729,46 @@ function makeFrotaModule(opts) {
       }
     } catch (e) {}
 
+    /* ---- COLONIZADORES E PONTOS DE COMBATE, COM O QUE MUDOU EM 24 H ------
+     *
+     * O objectivo da rotação dos colonos é fazer pontos de combate, e ninguém
+     * sabia quantos saem por dia nem de que contas. Um total não chega: o que
+     * interessa é o RITMO, e para isso guarda-se uma marca por hora e
+     * compara-se com a mais antiga dentro das últimas 26 horas.
+     *
+     * Trinta marcas por conta, uma por hora — não chega a 2 KB. */
+    try {
+      const nc = Number((inventario.unidades || {}).colonize_ship) || 0;
+      let bp = 0;
+      try {
+        const mk = mUw.MM.getModels().PlayerKillpoints;
+        const kk = Object.keys(mk)[0];
+        const ak = (mk[kk] || {}).attributes || {};
+        bp = (Number(ak.att) || 0) + (Number(ak.def) || 0);   // ganhos, não os disponíveis
+      } catch (e) {}
+
+      const agoraS = Math.floor(Date.now() / 1000);
+      let hist = [];
+      try { hist = JSON.parse(armazem.getItem('grepoFrota_historico_v1') || '[]') || []; } catch (e) {}
+
+      const ultima = hist.length ? Number(hist[hist.length - 1].t) || 0 : 0;
+      if (agoraS - ultima >= 3600) {
+        hist.push({ t: agoraS, nc, bp });
+        if (hist.length > 30) hist = hist.slice(-30);
+        try { armazem.setItem('grepoFrota_historico_v1', JSON.stringify(hist)); } catch (e) {}
+      }
+
+      /* A marca mais antiga dentro das últimas 26 horas serve de referência.
+       * Se ainda não houver histórico que chegue, não se inventa um ritmo. */
+      const ref = hist.find((x) => (agoraS - Number(x.t)) <= 26 * 3600);
+      jogo.nc = nc;
+      jogo.bp = bp;
+      if (ref && (agoraS - Number(ref.t)) >= 12 * 3600) {
+        jogo.bp24 = bp - (Number(ref.bp) || 0);
+        jogo.horas = Math.round((agoraS - Number(ref.t)) / 3600);
+      }
+    } catch (e) {}
+
     /* Favor por deus: é o que a farm de favores existe para acumular. */
     try {
       const pg = mUw.MM.getModels().PlayerGods || {};
@@ -33894,6 +33972,8 @@ function makeFrotaModule(opts) {
         <td style="padding:2px 4px;text-align:right">${((x.jogo || {}).pontos || 0).toLocaleString('pt-PT')}</td>
         <td style="padding:2px 4px;text-align:center;color:${((x.jogo || {}).cheio || 0) >= 85 ? 'var(--mBrass)' : 'inherit'}">${(x.jogo || {}).cheio ? (x.jogo.cheio + '%') : ''}</td>
         <td style="padding:2px 4px;text-align:center;color:${((x.jogo || {}).paradas || 0) ? 'var(--mBrass)' : 'inherit'}">${(x.jogo || {}).paradas || ''}</td>
+        <td style="padding:2px 4px;text-align:center">${(x.jogo || {}).nc || ''}</td>
+        <td style="padding:2px 4px;text-align:right" title="pontos de combate ganhos nas últimas ${(x.jogo || {}).horas || 24} h">${(x.jogo || {}).bp24 != null ? '+' + (x.jogo.bp24).toLocaleString('pt-PT') : '—'}</td>
         <td style="padding:2px 4px;text-align:center;color:${nErros ? '#f88' : 'inherit'}">${nErros || ''}</td>
         <td style="padding:2px 4px;font-size:11px;opacity:.7">${esc(ultimo.slice(0, 70))}</td>
       </tr>`;
@@ -33923,6 +34003,8 @@ function makeFrotaModule(opts) {
             <th style="padding:2px 4px;text-align:right">pontos</th>
             <th style="padding:2px 4px" title="quão cheios estão os armazéns">cheio</th>
             <th style="padding:2px 4px" title="cidades sem nada em fila">paradas</th>
+            <th style="padding:2px 4px" title="colonizadores prontos">NC</th>
+            <th style="padding:2px 4px;text-align:right" title="pontos de combate ganhos em 24 h">combate</th>
             <th style="padding:2px 4px">erros</th>
             <th style="padding:2px 4px">último erro</th>
           </tr>
