@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.06.1230
+// @version      2026.09.06.1430
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1558,7 +1558,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.06.1230';
+  const MAESTRO_VERSAO = '2026.09.06.1430';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -21858,21 +21858,87 @@ function makeEsquivaModule(opts) {
     return out;
   }
 
-  function escolherDestino(origemId, cidades) {
+  /* VÁRIOS DESTINOS, POR ORDEM DE PREFERÊNCIA.
+   *
+   * Devolvia UM destino e, se o jogo o recusasse, a esquiva não acontecia.
+   * Visto em jogo no 125: o destino escolhido era uma cidade de outro jogador
+   * na mesma ilha, tirada da colecção do mapa, e o servidor respondeu "Esta
+   * cidade não existe" — nos dois envios, terra e mar. A tropa ficou em casa
+   * e morreu, num ataque que estava reconhecido e com plano feito.
+   *
+   * A colecção do mapa guarda cidades que já foram conquistadas ou apagadas,
+   * por isso uma cidade de outro jogador nunca é de confiança. As minhas são:
+   * existem enquanto eu as tiver.
+   *
+   * Ordem: as minhas na ilha, as minhas noutras ilhas (precisam de barcos mas
+   * o envio é cancelado à mesma), e só depois as dos outros. */
+  /* Todas as cidades de um jogador que a colecção do mapa conheça. */
+  function cidadesDoDono(donoDe) {
+    const out = [];
+    try {
+      const col = mUw.MM.getCollections().Town;
+      const mods = (col && col[0] && col[0].models) || [];
+      let dono = null;
+      for (const m of mods) {
+        const a2 = m.attributes || {};
+        if (Number(a2.id) === Number(donoDe)) { dono = a2.player_id; break; }
+      }
+      if (dono == null) return out;
+      for (const m of mods) {
+        const a2 = m.attributes || {};
+        if (a2.player_id !== dono) continue;
+        out.push({ id: Number(a2.id), name: a2.name, ix: Number(a2.island_x), iy: Number(a2.island_y) });
+      }
+    } catch (e) { seErroDeCodigo(e, 'Esquiva'); }
+    return out;
+  }
+
+  /* DESTINOS, POR ORDEM DE PREFERÊNCIA.
+   *
+   * As multis têm UMA cidade por ilha, portanto "outra cidade minha na mesma
+   * ilha" quase nunca existe — e ir para outra ilha obriga a transportes que
+   * podem não chegar para a tropa terrestre toda.
+   *
+   * Quando o ataque é da main ou do grupo, o melhor destino é a própria
+   * cidade que ataca: sabe-se que existe, porque o ataque veio de lá agora
+   * mesmo; está perto; e se o cancelamento falhar a tropa fica numa cidade
+   * que também é tua.
+   *
+   * Contra ESTRANHOS isto não se faz — mandar a tropa para a cidade de quem
+   * ataca é entregá-la se o cancelamento falhar. Aí vale a ordem antiga.
+   *
+   * A ordem é a que combinámos: a cidade que ataca, outra cidade dessa conta
+   * na mesma ilha, qualquer cidade da ilha, e por fim outra cidade dessa
+   * conta noutra ilha. As minhas ficam sempre no fim como rede. */
+  function destinosPossiveis(origemId, cidades, origemAtaque, amigo) {
     const org = cidades.find((c) => c.id === Number(origemId));
-    if (!org) return null;
+    if (!org) return [];
+    const out = [];
+    const juntar = (d, barcos) => {
+      if (!d || !d.id || d.id === org.id) return;
+      if (out.some((x) => x.destino.id === d.id)) return;
+      out.push({ destino: d, precisaBarcos: !!barcos });
+    };
 
-    // preferir uma cidade minha na ilha (o apoio é legítimo se algo correr mal)
-    const minhasNaIlha = cidades.filter((c) => c.id !== org.id && c.ix === org.ix && c.iy === org.iy);
-    if (minhasNaIlha.length) return { destino: minhasNaIlha[0], precisaBarcos: false };
+    const mesmaIlha = (c) => Number(c.ix) === Number(org.ix) && Number(c.iy) === Number(org.iy);
 
-    // senão, qualquer cidade da ilha serve — vai ser cancelado de qualquer modo
-    const naIlha = cidadesDaIlha(org.ix, org.iy, org.id);
-    if (naIlha.length) return { destino: naIlha[0], precisaBarcos: false };
+    if (amigo && origemAtaque) {
+      const doAtacante = cidadesDoDono(origemAtaque);
+      const aCidade = doAtacante.find((c) => c.id === Number(origemAtaque));
+      if (aCidade && mesmaIlha(aCidade)) juntar(aCidade, false);          // 1
+      for (const c of doAtacante) if (mesmaIlha(c)) juntar(c, false);     // 2
+      for (const c of cidadesDaIlha(org.ix, org.iy, org.id)) juntar(c, false);  // 3
+      for (const c of doAtacante) juntar(c, true);                        // 4
+    }
 
-    // último recurso: outra ilha (precisa de transportes, viagem longa)
-    const outra = cidades.find((c) => c.id !== org.id);
-    return outra ? { destino: outra, precisaBarcos: true } : null;
+    for (const c of cidades) if (mesmaIlha(c)) juntar(c, false);          // as minhas, na ilha
+    for (const c of cidadesDaIlha(org.ix, org.iy, org.id)) juntar(c, false);
+    for (const c of cidades) juntar(c, true);                             // as minhas, noutra ilha
+    return out;
+  }
+
+  function escolherDestino(origemId, cidades, origemAtaque, amigo) {
+    return destinosPossiveis(origemId, cidades, origemAtaque, amigo)[0] || null;
   }
 
   // Tudo o que está na cidade. Se for preciso atravessar mar, junta transportes
@@ -22041,7 +22107,7 @@ function makeEsquivaModule(opts) {
       const org0 = cidades.find((x) => x.id === Number(plano.townId));
       if (org0) await carregarIlha(org0.ix, org0.iy, plano.townId);
     } catch (e) { seErroDeCodigo(e, 'Esquiva'); }
-    const esc = escolherDestino(plano.townId, cidades);
+    const esc = escolherDestino(plano.townId, cidades, plano.origemAtaque, !!plano.daMain);
     if (!esc) { log(`Esquiva ${nome}: sem cidade de destino.`); return; }
     /* DOIS ENVIOS quando é preciso: um por terra, outro por mar.
      *
@@ -22729,7 +22795,15 @@ function makeEsquivaModule(opts) {
       }
 
       agendados.add(chave);
-      planos[chave] = { townId: Number(townId), daMain, S: tempos.S, C: tempos.C, casa: tempos.casa, tipo: tempos.tipo };
+      /* De onde veio o ataque. Quando é da main ou do grupo, é o melhor
+       * destino possível para o desvio: sabe-se que existe (o ataque veio de
+       * lá agora), está perto, e se o cancelamento falhar a tropa fica numa
+       * cidade que também é tua. */
+      const origemAtaque = Number((impactos[0] || {}).origem_town_id) || 0;
+      planos[chave] = {
+        townId: Number(townId), daMain, origemAtaque,
+        S: tempos.S, C: tempos.C, casa: tempos.casa, tipo: tempos.tipo,
+      };
       /* De onde veio a informação — para se saber se o aviso da main está a
        * funcionar ou se foi o jogo que acabou por trazer o ataque. */
       const fonte = impactos.some((x) => x.viaAviso) ? ' [pelo Firebase]' : '';
