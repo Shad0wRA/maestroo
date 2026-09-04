@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.06.1130
+// @version      2026.09.06.1230
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -99,6 +99,21 @@
    * "erro". As mensagens de rotina não contam.
    * ==================================================================== */
   let errosGuardados = [];
+
+  /* O JOGO A DIZER "AGORA NÃO" NÃO É UMA AVARIA.
+   *
+   * Fila cheia, população esgotada, vagas de treino ocupadas, tropa a viajar,
+   * requisitos por cumprir — são respostas normais a pedidos legítimos, e
+   * resolvem-se sozinhas na passagem seguinte. Iam para o sininho com ⚠️ e
+   * afogavam os erros a sério: sete linhas, nenhuma delas um problema.
+   *
+   * Quem chama isto decide entre `log` com marca e `rotina` sem ela. */
+  function recusaNormal(msg) {
+    const t = String(msg || '');
+    return /fila de constru|fila do porto|est[áa] cheia|cheias|popula[çc][ãa]o/i.test(t)
+      || /vagas de treino|unidades suficientes|requisit|prerequisit/i.test(t)
+      || /ainda n[ãa]o foram preenchidos|arrefecimento|cooldown|mais do que \d+/i.test(t);
+  }
 
   function pareceErro(msg) {
     const t = String(msg || '');
@@ -1543,7 +1558,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.06.1130';
+  const MAESTRO_VERSAO = '2026.09.06.1230';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -1981,7 +1996,7 @@
     try {
       if (equipaDestaConta()) return;
       const nome = String(uw.Game.player_name || '?');
-      log('core', `⚠️ A conta "${nome}" não está na lista de equipas — `
+      log('core', `A conta "${nome}" não está na lista de equipas — `
         + 'a rotação de colonizadores usa o que estiver no painel.');
     } catch (e) { seErroDeCodigo(e, 'núcleo'); }
   }
@@ -6018,7 +6033,7 @@ function makeConstrucaoModule(opts) {
               marcarIndemolivel(d.ed);
               log(`— ${(NOMES_PT[d.ed] || d.ed)} não se pode demolir; deixo de tentar.`);
             } else {
-              log(`⚠️ ${town.name}: não consegui demolir ${(NOMES_PT[d.ed] || d.ed)} (${r.msg}).`);
+              if (recusaNormal(r.msg)) rotina(`${town.name}: ainda não dá para demolir ${(NOMES_PT[d.ed] || d.ed)} (${r.msg}).`); else log(`⚠️ ${town.name}: não consegui demolir ${(NOMES_PT[d.ed] || d.ed)} (${r.msg}).`);
             }
             break;
           }
@@ -10116,7 +10131,7 @@ function makeRecrutamentoModule(opts) {
           }
 
           if (rotineiro) rotina(`${town.name}: ainda não dá para recrutar ${a.nome} (${r.msg}).`);
-          else log(`⚠️ ${town.name}: falha a recrutar ${a.nome} (${r.msg}).`);
+          else if (recusaNormal(r.msg)) rotina(`${town.name}: ainda não dá para recrutar ${a.nome} (${r.msg}).`); else log(`⚠️ ${town.name}: falha a recrutar ${a.nome} (${r.msg}).`);
           break; // não insistir nesta cidade nesta ronda
         }
       }
@@ -19809,7 +19824,7 @@ function makeDeusesModule(opts) {
           (ctx.logRotina || ctx.log)(
             `${t.name}: não tenho tropa que chegue para o mínimo do jogo (${r.msg}).`);
         } else {
-          log(`⚠️ ${t.name}: ataque falhou (${r.msg}).`);
+          if (recusaNormal(r.msg)) (ctx.logRotina || ctx.log)(`${t.name}: não ataquei agora (${r.msg}).`); else log(`⚠️ ${t.name}: ataque falhou (${r.msg}).`);
         }
       }
     }
