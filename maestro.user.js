@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.07.0430
+// @version      2026.09.07.0630
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1595,7 +1595,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.07.0430';
+  const MAESTRO_VERSAO = '2026.09.07.0630';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -8279,20 +8279,48 @@ function makeRecrutamentoModule(opts) {
 
   function contarUnidadesPorCidadeDeOrigem() {
     const out = {}; // home_town_id -> { sword: n, ... }
+    const juntar = (home, a) => {
+      if (!home) return;
+      const acc = out[home] = out[home] || {};
+      for (const u of Object.keys(a)) {
+        if (typeof a[u] === 'number' && u !== 'id' && u !== 'home_town_id'
+          && u !== 'current_town_id' && u !== 'target_town_id') {
+          acc[u] = (acc[u] || 0) + a[u];
+        }
+      }
+    };
+
+    /* 1) A tropa ESTACIONADA — em casa ou a apoiar outra cidade. */
     try {
       const mods = mUw.MM.getModels().Units || {};
       for (const k of Object.keys(mods)) {
         const a = mods[k].attributes || {};
-        const home = Number(a.home_town_id);
-        if (!home) continue;
-        const acc = out[home] = out[home] || {};
-        for (const u of Object.keys(a)) {
-          if (typeof a[u] === 'number' && u !== 'id' && u !== 'home_town_id' && u !== 'current_town_id') {
-            acc[u] = (acc[u] || 0) + a[u];
-          }
-        }
+        juntar(Number(a.home_town_id), a);
       }
     } catch (e) { seErroDeCodigo(e, 'Recrutamento'); }
+
+    /* 2) A TROPA QUE ESTÁ A VIAJAR.
+     *
+     * Faltava, e era caro. A colecção das unidades só tem o que está parado:
+     * o que vai a caminho, ou de volta, não aparece em lado nenhum. Numa
+     * cidade que ataca sem parar — como a 34.1, que manda enviados divinos
+     * para o farm de favores — há sempre dezenas no ar.
+     *
+     * O módulo via só os que estavam em casa, achava que faltavam para o
+     * template, e recrutava mais. Quando os outros voltavam, a cidade ficava
+     * muito acima do que pediste, com a população gasta e o recrutamento
+     * seguinte travado.
+     *
+     * Conta-se pela cidade de ORIGEM, que é a que os fez e a que os vai
+     * receber de volta. */
+    try {
+      const mvs = mUw.MM.getModels().MovementsUnits || {};
+      for (const k of Object.keys(mvs)) {
+        const a = mvs[k].attributes || {};
+        juntar(Number(a.home_town_id), a);
+      }
+    } catch (e) { seErroDeCodigo(e, 'Recrutamento'); }
+
     return out;
   }
 
@@ -19900,8 +19928,8 @@ function makeDeusesModule(opts) {
    * Com o herói certo na cidade, a diferença é ainda maior.
    *
    * Vão os que houver, até ao limite configurado — não se espera por eles. */
-  function escudoDisponivel(origemId, c) {
-    const quantos = Number(c.escudoEspadachins) || 0;
+  function escudoDisponivel(origemId, c, minimoExtra) {
+    const quantos = Math.max(Number(c.escudoEspadachins) || 0, Number(minimoExtra) || 0);
     if (quantos <= 0) return 0;
     try {
       const t = mUw.ITowns.getTown(Number(origemId));
@@ -20073,10 +20101,32 @@ function makeDeusesModule(opts) {
        * o jogo respondeu na última recusa e, da próxima, nem se tenta com
        * menos. Quem nunca falhou continua a tentar — não se inventa um mínimo
        * que não se sabe. */
+      /* ESPADACHINS PARA CHEGAR AO MÍNIMO.
+       *
+       * O jogo exige um número de habitantes para um ataque sair. Quando os
+       * enviados que há em casa não chegam lá, em vez de desistir e esperar
+       * pela passagem seguinte, completa-se com espadachins — que a cidade
+       * tem, que são baratos e que o recrutamento repõe.
+       *
+       * Também servem de escudo: as perdas caem sobre eles e cada um que
+       * morre é um enviado que volta. */
       const minimo = minimoAprendido(t.id);
+      let escudoExtra = 0;
       if (minimo && quantos < minimo) {
-        (ctx.logRotina || ctx.log)(`${t.name}: tem ${quantos} enviados e o jogo exige ${minimo} — espero.`);
-        continue;
+        const emCasaSword = (() => {
+          try { return Number((mUw.ITowns.getTown(t.id).units() || {}).sword) || 0; }
+          catch (e) { return 0; }
+        })();
+        const faltam = minimo - quantos;
+        escudoExtra = Math.min(faltam, Math.max(0, emCasaSword - 1));   // deixa um em casa
+
+        if (quantos + escudoExtra < minimo) {
+          (ctx.logRotina || ctx.log)(`${t.name}: ${quantos} enviados e ${emCasaSword} espadachins `
+            + `não chegam ao mínimo de ${minimo} — espero.`);
+          continue;
+        }
+        (ctx.logRotina || ctx.log)(`${t.name}: junto ${escudoExtra} espadachins aos ${quantos} `
+          + `enviados para chegar ao mínimo de ${minimo}.`);
       }
 
       /* VÁRIOS ATAQUES EM CURSO SÃO PERMITIDOS.
@@ -20126,7 +20176,7 @@ function makeDeusesModule(opts) {
         enviados++;
         continue;
       }
-      const escudo = escudoDisponivel(t.id, c);
+      const escudo = escudoDisponivel(t.id, c, escudoExtra);
       const r = await enviarAtaque(t.id, alvo.townId, quantos, escudo);
       if (r.ok) {
         /* Dizer se a multi foi avisada — sem isto, a falha do aviso passava
