@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.06.1030
+// @version      2026.09.06.1130
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1543,7 +1543,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.06.1030';
+  const MAESTRO_VERSAO = '2026.09.06.1130';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -33769,6 +33769,35 @@ function makeFrotaModule(opts) {
       }
     } catch (e) {}
 
+    /* ---- O APOIO QUE ESTA CONTA TEM EM CADA ALVO -------------------------
+     *
+     * O jogo não mostra o apoio dos outros: com vinte contas a mandar para a
+     * mesma cidade, ninguém sabia quanto lá estava ao todo. Por isso o módulo
+     * do apoio decide com uma contagem de CIDADES (`maxCidadesPorAlvo`) em vez
+     * de tropa — dez cidades a mandar meio pacote contam o mesmo que cinco a
+     * mandar o pacote inteiro.
+     *
+     * Cada conta já sabe a sua parte, desde o leitor da Ágora. Publicá-la aqui
+     * é o que permite somar a frota. Isto só publica: não decide nada, e o
+     * módulo do apoio continua a funcionar exactamente como antes.
+     *
+     * Vai a soma por alvo, não a repartição por cidade — essa fica na cache
+     * local de cada conta, e só é precisa a quem for enviar. */
+    const apoio = { alvos: {}, quando: 0 };
+    try {
+      const porAlvo = (mUw.__maestroApoioFora && mUw.__maestroApoioFora.porAlvo()) || null;
+      if (porAlvo) {
+        let nomes = {};
+        try { nomes = JSON.parse(armazem.getItem('grepoApoio_nomes_v1') || '{}') || {}; } catch (e) {}
+        for (const alvoId of Object.keys(porAlvo)) {
+          const u = (porAlvo[alvoId] || {}).unidades || {};
+          if (!Object.keys(u).length) continue;
+          apoio.alvos[alvoId] = { u, nome: (nomes[alvoId] || {}).nome || '' };
+        }
+        apoio.quando = Math.floor(Date.now() / 1000);
+      }
+    } catch (e) {}
+
     /* Favor por deus: é o que a farm de favores existe para acumular. */
     try {
       const pg = mUw.MM.getModels().PlayerGods || {};
@@ -33786,7 +33815,7 @@ function makeFrotaModule(opts) {
       mundo: mWorld,
       versao: String(w.__maestroVersao || '?'),
       quando: Math.floor(Date.now() / 1000),
-      captcha, cidades, travoes, jogo, inventario, modulos, errosCodigo, erros,
+      captcha, cidades, travoes, jogo, inventario, apoio, modulos, errosCodigo, erros,
     };
   }
 
@@ -33857,6 +33886,74 @@ function makeFrotaModule(opts) {
     mUw = ctx.uw; mWorld = ctx.WORLD;
     container.innerHTML = '<div style="font-size:13px;opacity:.7">A ler a frota…</div>';
     desenhar(container, ctx);
+  }
+
+  /* A DEFESA TOTAL DE CADA ALVO.
+   *
+   * A soma do que as vinte contas têm em cada cidade apoiada. É o número que
+   * nunca existiu: cada conta via só a sua parte, e por isso ninguém sabia se
+   * um alvo estava gordo ou magro. */
+  function htmlApoio(contas) {
+    const alvos = {};
+    let comDados = 0;
+
+    for (const x of contas) {
+      const a2 = x.apoio;
+      if (!a2 || !a2.alvos || !Object.keys(a2.alvos).length) continue;
+      comDados++;
+      for (const id of Object.keys(a2.alvos)) {
+        const linha = alvos[id] = alvos[id] || { u: {}, nome: '', contas: 0 };
+        linha.contas++;
+        if (!linha.nome && a2.alvos[id].nome) linha.nome = a2.alvos[id].nome;
+        const u = a2.alvos[id].u || {};
+        for (const k of Object.keys(u)) linha.u[k] = (linha.u[k] || 0) + Number(u[k] || 0);
+      }
+    }
+
+    if (!comDados) {
+      return '<div class="mEtiq" style="margin-top:11px">defesa por alvo</div>'
+        + '<div style="font-size:12px;opacity:.6">nenhuma conta publicou ainda. '
+        + 'Aparece depois de o módulo do apoio ler a Ágora.</div>';
+    }
+
+    const gd = (mUw.GameData || {}).units || {};
+    const pop = (u) => Number((gd[u] || {}).population) || 1;
+    const naval = (u) => !!(gd[u] || {}).is_naval;
+
+    const linhas = Object.keys(alvos)
+      .map((id) => {
+        const l = alvos[id];
+        let terra = 0, mar = 0;
+        for (const u of Object.keys(l.u)) {
+          if (u === 'small_transporter' || u === 'big_transporter') continue;
+          if (naval(u)) mar += l.u[u] * pop(u); else terra += l.u[u] * pop(u);
+        }
+        return { id, nome: l.nome, contas: l.contas, terra, mar, total: terra + mar };
+      })
+      .sort((a2, b2) => a2.total - b2.total)   // os mais magros primeiro
+      .map((l) => `<tr>
+        <td style="padding:2px 4px">${esc(l.nome || l.id)}</td>
+        <td style="padding:2px 4px;opacity:.6;text-align:center">${l.contas}</td>
+        <td style="padding:2px 4px;text-align:right">${l.terra.toLocaleString('pt-PT')}</td>
+        <td style="padding:2px 4px;text-align:right">${l.mar.toLocaleString('pt-PT')}</td>
+      </tr>`).join('');
+
+    return `
+      <div class="mEtiq" style="margin-top:11px;margin-bottom:5px">defesa por alvo (população)</div>
+      <div style="max-height:190px;overflow:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:12px">
+          <tr style="opacity:.6;text-align:left">
+            <th style="padding:2px 4px">alvo</th>
+            <th style="padding:2px 4px;text-align:center" title="quantas contas lá têm tropa">contas</th>
+            <th style="padding:2px 4px;text-align:right">terra</th>
+            <th style="padding:2px 4px;text-align:right">mar</th>
+          </tr>
+          ${linhas}
+        </table>
+      </div>
+      <div style="opacity:.6;font-size:11px;margin-top:3px">
+        ${comDados} conta(s) a publicar · os mais magros em cima
+      </div>`;
   }
 
   /* O INVENTÁRIO DA FROTA.
@@ -34013,6 +34110,7 @@ function makeFrotaModule(opts) {
       </div>
 
       ${htmlInventario(contas)}
+      ${htmlApoio(contas)}
 
       <button id="frota-rec" style="cursor:pointer;font-size:12px;margin-top:6px">🔄 actualizar</button>`;
 
