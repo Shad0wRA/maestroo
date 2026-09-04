@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.05.1130
+// @version      2026.09.05.1230
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1486,7 +1486,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.05.1130';
+  const MAESTRO_VERSAO = '2026.09.05.1230';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -1780,6 +1780,23 @@
   let GIST_ID_GLOBAL = '';
   let GIST_TOKEN_GLOBAL = '';
 
+  /* CABEÇALHOS PARA LER O GIST.
+   *
+   * As leituras iam SEM token. O GitHub dá 60 pedidos por hora a quem não se
+   * identifica, e conta-os por endereço — as 21 contas do VPS partilham o
+   * mesmo. Sessenta por hora entre 21 contas esgota-se em minutos, e a partir
+   * daí todas as leituras vinham recusadas. Como quase todas estão dentro de
+   * um `try` que devolve vazio, o efeito não era um erro: era o módulo achar
+   * que não havia templates, nem lista de apoio, nem perfil.
+   *
+   * Com o token são 5000 por hora. As escritas já iam autenticadas — só as
+   * leituras é que não. */
+  function cabecalhoGist() {
+    const h = { Accept: 'application/vnd.github+json' };
+    try { if (GIST_TOKEN_GLOBAL) h.Authorization = 'Bearer ' + GIST_TOKEN_GLOBAL; } catch (e) {}
+    return h;
+  }
+
   /* ============ PERFIL PARTILHADO PELO GIST ============================
    * O perfil "multi" é o mesmo nas 20 contas: os mesmos templates, os mesmos
    * deuses, as mesmas ilhas para fundar. Configurar vinte vezes não faz
@@ -2045,7 +2062,7 @@
     let existe = true;
     try {
       const r2 = await pedirFora(`https://api.github.com/gists/${GIST_ID_GLOBAL}`, {
-        headers: { Accept: 'application/vnd.github+json' },
+        headers: cabecalhoGist(),
       });
       if (r2.ok) {
         const j2 = await r2.json();
@@ -2139,7 +2156,7 @@
     if (!GIST_ID_GLOBAL) return { ok: false, msg: 'sem Gist configurado' };
     try {
       const r = await pedirFora(`https://api.github.com/gists/${GIST_ID_GLOBAL}`, {
-        headers: { Accept: 'application/vnd.github+json' },
+        headers: cabecalhoGist(),
       });
       if (!r.ok) return { ok: false, msg: 'não consegui ler o Gist' };
       const j = await r.json();
@@ -5114,7 +5131,7 @@ function makeConstrucaoModule(opts) {
     if (!GIST.id) return loadTemplatesLocal();
     try {
       const url = 'https://api.github.com/gists/' + GIST.id;
-      const r = await uw.fetch(url, { headers: { 'Accept': 'application/vnd.github+json' } });
+      const r = await uw.fetch(url, { headers: cabecalhoGist() });
       const j = await r.json();
       const file = j.files && j.files[ficheiroGist()];
       if (!file) return loadTemplatesLocal();
@@ -7071,7 +7088,7 @@ function makePesquisaModule(opts) {
     try { if (typeof t2 !== 'undefined' && t2 && t2.unref) t2.unref(); } catch (e) { seErroDeCodigo(e, 'Pesquisa'); }
     if (!GIST.id) return loadTemplatesLocal();
     try {
-      const r = await mUw.fetch('https://api.github.com/gists/' + GIST.id, { headers: { 'Accept': 'application/vnd.github+json' } });
+      const r = await mUw.fetch('https://api.github.com/gists/' + GIST.id, { headers: cabecalhoGist() });
       const j = await r.json();
       const file = j.files && j.files[ficheiroGist()];
       if (!file) return loadTemplatesLocal();
@@ -9165,7 +9182,7 @@ function makeRecrutamentoModule(opts) {
     try { if (typeof t2 !== 'undefined' && t2 && t2.unref) t2.unref(); } catch (e) { seErroDeCodigo(e, 'Recrutamento'); }
     if (!GIST.id) return loadLocal();
     try {
-      const r = await mUw.fetch('https://api.github.com/gists/' + GIST.id, { headers: { 'Accept': 'application/vnd.github+json' } });
+      const r = await mUw.fetch('https://api.github.com/gists/' + GIST.id, { headers: cabecalhoGist() });
       const j = await r.json();
       const f = j.files && j.files[ficheiroGist()];
       if (!f) return loadLocal();
@@ -11888,7 +11905,7 @@ function makeHeroisModule(opts) {
     try { if (typeof t2 !== 'undefined' && t2 && t2.unref) t2.unref(); } catch (e) { seErroDeCodigo(e, 'Herois'); }
     if (!GIST.id) return loadLocal();
     try {
-      const r = await mUw.fetch('https://api.github.com/gists/' + GIST.id, { headers: { 'Accept': 'application/vnd.github+json' } });
+      const r = await mUw.fetch('https://api.github.com/gists/' + GIST.id, { headers: cabecalhoGist() });
       const j = await r.json();
       const f = j.files && j.files[ficheiroGist()];
       if (!f) return loadLocal();
@@ -18019,7 +18036,7 @@ function makeDeusesModule(opts) {
     try { if (typeof t2 !== 'undefined' && t2 && t2.unref) t2.unref(); } catch (e) { seErroDeCodigo(e, 'Deuses'); }
     if (!GIST.id) return cfgLocal();
     try {
-      const r = await mUw.fetch('https://api.github.com/gists/' + GIST.id, { headers: { 'Accept': 'application/vnd.github+json' } });
+      const r = await mUw.fetch('https://api.github.com/gists/' + GIST.id, { headers: cabecalhoGist() });
       const j = await r.json();
       const f = j.files && j.files[ficheiroGist()];
       if (!f) return cfgLocal();
@@ -29913,7 +29930,7 @@ function makeApoioModule(opts) {
     if (!GIST_ID) return null;
     try {
       const r = await pedirForaM(`https://api.github.com/gists/${GIST_ID}`, {
-        headers: { Accept: 'application/vnd.github+json' },
+        headers: cabecalhoGist(),
       });
       if (!r.ok) return null;
       const j = await r.json();
