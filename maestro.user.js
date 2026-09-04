@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.06.0630
+// @version      2026.09.06.0830
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1543,7 +1543,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.06.0630';
+  const MAESTRO_VERSAO = '2026.09.06.0830';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -18387,6 +18387,26 @@ function makeDeusesModule(opts) {
     } catch (e) { return { ok: false, msg: e.message }; }
   }
 
+  /* O MÍNIMO DE HABITANTES QUE O JOGO EXIGE PARA ATACAR, por cidade.
+   * Aprendido a partir da recusa, nunca inventado. */
+  const MINIMOS_KEY = 'grepoDeuses_minimoAtaque_v1';
+
+  function minimoAprendido(townId) {
+    try {
+      const d = JSON.parse(armazem.getItem(MINIMOS_KEY) || '{}');
+      return Number(d[String(townId)]) || 0;
+    } catch (e) { return 0; }
+  }
+
+  function anotarMinimo(townId, n) {
+    try {
+      if (!(n > 0)) return;
+      const d = JSON.parse(armazem.getItem(MINIMOS_KEY) || '{}');
+      d[String(townId)] = n;
+      armazem.setItem(MINIMOS_KEY, JSON.stringify(d));
+    } catch (e) {}
+  }
+
   /* ---------------------- decisão --------------------------------------- */
   // Devolve { rodar:bool, motivo, deusNovo } para a cidade indicada.
   function decidir(townId, towns, c, favores, tomados) {
@@ -19056,6 +19076,18 @@ function makeDeusesModule(opts) {
     // Mesma razão do `run`: o `rotina` do módulo está noutro âmbito.
     const rotina = ctx.logRotina || ctx.log;
 
+    /* Quais estão em ilhas de farm. O `distribuirNasMultis` calcula o mesmo,
+     * mas noutro âmbito — e esta função também precisa, para não lhes tocar. */
+    const emFarm = new Set();
+    try {
+      const ilhasF = new Set(listaDeIlhasFarm(c));
+      for (const t of towns) {
+        const ix = mUw.ITowns.getTown(t.id).getIslandCoordinateX();
+        const iy = mUw.ITowns.getTown(t.id).getIslandCoordinateY();
+        if (ilhasF.has(`${ix}:${iy}`)) emFarm.add(Number(t.id));
+      }
+    } catch (e) { seErroDeCodigo(e, 'Deuses'); }
+
     /* Arrumar as Afrodites mal colocadas antes de contar os pesos. */
     try { await arrumarAfrodites(ctx, c, towns); } catch (e) { seErroDeCodigo(e, 'Deuses'); }
 
@@ -19240,9 +19272,23 @@ function makeDeusesModule(opts) {
     });
     const querido = distribuicaoDesejada(c.pesos || {}, towns.length, c.modoPesos);
 
-    const emFalta = DEUSES.filter((d) => (querido[d] || 0) > tenho[d])
+    /* FOLGA DE UMA CIDADE ANTES DE MEXER.
+     *
+     * Sem isto, uma diferença de um — que é o que sobra sempre que os pesos
+     * não dão contas certas — chegava para mandar mudar de deus. Visto na
+     * caixa negra: as cidades 7, 11 e 15 a saltar entre Zeus e Poseidon de
+     * seis em seis minutos durante horas, porque cada passagem via a balança
+     * pender para o outro lado.
+     *
+     * E mudar de deus deita fora o favor acumulado, por isso o vai-e-vem não
+     * era só ruído: eram esses três deuses a nunca juntar nada.
+     *
+     * Com folga de 2, só se mexe quando o desequilíbrio é real. A rotação do
+     * farm não passa por aqui e não é afectada. */
+    const FOLGA = 2;
+    const emFalta = DEUSES.filter((d) => (querido[d] || 0) - tenho[d] >= FOLGA)
       .sort((a, b) => ((querido[b] - tenho[b]) - (querido[a] - tenho[a])));
-    const aMais = DEUSES.filter((d) => tenho[d] > (querido[d] || 0));
+    const aMais = DEUSES.filter((d) => tenho[d] - (querido[d] || 0) >= FOLGA);
 
     if (!emFalta.length) { log('Deuses: distribuição já bate com os pesos.'); return; }
     if (!aMais.length) { log('Deuses: há deuses em falta mas nenhum a mais — nada a mover.'); return; }
@@ -19263,6 +19309,13 @@ function makeDeusesModule(opts) {
         // escolha e o equilíbrio não deve mexer nelas.
         const fixas = c.cidadesFarm || {};
         const candidatas = towns.filter((t) => deusDa(t.id) === doador)
+          /* AS CIDADES DO FARM NÃO ENTRAM AQUI.
+           *
+           * Elas têm regra própria: rodam quando a main lhes rouba o favor.
+           * Deixá-las nesta lista era pôr as duas regras a disputar a mesma
+           * cidade — e esta, que não sabe nada do farm, podia trocar-lhes o
+           * deus a meio de um roubo. */
+          .filter((t) => !emFarm.has(Number(t.id)))
           .filter((t) => !doGrupoVoa.has(Number(t.id)))   // o grupo de voadores tem regra própria
           .filter((t) => (fixas[t.id] || {}).tipo !== 'fixo')
           .filter((t) => !(c.protegerMiticas && miticasNaCidade(t.id, doador)))
@@ -19623,6 +19676,23 @@ function makeDeusesModule(opts) {
         quantos = temEnviados;
       }
 
+      /* O JOGO TEM UM MÍNIMO PARA ATACAR.
+       *
+       * "Uma tropa de ataque tem de ser constituída pelo menos por 84
+       * habitantes." Mandar 24 enviados é uma viagem que o jogo recusa — e o
+       * módulo fazia-o a cada passagem, gastando pedidos e enchendo o registo
+       * com falhas que não são falhas.
+       *
+       * O mínimo muda com o alvo, por isso APRENDE-SE: guarda-se o número que
+       * o jogo respondeu na última recusa e, da próxima, nem se tenta com
+       * menos. Quem nunca falhou continua a tentar — não se inventa um mínimo
+       * que não se sabe. */
+      const minimo = minimoAprendido(t.id);
+      if (minimo && quantos < minimo) {
+        (ctx.logRotina || ctx.log)(`${t.name}: tem ${quantos} enviados e o jogo exige ${minimo} — espero.`);
+        continue;
+      }
+
       /* VÁRIOS ATAQUES EM CURSO SÃO PERMITIDOS.
        *
        * Esperava-se que a tropa voltasse antes de mandar outro ataque. Mas o
@@ -19690,6 +19760,11 @@ function makeDeusesModule(opts) {
         /* "A tropa tem de ter pelo menos N habitantes" não é erro: é a cidade
          * não ter enviados que cheguem para o mínimo que o jogo exige. */
         const poucaTropa = /pelo menos|habitantes|minimum|too few/i.test(String(r.msg));
+        /* O número que o jogo exige vem na própria mensagem: fica aprendido. */
+        if (poucaTropa) {
+          const m2 = String(r.msg).match(/(\d+)/);
+          if (m2) anotarMinimo(t.id, Number(m2[1]));
+        }
         if (poucaTropa) {
           /* O `rotina` desta função vem do ctx: o do topo do módulo está
            * noutro âmbito e não chega aqui. */
