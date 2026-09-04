@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.06.0130
+// @version      2026.09.06.0230
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1543,7 +1543,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.06.0130';
+  const MAESTRO_VERSAO = '2026.09.06.0230';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -33558,6 +33558,50 @@ function makeFrotaModule(opts) {
       jogo.paradas = Number.isFinite(n) ? n : 0;
     } catch (e) {}
 
+    /* ---- INVENTÁRIO: O QUE ESTA CONTA TEM EM CASA ------------------------
+     *
+     * Cada conta só vê a sua tropa. Com vinte contas, ninguém sabe o que a
+     * frota tem ao todo nem quanto disso consegue viajar — e sem esse número
+     * qualquer coordenação de apoio é feita às cegas.
+     *
+     * Isto só OLHA: nenhum pedido ao jogo, nenhuma decisão, nenhum envio.
+     * Sem reserva, como pedido: conta tudo o que está em casa.
+     *
+     * A capacidade de carga é por cidade, porque o beliche é uma pesquisa da
+     * cidade e sobe a capacidade dos transportes de 10 para 16 e de 26 para
+     * 32 — enviar 12 onde 8 chegavam já aconteceu por não se ver isto. */
+    const inventario = { unidades: {}, carga: 0, popTerrestre: 0, cidades: [] };
+
+    try {
+      const gd = mUw.GameData.units || {};
+      for (const t of (ctx.getMyTowns() || [])) {
+        const town = mUw.ITowns.getTown(Number(t.id));
+        if (!town) continue;
+        const u = (town.units && town.units()) || {};
+
+        let beliche = false;
+        try {
+          const r = town.researches && town.researches();
+          beliche = !!((r && (r.attributes || r)) || {}).berth;
+        } catch (e) {}
+
+        const desta = {};
+        for (const id of Object.keys(u)) {
+          const n = Number(u[id]) || 0;
+          if (n <= 0 || !gd[id]) continue;
+          desta[id] = n;
+          inventario.unidades[id] = (inventario.unidades[id] || 0) + n;
+
+          if (id === 'small_transporter') inventario.carga += n * (beliche ? 16 : 10);
+          else if (id === 'big_transporter') inventario.carga += n * (beliche ? 32 : 26);
+          else if (!gd[id].is_naval) inventario.popTerrestre += n * (Number(gd[id].population) || 1);
+        }
+        if (Object.keys(desta).length) {
+          inventario.cidades.push({ id: Number(t.id), nome: String(t.name || t.id), u: desta });
+        }
+      }
+    } catch (e) {}
+
     /* Favor por deus: é o que a farm de favores existe para acumular. */
     try {
       const pg = mUw.MM.getModels().PlayerGods || {};
@@ -33575,7 +33619,7 @@ function makeFrotaModule(opts) {
       mundo: mWorld,
       versao: String(w.__maestroVersao || '?'),
       quando: Math.floor(Date.now() / 1000),
-      captcha, cidades, travoes, jogo, modulos, errosCodigo, erros,
+      captcha, cidades, travoes, jogo, inventario, modulos, errosCodigo, erros,
     };
   }
 
@@ -33646,6 +33690,60 @@ function makeFrotaModule(opts) {
     mUw = ctx.uw; mWorld = ctx.WORLD;
     container.innerHTML = '<div style="font-size:13px;opacity:.7">A ler a frota…</div>';
     desenhar(container, ctx);
+  }
+
+  /* O INVENTÁRIO DA FROTA.
+   *
+   * Soma o que as vinte contas têm em casa e diz quanto disso consegue
+   * viajar. Ter 2000 espadachins não serve de nada se a carga só levar 600 —
+   * e é esse número que ninguém via. */
+  function htmlInventario(contas) {
+    const total = {};
+    let carga = 0, pop = 0, comInv = 0;
+
+    for (const x of contas) {
+      const inv = x.inventario;
+      if (!inv || !inv.unidades) continue;
+      comInv++;
+      carga += Number(inv.carga) || 0;
+      pop += Number(inv.popTerrestre) || 0;
+      for (const u of Object.keys(inv.unidades)) {
+        total[u] = (total[u] || 0) + Number(inv.unidades[u] || 0);
+      }
+    }
+
+    if (!comInv) {
+      return '<div class="mEtiq" style="margin-top:11px">inventário</div>'
+        + '<div style="font-size:12px;opacity:.6">nenhuma conta publicou ainda — '
+        + 'aparece na primeira passagem depois de actualizarem.</div>';
+    }
+
+    const gd = (mUw.GameData || {}).units || {};
+    const nome = (u) => (gd[u] && gd[u].name) || u;
+    const naval = (u) => !!(gd[u] && gd[u].is_naval);
+
+    const linhas = Object.keys(total)
+      .sort((a2, b2) => total[b2] - total[a2])
+      .map((u) => `<tr>
+        <td style="padding:2px 4px">${esc(nome(u))}</td>
+        <td style="padding:2px 4px;opacity:.6">${naval(u) ? 'mar' : 'terra'}</td>
+        <td style="padding:2px 4px;text-align:right">${total[u].toLocaleString('pt-PT')}</td>
+      </tr>`).join('');
+
+    /* Quanto da tropa terrestre cabe nos transportes que existem. */
+    const podeViajar = pop > 0 ? Math.min(100, Math.round((carga / pop) * 100)) : 100;
+
+    return `
+      <div class="mEtiq" style="margin-top:11px;margin-bottom:5px">inventário da frota</div>
+      <div style="background:var(--mSurf);border-radius:6px;padding:9px 11px;margin-bottom:7px;font-size:12px">
+        <div>${comInv} conta(s) a publicar · carga para <b>${carga.toLocaleString('pt-PT')}</b> de população</div>
+        <div style="color:${podeViajar < 100 ? 'var(--mBrass)' : 'var(--mLive)'}">
+          a tropa terrestre pesa ${pop.toLocaleString('pt-PT')} — os transportes levam ${podeViajar}% dela
+        </div>
+      </div>
+      <div style="max-height:190px;overflow:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:12px">${linhas}</table>
+      </div>`;
   }
 
   async function desenhar(container, ctx) {
@@ -33742,6 +33840,8 @@ function makeFrotaModule(opts) {
           ${linhas}
         </table>
       </div>
+
+      ${htmlInventario(contas)}
 
       <button id="frota-rec" style="cursor:pointer;font-size:12px;margin-top:6px">🔄 actualizar</button>`;
 
