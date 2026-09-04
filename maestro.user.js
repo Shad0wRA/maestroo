@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.05.0930
+// @version      2026.09.05.1130
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1486,7 +1486,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.05.0930';
+  const MAESTRO_VERSAO = '2026.09.05.1130';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -16609,7 +16609,27 @@ function makeAlertasModule(opts) {
   function guardarIgnorados(v) { try { armazem.setItem(IGNORAR_KEY, JSON.stringify(v)); } catch (e) { seErroDeCodigo(e, 'Alertas'); } }
   function ehIgnorado(a) {
     const ig = lerIgnorados();
-    const nome = String(a.jogador || '').trim().toLowerCase();
+
+    /* O NOME NÃO VEM NO ATAQUE.
+     *
+     * O `a.jogador` só é preenchido quando o servidor manda o
+     * `origin_town_player_name`, o que não acontece nas contas sem
+     * Administrador — e são essas que levam com a farm de favores. Ficava
+     * vazio, a comparação com a lista dava sempre falso, e os avisos saíam na
+     * mesma por muito que se pusesse o nome lá.
+     *
+     * O nome verdadeiro está no `donoConhecido`, procurado no mapa a partir
+     * do link da cidade de origem. É o mesmo sítio de onde a mensagem do
+     * Discord tira o "Atacante:" — se a mensagem consegue escrever o nome,
+     * este filtro tem de o conseguir ler. */
+    let nome = String(a.jogador || '').trim().toLowerCase();
+    if (!nome) {
+      try {
+        const co = coordenadasDoLink(a.link_origin);
+        if (co && donoConhecido[co.id]) nome = String(donoConhecido[co.id]).trim().toLowerCase();
+      } catch (e) { seErroDeCodigo(e, 'Alertas'); }
+    }
+
     const ali = String(a.alianca || '').trim().toLowerCase();
     if (nome && ig.jogadores.some((x) => String(x).trim().toLowerCase() === nome)) return true;
     if (a.jogador_id && ig.jogadores.some((x) => Number(x) === Number(a.jogador_id))) return true;
@@ -17343,10 +17363,6 @@ function makeAlertasModule(opts) {
        * uma cidade minha. */
       const origemId = Number(a.home_town_id) || 0;
       if (a.started_at != null || (origemId && minhas.has(origemId))) continue;
-      if (ehIgnorado(a)) {                                       // atacante ignorado
-        vistos[String(a.command_id || a.id)] = agora;            // marcar para não reavaliar
-        continue;
-      }
       const cid = String(a.command_id || a.id);
       if (vistos[cid]) continue;                                 // já avisado
 
@@ -17359,6 +17375,25 @@ function makeAlertasModule(opts) {
      * Sem Administrador o modelo não traz o nome, só as coordenadas da cidade
      * de origem — daí o aviso sair com "Atacante: ?". */
     if (novosAtaques.length) await preencherDonos(novosAtaques, ctx);
+
+    /* SÓ AGORA SE PODE IGNORAR ALGUÉM.
+     *
+     * O filtro estava ANTES desta linha, e por isso nunca funcionava: nesse
+     * momento o `jogador` ainda está vazio, porque o nome do atacante só
+     * aparece depois de o procurar no mapa. Punhas o teu nome na lista e o
+     * aviso saía na mesma, porque não havia nome nenhum para comparar. */
+    if (novosAtaques.length) {
+      const sobram = [];
+      for (const a of novosAtaques) {
+        if (ehIgnorado(a)) {
+          novos--;
+          continue;   // já ficou marcado como visto, não se reavalia
+        }
+        sobram.push(a);
+      }
+      novosAtaques.length = 0;
+      for (const a of sobram) novosAtaques.push(a);
+    }
 
     /* ---- avisar por VAGA, não ataque a ataque ---- */
     const reforcos = lerReforcos();
