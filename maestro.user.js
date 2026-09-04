@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.05.2330
+// @version      2026.09.06.0030
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1543,7 +1543,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.05.2330';
+  const MAESTRO_VERSAO = '2026.09.06.0030';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -1635,9 +1635,28 @@
      * Se o Maestro tiver sido carregado pelo carregador, ele deixa uma marca.
      * Nesse caso não se faz nada — dois mecanismos a recarregar a página ao
      * mesmo tempo davam recarregamentos em cadeia. */
+    /* COM CARREGADOR TAMBÉM É PRECISO.
+     *
+     * A ideia era que o carregador lê o repositório em cada abertura de
+     * página, portanto bastava esperar pelo recarregamento seguinte. Só que
+     * as abas não recarregam de hora a hora como se assumia: no retrato da
+     * frota havia contas com versões de treze horas antes, espalhadas entre a
+     * manhã e a noite.
+     *
+     * Sem isto, uma correcção publicada agora só chega à frota inteira no dia
+     * seguinte. Com isto, chega em minutos.
+     *
+     * O risco dos recarregamentos em cadeia está travado pelas três guardas
+     * abaixo: só recarrega para uma versão MAIOR, só uma vez por versão, e
+     * não mais do que uma vez em cada quinze minutos. E cada conta tem o seu
+     * desvio, senão as 21 abas recarregavam no mesmo instante — que é o
+     * momento em que a VPS mais sofre. */
     try {
-      if (uw.__maestroViaLoader) return;
-    } catch (e) { seErroDeCodigo(e, 'núcleo'); }
+      if (uw.__maestroViaLoader) {
+        const gap = Number(localStorage.getItem('grepoMaestro_ultimoRecarregar_v1')) || 0;
+        if (Date.now() - gap < 15 * 60 * 1000) return;
+      }
+    } catch (e) {}
 
     try {
       const r = await uw.fetch(FONTE_ATUALIZACAO + '?_=' + Date.now(), { cache: 'no-store' });
@@ -1669,6 +1688,8 @@
       } catch (e) {
         /* formato antigo (só o número da versão): ignora-se e tenta-se. */
       }
+
+      try { localStorage.setItem('grepoMaestro_ultimoRecarregar_v1', String(Date.now())); } catch (e) {}
 
       if (haPlanoIminente()) {
         log('core', `Versão ${nova} disponível — espero, há um plano a sair já.`);
