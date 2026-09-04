@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.06.0030
+// @version      2026.09.06.0130
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1543,7 +1543,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.06.0030';
+  const MAESTRO_VERSAO = '2026.09.06.0130';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -2083,6 +2083,39 @@
   /* Quando foi aplicado o perfil pela última vez, para não repetir a cada
    * passagem. */
   const APLICADO_KEY = 'grepoMaestro_perfilAplicado_v1';
+
+  /* APANHAR O PERFIL SEM ESPERAR PELO ARRANQUE.
+   *
+   * A principal publica de meia em meia hora, mas as outras só liam o perfil
+   * quando a página abria. Com abas que ficam horas abertas, uma definição
+   * mudada na MacaquinhoChinês podia demorar meio dia a chegar às outras.
+   *
+   * Isto corre de dez em dez minutos, com o desvio próprio de cada conta, e
+   * só faz alguma coisa quando o ficheiro é MAIS RECENTE do que o que já foi
+   * aplicado. Uma leitura por conta a cada dez minutos são oitenta por hora
+   * nas vinte — nada, agora que as leituras vão autenticadas. */
+  async function talvezApanharPerfil() {
+    try {
+      if (souPrincipal() || !GIST_ID_GLOBAL) return;
+      const esc = lerEscolhas();
+      const perfil = (esc && esc.perfil) || '';
+      if (!perfil) return;
+
+      const r = await buscarPerfil(perfil);
+      if (!r || !r.ok) return;
+
+      const antes = Number(localStorage.getItem(APLICADO_KEY)) || 0;
+      if (!r.quando || r.quando <= antes) return;      // nada de novo
+
+      localStorage.setItem(APLICADO_KEY, String(r.quando));
+      log('core', `Perfil "${perfil}" actualizado a partir da conta principal `
+        + `(${r.n} definição(ões)) — sem recarregar a página.`);
+      try {
+        atualizarPainelEstado();
+        if (redesenharPainelAberto) redesenharPainelAberto();
+      } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'núcleo'); }
+  }
 
   async function aplicarPerfilAoArrancar() {
     if (souPrincipal()) return;                 // a principal não busca
@@ -33827,7 +33860,10 @@ function makeFrotaModule(opts) {
       setTimeout(() => {
         verificarVersaoNova();
         talvezRefrescar();
-        setInterval(() => { verificarVersaoNova(); talvezRefrescar(); }, 10 * 60 * 1000);
+        talvezApanharPerfil();
+        setInterval(() => {
+          verificarVersaoNova(); talvezRefrescar(); talvezApanharPerfil();
+        }, 10 * 60 * 1000);
       }, 30000 + desvio);
     } catch (e) { seErroDeCodigo(e, 'Frota'); }
     if (autoStartLigado()) {
