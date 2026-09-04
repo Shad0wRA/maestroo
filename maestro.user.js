@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.06.1430
+// @version      2026.09.06.1530
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1558,7 +1558,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.06.1430';
+  const MAESTRO_VERSAO = '2026.09.06.1530';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -32558,6 +32558,68 @@ function makeFundacaoModule(opts) {
     return achadas;
   }
 
+  /* ILHAS À VOLTA DE UMA CIDADE, EM ANÉIS.
+   *
+   * O `ilhasDoOceano` varre os blocos à volta das MINHAS cidades e no fim
+   * deita fora tudo o que não pertence a um oceano. Isso tem dois problemas
+   * para quem quer fundar à volta de uma cidade: se ela estiver encostada à
+   * fronteira, metade do que está perto fica de fora só por ser do oceano do
+   * lado; e a procura parte das minhas cidades, não do sítio que escolhi.
+   *
+   * Aqui a cidade centro é o epicentro. Varre-se o bloco dela e os oito à
+   * volta; se não chegar, alarga-se um anel de cada vez. Pára assim que tiver
+   * candidatas que cheguem — com os captchas à perna, não se pedem blocos
+   * que não fazem falta.
+   *
+   * Se forem indicados oceanos, valem como filtro: procura-se o mais perto do
+   * centro DENTRO desses oceanos. Sem oceanos, vale só a distância.
+   *
+   * A ordenação por distância fica a cargo de quem chama, que já a fazia. */
+  async function ilhasPertoDe(centro, oceanos, townIdBase, minimo) {
+    const achadas = [];
+    const vistos = new Set();
+    const filtro = (oceanos || []).map(String);
+    const cx = Math.floor(Number(centro.x) / CHUNK);
+    const cy = Math.floor(Number(centro.y) / CHUNK);
+    const quero = Math.max(1, Number(minimo) || 12);
+
+    for (let anel = 1; anel <= 4; anel++) {
+      for (let dx = -anel; dx <= anel; dx++) {
+        for (let dy = -anel; dy <= anel; dy++) {
+          /* Só a casca do anel: o interior já foi pedido na volta anterior. */
+          if (anel > 1 && Math.abs(dx) < anel && Math.abs(dy) < anel) continue;
+
+          const chave = `${cx + dx}:${cy + dy}`;
+          if (vistos.has(chave)) continue;
+          vistos.add(chave);
+
+          try {
+            const url = mUw.location.origin + '/game/map_data?town_id=' + Number(townIdBase)
+              + '&action=get_chunks&h=' + mUw.Game.csrfToken
+              + '&json=' + encodeURIComponent(JSON.stringify({
+                  chunks: [{ x: cx + dx, y: cy + dy, timestamp: 0 }],
+                  town_id: Number(townIdBase), nl_init: true }));
+            const r = await mUw.fetch(url, {
+              headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
+            }).then(lerResposta).catch(() => null);
+
+            const d = (r && r.json && r.json.data) || {};
+            const bloco = d[0] || d['0'];
+            for (const il of ((bloco && bloco.islands) || [])) {
+              const ox = Number(il.x), oy = Number(il.y);
+              if (!Number.isFinite(ox)) continue;
+              if (filtro.length && filtro.indexOf(String(oceanoDe(ox, oy))) < 0) continue;
+              if (achadas.some((a2) => a2.x === ox && a2.y === oy)) continue;
+              achadas.push({ x: ox, y: oy, id: il.id });
+            }
+          } catch (e) { seErroDeCodigo(e, 'Fundacao'); }
+        }
+      }
+      if (achadas.length >= quero) break;   // já chega; não se pedem mais blocos
+    }
+    return achadas;
+  }
+
   /* ------------- APLICAR AS NOTIFICAÇÕES DA RESPOSTA ------------------- */
   function aplicarNotificacoes(resposta) {
     try {
@@ -32645,12 +32707,14 @@ function makeFundacaoModule(opts) {
 
     /* Ilhas a tentar, por ordem de preferência. */
     let aTentar = [];
+    /* Com cidade centro, é ela que manda — mesmo que haja oceanos, que passam
+     * a ser só um filtro. Sem centro, vale a lista de oceanos como antes. */
     if ((c.ilhas || []).length) {
       aTentar = c.ilhas.map((k) => {
         const [x, y] = String(k).split(':');
         return { x: Number(x), y: Number(y), origem: 'marcada' };
       }).filter((i) => Number.isFinite(i.x) && Number.isFinite(i.y));
-    } else if ((c.oceanos || []).length) {
+    } else if ((c.oceanos || []).length && !c.centroId) {
       for (const oc of c.oceanos) {
         const ilhas = await ilhasDoOceano(oc, t.id);
         /* Levar o `id` da ilha: é o que o `island_info` precisa para dizer
@@ -32712,11 +32776,16 @@ function makeFundacaoModule(opts) {
         rotina(`Fundação: não consegui achar a cidade ${c.centroId} que indicaste como centro.`);
         return;
       }
-      const oc = oceanoDe(centroC.x, centroC.y);
-      const ilhas = await ilhasDoOceano(oc, t.id);
-      for (const i of ilhas) aTentar.push({ x: i.x, y: i.y, id: i.id, origem: 'oceano ' + oc });
-      rotina(`Fundação: sem ilhas marcadas — uso o oceano ${oc}, da cidade ${c.centroId}, `
-        + `com ${aTentar.length} ilha(s) candidata(s).`);
+      /* A cidade centro é o EPICENTRO: procura-se à volta dela, em anéis, e
+       * não dentro de um oceano. Se também tiveres indicado oceanos, eles
+       * valem como filtro — o mais perto do centro, dentro deles. */
+      const ilhas = await ilhasPertoDe(centroC, c.oceanos || [], t.id, 24);
+      for (const i of ilhas) {
+        aTentar.push({ x: i.x, y: i.y, id: i.id, origem: 'perto de ' + c.centroId });
+      }
+      rotina(`Fundação: à volta da cidade ${c.centroId}`
+        + ((c.oceanos || []).length ? `, no(s) oceano(s) ${c.oceanos.join(', ')}` : '')
+        + ` — ${aTentar.length} ilha(s) candidata(s), da mais perto para a mais longe.`);
       if (!aTentar.length) return;
     } else {
       /* Sem ilhas, sem oceanos e sem centro: NÃO funda nada.
