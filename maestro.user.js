@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.06.2030
+// @version      2026.09.06.2130
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1595,7 +1595,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.06.2030';
+  const MAESTRO_VERSAO = '2026.09.06.2130';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -14772,6 +14772,11 @@ function makeFeiticosModule(opts) {
     /* Reforços a manter nos ataques que envio: { <comando>: '<feitiço>' }.
      * Escolhidos no painel, um a um. */
     reforcos: {},
+    /* Ataques RECEBIDOS marcados à mão: { <comando>: ['sea_storm', ...] }.
+     * Saem sozinhos da lista quando o ataque chega. */
+    alvos: {},
+    /* Quantas vezes insistir com o mesmo feitiço no mesmo ataque. */
+    maxPorAtaque: 3,
   };
 
   const armazem = {
@@ -15344,6 +15349,96 @@ function makeFeiticosModule(opts) {
       } catch (e) { seErroDeCodigo(e, 'Feiticos'); }
     }
 
+    /* ============ ATAQUES MARCADOS À MÃO ================================
+     *
+     * O bloco acima só reage a colonizadores, e sozinho. Este trata dos
+     * ataques que TU marcaste no painel: escolhes o feitiço — a tempestade
+     * para os navios, a ira para a tropa de terra, ou os dois — e ele insiste
+     * até o ataque chegar ou esgotar as tentativas.
+     *
+     * Insistir é de propósito. Se o adversário purificar, o jogo deixa
+     * lançar outra vez, e a passagem seguinte apanha essa janela. Enquanto o
+     * feitiço lá estiver, a tentativa é recusada por "já foi lançado" e não
+     * custa favor nenhum — por isso tentar não tem preço.
+     * ================================================================== */
+    try {
+      const marcados = c.alvos || {};
+      if (Object.keys(marcados).length) {
+        const mv = mUw.MM.getModels().MovementsUnits || {};
+        const minhas = new Set(towns.map((t) => Number(t.id)));
+        const vivos = {};
+        let algum = false;
+
+        for (const k of Object.keys(mv)) {
+          const a = mv[k].attributes || {};
+          const cmdId = Number(a.id || a.command_id) || 0;
+          if (!cmdId || !marcados[cmdId]) continue;
+          if (!minhas.has(Number(a.target_town_id))) continue;
+
+          vivos[cmdId] = marcados[cmdId];
+          algum = true;
+
+          const escolhidos = [].concat(marcados[cmdId] || []);
+          for (const powerId of escolhidos) {
+            const deus = deusDoFeitico(powerId);
+            const donde = cidadeCom(deus, towns);
+            if (!donde) {
+              rotina(`Feitiços: nenhuma cidade venera ${deus || '?'} para ${nomeDoFeitico(powerId)}.`);
+              continue;
+            }
+            const custo = custoDoFeitico(powerId);
+            if (favorDe(deus) < custo) {
+              rotina(`Feitiços: falta favor de ${deus} para ${nomeDoFeitico(powerId)} `
+                + `(${favorDe(deus)}/${custo}).`);
+              pedirFavor(deus, custo);
+              continue;
+            }
+
+            est.marcados = est.marcados || {};
+            const chaveT = cmdId + ':' + powerId;
+            const jaFoi = Number(est.marcados[chaveT]) || 0;
+            if (jaFoi >= (c.maxPorAtaque || 3)) continue;
+
+            let r = await lancarNoAtaque(powerId, cmdId, donde.id);
+
+            /* Ocupado por um feitiço do adversário: purificar e repetir. */
+            if (r.ocupado) {
+              const deArtemis2 = cidadeCom('artemis', towns);
+              if (deArtemis2 && favorDe('artemis') >= 200) {
+                const rp = await lancarNoAtaque('cleanse', cmdId, deArtemis2.id);
+                if (rp.ok) {
+                  await ctx.sleep(ctx.rand(600, 1200));
+                  r = await lancarNoAtaque(powerId, cmdId, donde.id);
+                }
+              }
+            }
+
+            if (r.ok) {
+              est.marcados[chaveT] = jaFoi + 1;
+              guardarEstado(est);
+              feitos++;
+              log(`⚡ ${nomeDoFeitico(powerId)} no ataque a `
+                + `${a.town_name_destination || a.target_town_id} (${jaFoi + 1}ª).`);
+              await ctx.sleep(ctx.rand(600, 1200));
+            } else if (!r.ocupado) {
+              rotina(`Feitiços: ${nomeDoFeitico(powerId)} falhou no ${cmdId} — ${r.msg}`);
+            }
+          }
+        }
+
+        /* Os que já chegaram saem da lista sozinhos. */
+        if (Object.keys(vivos).length !== Object.keys(marcados).length) {
+          guardarCfg(Object.assign({}, c, { alvos: vivos }));
+        }
+
+        /* Enquanto houver ataques marcados, acordar de minuto a minuto: a
+         * janela que se quer apanhar é a que abre quando o adversário
+         * purifica, e cinco minutos é uma eternidade para isso. */
+        if (algum && ctx.voltarEm) ctx.voltarEm(60);
+      }
+    } catch (e) { seErroDeCodigo(e, 'Feiticos'); }
+
+
     /* Voltar quando a primeira expirar — é aí que a janela abre e o
      * adversário tentaria entrar. */
     if (proximo && ctx.voltarEm) {
@@ -15407,6 +15502,60 @@ function makeFeiticosModule(opts) {
     const outras = (c.protegidas || []).map(Number).filter((id) => !idsMinhas.has(id));
 
     const favor = favorDe('athena');
+
+    /* ---- OS ATAQUES QUE VÊM CONTRA MIM ----
+     *
+     * Marcas o que queres lançar em cada um e o módulo insiste até o ataque
+     * chegar. A tempestade come navios, a ira come tropa de terra; podes
+     * escolher os dois.
+     *
+     * Só aparecem os que ainda não chegaram, e saem da lista sozinhos quando
+     * baterem. */
+    const htmlRecebidos = (() => {
+      try {
+        const col = mUw.MM.getCollections().MovementsUnits;
+        const minhasIds = new Set((ctx.getMyTowns() || []).map((t) => Number(t.id)));
+        const vindos = ((col && col[0] && col[0].models) || [])
+          .map((m) => m.attributes || {})
+          .filter((a2) => /attack/i.test(String(a2.type || '')))
+          .filter((a2) => minhasIds.has(Number(a2.target_town_id)))
+          .filter((a2) => !minhasIds.has(Number(a2.home_town_id)));
+
+        if (!vindos.length) {
+          return '<div style="opacity:.55;font-size:13px">Nenhum ataque a caminho de ti.</div>';
+        }
+
+        /* Todos os que se podem lançar num comando, negativos incluídos —
+         * são esses que interessam contra quem ataca. */
+        const opcoesR = feiticosDeAtaque(false);
+
+        return vindos.map((a2) => {
+          const cid = Number(a2.id || a2.command_id) || 0;
+          const jaEscolhidos = [].concat((c.alvos || {})[cid] || []);
+          const chega = a2.arrival_at
+            ? new Date(Number(a2.arrival_at) * 1000).toLocaleTimeString().slice(0, 5)
+            : '?';
+
+          const caixas = opcoesR.map((id) => `
+            <label style="display:inline-flex;align-items:center;gap:3px;margin-right:8px">
+              <input type="checkbox" class="fei-alvo" data-cmd="${cid}" value="${id}"
+                ${jaEscolhidos.indexOf(id) >= 0 ? 'checked' : ''}>
+              ${iconeDoFeitico(id)}
+              <span style="font-size:11px">${esc(nomeDoFeitico(id))}</span>
+              <span style="font-size:10px;opacity:.5">${custoDoFeitico(id)}</span>
+            </label>`).join('');
+
+          return `<div style="background:var(--mSurf);padding:5px 6px;border-radius:4px;margin-bottom:4px">
+            <div style="font-size:13px">
+              vem de <b>${esc(String(a2.town_name_origin || a2.home_town_id || '?'))}</b>
+              para <b>${esc(String(a2.town_name_destination || a2.target_town_id))}</b>
+              <span style="opacity:.6">· chega ${chega}</span>
+            </div>
+            <div style="margin-top:3px">${caixas}</div>
+          </div>`;
+        }).join('');
+      } catch (e) { return '<div style="opacity:.55;font-size:13px">não consegui ler os ataques.</div>'; }
+    })();
 
     /* ---- OS MEUS ATAQUES EM CURSO ----
      *
@@ -15536,6 +15685,15 @@ function makeFeiticosModule(opts) {
       </div>
 
       <div style="border-top:1px solid #234;margin:8px 0 6px;padding-top:6px">
+        <b style="font-size:13px">Ataques a caminho de mim</b>
+        <div style="opacity:.6;font-size:12px;margin:2px 0 5px">
+          Marca o que queres lançar em cada um. Ele insiste até o ataque
+          chegar: se purificarem, a passagem seguinte volta a lançar.
+        </div>
+        ${htmlRecebidos}
+      </div>
+
+      <div style="border-top:1px solid #234;margin:8px 0 6px;padding-top:6px">
         <b style="font-size:13px">Reforços nos meus ataques</b>
         <div style="opacity:.6;font-size:12px;margin:2px 0 5px">
           Escolhe o feitiço para cada ataque em curso. Ele lança e, se
@@ -15548,6 +15706,16 @@ function makeFeiticosModule(opts) {
 
     container.querySelector('#fei-guardar').onclick = () => {
       const cc = cfg();
+
+      /* Os ataques recebidos que ficaram marcados. Guarda-se por comando, com
+       * a lista de feitiços escolhidos. */
+      cc.alvos = {};
+      container.querySelectorAll('.fei-alvo').forEach((el) => {
+        if (!el.checked) return;
+        const cid = Number(el.getAttribute('data-cmd')) || 0;
+        if (!cid) return;
+        cc.alvos[cid] = (cc.alvos[cid] || []).concat([el.value]);
+      });
       cc.ativo = container.querySelector('#fei-on').checked;
       /* As marcadas, mais os identificadores de outras contas. */
       const antes = new Set((cc.protegidas || []).map(Number));
