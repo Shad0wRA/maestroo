@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.07.0130
+// @version      2026.09.07.0230
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1595,7 +1595,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.07.0130';
+  const MAESTRO_VERSAO = '2026.09.07.0230';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -31792,9 +31792,16 @@ function makeApoioModule(opts) {
               const ficam = [].concat([...jaLa], novos.map((r) => r.id))
                 .filter((id) => aRetirar.indexOf(Number(id)) < 0);
 
+              /* Dez cidades por conta SÓ nas cidades em revolta. O limite
+               * geral não se toca: os alvos de rotina ficam como os
+               * configuraste. */
+              const exc = Object.assign({}, lista.maxPorAlvo || {});
+              for (const id of aRetirar) delete exc[id];
+              for (const r of revoltas) exc[r.id] = 10;
+
               const copia = Object.assign({}, lista, {
                 alvos: ficam,
-                maxCidadesPorAlvo: 10,
+                maxPorAlvo: exc,
                 revoltasAuto: auto,
               });
               delete copia.targets;
@@ -31928,7 +31935,18 @@ function makeApoioModule(opts) {
       }
     })();
     const pacote = lista.pacote || c.pacote;
-    const maxPorAlvo = Number(lista.maxCidadesPorAlvo || c.maxCidadesPorAlvo) || 10;
+    /* O LIMITE DE CIDADES É POR ALVO.
+     *
+     * Era um número só para todos. Quando a revolta o punha a 10, subia
+     * também nos alvos de rotina, e não voltava a descer quando a revolta
+     * acabasse — porque o valor antigo nunca chegava a ser guardado.
+     *
+     * Agora o número global continua a valer para tudo, e a lista partilhada
+     * pode trazer excepções por cidade. A revolta escreve a dela e apaga-a
+     * quando a ameaça acabar; o resto fica como configuraste. */
+    const maxGeral = Number(lista.maxCidadesPorAlvo || c.maxCidadesPorAlvo) || 10;
+    const excecoes = lista.maxPorAlvo || {};
+    const limiteDe = (id) => Number(excecoes[id]) || maxGeral;
 
     // 1. RETORNOS: alvos que já não estão na lista mas que ainda apoio
     const ativos = new Set(alvos);
@@ -31962,7 +31980,7 @@ function makeApoioModule(opts) {
     for (const alvo of alvos) {
       const jaApoiam = Object.keys(reg)
         .filter((k) => { const m = k.match(/^(\d+)->(\d+)$/); return m && Number(m[2]) === alvo; }).length;
-      if (jaApoiam >= maxPorAlvo) continue;
+      if (jaApoiam >= limiteDe(alvo)) continue;
 
       // rodízio: preferir as cidades que menos alvos apoiam
       const uso = {};
@@ -32020,7 +32038,7 @@ function makeApoioModule(opts) {
       for (const t of candidatas) {
         if (Object.keys(reg).filter((k) => {
           const m = k.match(/^(\d+)->(\d+)$/); return m && Number(m[2]) === alvo;
-        }).length >= maxPorAlvo) break;
+        }).length >= limiteDe(alvo)) break;
 
         /* Esta cidade já disse que não tem tropa nesta passagem: não vale a
          * pena tentá-la para os alvos seguintes. */
