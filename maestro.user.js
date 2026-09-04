@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.07.0830
+// @version      2026.09.07.1030
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1595,7 +1595,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.07.0830';
+  const MAESTRO_VERSAO = '2026.09.07.1030';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -24765,6 +24765,60 @@ function makeTrocaCidadesModule(opts) {
    *
    * Quem já não tem nada pendente pode dar quase tudo; quem ainda vai
    * precisar guarda uma reserva maior. */
+  /* O QUE GUARDAR PARA A TROPA QUE AINDA CABE.
+   *
+   * Uma cidade com a quinta no máximo e um template a pedir milhares de
+   * unidades não tem trabalho pendente: tem um template grande de mais. O que
+   * ela vai mesmo recrutar é o que couber na população livre.
+   *
+   * Guarda-se o custo do PIOR CASO — encher os lugares livres com a unidade
+   * mais cara POR HABITANTE, entre as que ainda faltam. Assim nunca falta
+   * nada; se ela acabar por fazer algo mais barato, o resto sai na passagem
+   * seguinte.
+   *
+   * E guarda-se o menor de dois: o que falta do template ou o que cabe na
+   * população. Se só faltam 8 espadachins, não se guarda espaço para 30. */
+  function guardarParaTropa(townId, res) {
+    const zero = { wood: 0, stone: 0, iron: 0 };
+    try {
+      const livre = Number((res || {}).population) || 0;
+      if (livre <= 0) return zero;
+
+      const exp = JSON.parse(armazem.getItem('grepoRecruta_expandido_v1') || '{}');
+      const alvosU = exp[townId];
+      if (!alvosU || !Object.keys(alvosU).length) return zero;
+
+      const town = mUw.ITowns.getTown(Number(townId));
+      const tenho = (town && town.units()) || {};
+      const gd = mUw.GameData.units || {};
+
+      let pior = null;
+      for (const u of Object.keys(alvosU)) {
+        const falta = Number(alvosU[u]) - (Number(tenho[u]) || 0);
+        if (falta <= 0) continue;
+        const def = gd[u];
+        if (!def) continue;
+
+        const pop = Number(def.population) || 1;
+        const custo = def.resources || {};
+        const porHab = ((Number(custo.wood) || 0) + (Number(custo.stone) || 0)
+          + (Number(custo.iron) || 0)) / pop;
+
+        /* Quantas cabem: as que faltam ou as que a população deixa. */
+        const cabem = Math.min(falta, Math.floor(livre / pop));
+        if (cabem <= 0) continue;
+
+        const total = {
+          wood: (Number(custo.wood) || 0) * cabem,
+          stone: (Number(custo.stone) || 0) * cabem,
+          iron: (Number(custo.iron) || 0) * cabem,
+        };
+        if (!pior || porHab > pior.porHab) pior = { porHab, total };
+      }
+      return pior ? pior.total : zero;
+    } catch (e) { seErroDeCodigo(e, 'TrocaCidades'); return zero; }
+  }
+
   function temTrabalhoPendente(townId, res) {
     try {
       // construção: algum edifício do template abaixo do alvo?
@@ -24781,14 +24835,34 @@ function makeTrocaCidadesModule(opts) {
         }
       }
 
-      // recrutamento: alguma unidade do template abaixo do alvo?
-      const exp = JSON.parse(armazem.getItem('grepoRecruta_expandido_v1') || '{}');
-      const alvosU = exp[townId];
-      if (alvosU && Object.keys(alvosU).length) {
-        const town = mUw.ITowns.getTown(Number(townId));
-        const tenho = (town && town.units()) || {};
-        for (const u of Object.keys(alvosU)) {
-          if ((Number(tenho[u]) || 0) < Number(alvosU[u])) return true;
+      /* RECRUTAMENTO: alguma unidade do template abaixo do alvo?
+       *
+       * Com uma condição que faltava — TER POPULAÇÃO PARA A FAZER.
+       *
+       * Visto em jogo na 55.13: quinta no máximo, 30 de população livre, e um
+       * template a pedir 2500 unidades. Faltar tropa era sempre verdade, a
+       * cidade era dada como tendo trabalho pendente, e nunca dava nada — com
+       * os três armazéns a 30600/30600 enquanto dezasseis cidades esperavam
+       * por recursos.
+       *
+       * Um template que a cidade não consegue cumprir não é trabalho
+       * pendente: é um template grande de mais. Enquanto não houver
+       * população, os recursos fazem mais falta noutro lado. */
+      const livre = Number((res || {}).population) || 0;
+      if (livre > 0) {
+        const exp = JSON.parse(armazem.getItem('grepoRecruta_expandido_v1') || '{}');
+        const alvosU = exp[townId];
+        if (alvosU && Object.keys(alvosU).length) {
+          const town = mUw.ITowns.getTown(Number(townId));
+          const tenho = (town && town.units()) || {};
+          const gd = mUw.GameData.units || {};
+          for (const u of Object.keys(alvosU)) {
+            if ((Number(tenho[u]) || 0) >= Number(alvosU[u])) continue;
+            /* Cabe ao menos uma? Se nem uma cabe, não está à espera de
+             * recursos — está à espera de população. */
+            const pop = Number((gd[u] || {}).population) || 1;
+            if (pop <= livre) return true;
+          }
         }
       }
     } catch (e) { seErroDeCodigo(e, 'TrocaCidades'); }
@@ -25052,6 +25126,13 @@ function makeTrocaCidadesModule(opts) {
       const aindaPrecisa = temTrabalhoPendente(t.id, res);
       if (aindaPrecisa && !filaDeConstrucaoCheia(t.id)) continue;   // ainda usa o que tem
 
+      /* Reserva EM RECURSOS para a tropa que ainda cabe na população.
+       *
+       * Sem isto, uma cidade acabada com trinta lugares livres guardava uma
+       * percentagem do armazém — ou, pior, nem sequer era dadora. Agora
+       * guarda exactamente o que vai gastar e manda o resto. */
+      const guardarTropa = guardarParaTropa(t.id, res);
+
       const deixar = filaDeConstrucaoCheia(t.id) ? c.deixarParada : c.deixarCumprida;
       const limiar = 0;   // não se exige armazém nenhum: se pode dar, dá
 
@@ -25067,7 +25148,7 @@ function makeTrocaCidadesModule(opts) {
        * Visto em jogo: uma cidade com os três recursos a 11824/11824 e nada a
        * sair não era considerada dadora, só por ter 2 obras na fila. */
       if (menorPct >= limiar) {
-        dadores.push({ t, res, menorPct, deixar,
+        dadores.push({ t, res, menorPct, deixar, guardarTropa,
           capacidade: capacidadeComercio(t.id) });
       }
     }
@@ -25117,7 +25198,10 @@ function makeTrocaCidadesModule(opts) {
     const out = {};
     let total = 0;
     for (const r of RES) {
-      const sobra = Math.max(0, Math.floor(d.res[r] - guardar));
+      /* Além da percentagem, guarda-se o que a tropa que ainda cabe vai
+       * custar — por recurso, e não em bloco. */
+      const extra = Number((d.guardarTropa || {})[r]) || 0;
+      const sobra = Math.max(0, Math.floor(d.res[r] - guardar - extra));
       if (sobra > 0) { out[r] = sobra; total += sobra; }
     }
     return { por: out, total };
