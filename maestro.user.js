@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.05.1930
+// @version      2026.09.05.2030
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1543,7 +1543,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.05.1930';
+  const MAESTRO_VERSAO = '2026.09.05.2030';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -1797,6 +1797,19 @@
     colonos:      { icone: '🚢', curto: 'Colonos' },
     missoes:      { icone: '📜', curto: 'Missões' },
     fundacao:     { icone: '🏛️', curto: 'Fundar' },
+    bandidos:     { icone: '🏴', curto: 'Bandidos' },
+    sentinelas:   { icone: '👁️', curto: 'Sentinelas' },
+    diaria:       { icone: '🎁', curto: 'Diária' },
+    fabricanc:    { icone: '🏭', curto: 'Fábrica NC' },
+    feiticos:     { icone: '🌊', curto: 'Feitiços' },
+    relatorios:   { icone: '🗑️', curto: 'Relatórios' },
+    frota:        { icone: '📡', curto: 'Frota' },
+  };
+
+  /* Um símbolo por grupo, para a coluna se ler de relance. */
+  const ICONES_GRUPO = {
+    Cidade: '🏙️', Recursos: '📦', Combate: '⚔️',
+    'Favores e expansão': '⛩️', Outros: '⚙️',
   };
 
   /* Agrupamento dos módulos no menu. */
@@ -1807,7 +1820,7 @@
     { nome: 'Favores e expansão', ids: ['deuses', 'colonos', 'fundacao', 'missoes'] },
   ];
 
-  // Módulo aberto no momento ('' = menu).
+  // Módulo aberto no momento ('' = página inicial).
   let moduloAberto = '';
   function lerEscolhas() {
     try { return JSON.parse(localStorage.getItem(MODULOS_KEY) || 'null'); } catch (e) { return null; }
@@ -4460,23 +4473,29 @@
       const rail = modsBox.querySelector('#mRail');
       if (!rail) return;
 
-      const item = (id, rotulo, ligado, extra) => `
+      const item = (id, rotulo, ligado, extra) => {
+        const ic = (ICONES[id] || {}).icone || '⚙️';
+        return `
         <div class="mRailItem ${moduloAberto === id ? 'mSel' : ''} ${ligado ? 'mLigado' : 'mApagado'}"
              data-ir="${id}" title="${rotulo}">
           <span class="mPonto"></span>
+          <span style="font-size:13px;width:17px;text-align:center;flex:0 0 auto">${ic}</span>
           <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${rotulo}</span>
           ${extra || ''}
         </div>`;
+      };
 
       rail.innerHTML = `
         <div class="mRailItem ${moduloAberto === '' ? 'mSel' : ''} mLigado" data-ir="">
-          <span class="mPonto"></span><span style="flex:1">Hoje</span>
+          <span class="mPonto"></span>
+          <span style="font-size:13px;width:17px;text-align:center;flex:0 0 auto">🏠</span>
+          <span style="flex:1">Hoje</span>
         </div>
         ${blocos.map((g) => {
           const on = g.mods.filter(estaAtivo).length;
           return `
           <div class="mRailGrupo">
-            <span style="flex:1">${g.nome}</span>
+            <span style="flex:1">${(ICONES_GRUPO[g.nome] || '')} ${g.nome}</span>
             <span style="color:var(--mDim)">${on}/${g.mods.length}</span>
             <a href="#" data-grupo-off="${g.nome}" title="desligar todos"
                style="font-size:9px;color:var(--mFaint)">off</a>
@@ -5674,6 +5693,7 @@ function makeConstrucaoModule(opts) {
   }
 
   async function run(ctx) {
+    let proximaObra = null;   // quando acaba a obra mais próxima de todas as cidades
     uw = ctx.uw; WORLD = ctx.WORLD;
     const log = ctx.log;
 
@@ -5805,6 +5825,23 @@ function makeConstrucaoModule(opts) {
 
       // trocar para a cidade para ter dados atualizados
       await ctx.switchToTown(town.id);
+
+      /* QUANDO ACABA A PRÓXIMA OBRA DESTA CIDADE.
+       *
+       * A colecção `BuildingOrder` só traz as ordens da cidade ACTIVA, e o
+       * módulo acabou de mudar para esta — é o único instante em que as pode
+       * ver sem custar um pedido. Guarda-se a mais próxima de todas as
+       * cidades para, no fim, pedir para voltar a essa hora em vez de
+       * esperar os 20 minutos inteiros. */
+      try {
+        const col = uw.MM.getCollections().BuildingOrder[0];
+        const agoraS = Math.floor(Date.now() / 1000);
+        for (const m of (col && col.models) || []) {
+          const fim = Number((m.attributes || {}).to_be_completed_at) || 0;
+          if (fim <= agoraS) continue;
+          if (proximaObra == null || fim < proximaObra) proximaObra = fim;
+        }
+      } catch (e) { seErroDeCodigo(e, 'Construcao'); }
       await ctx.sleep(ctx.rand(400, 900));
 
       /* Concluir o que já é grátis ANTES de decidir: liberta a fila e o nível
@@ -6040,6 +6077,21 @@ function makeConstrucaoModule(opts) {
       rotina(`Construção: ${saltadas} cidade(s) com o template cumprido — não as visitei.`);
     }
     if (!construiuAlgo && !aEsperar.length) rotina('Ronda de construção: nada a construir agora.');
+
+    /* VOLTAR QUANDO A OBRA MAIS PRÓXIMA ACABAR.
+     *
+     * De 20 em 20 minutos, uma obra que acabe logo a seguir a uma passagem
+     * deixa um lugar livre na fila durante quase vinte minutos. Com o
+     * `voltarEm`, o módulo acorda quando ela acabar.
+     *
+     * Nunca antes de um minuto, para não passar a vida a acordar; o
+     * intervalo normal continua a ser o tecto. */
+    try {
+      if (proximaObra != null && ctx.voltarEm) {
+        const falta = proximaObra - Math.floor(Date.now() / 1000);
+        if (falta > 0) ctx.voltarEm(Math.max(60, falta + 5));
+      }
+    } catch (e) { seErroDeCodigo(e, 'Construcao'); }
   }
 
   /* ---------------------- PAINEL de configuração ---------------------- */
