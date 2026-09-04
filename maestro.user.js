@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.05.2030
+// @version      2026.09.05.2230
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1543,7 +1543,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.05.2030';
+  const MAESTRO_VERSAO = '2026.09.05.2230';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -5693,7 +5693,7 @@ function makeConstrucaoModule(opts) {
   }
 
   async function run(ctx) {
-    let proximaObra = null;   // quando acaba a obra mais próxima de todas as cidades
+    let proximaObra = null;   // quando a primeira cidade fica com a fila seca
     uw = ctx.uw; WORLD = ctx.WORLD;
     const log = ctx.log;
 
@@ -5825,23 +5825,6 @@ function makeConstrucaoModule(opts) {
 
       // trocar para a cidade para ter dados atualizados
       await ctx.switchToTown(town.id);
-
-      /* QUANDO ACABA A PRÓXIMA OBRA DESTA CIDADE.
-       *
-       * A colecção `BuildingOrder` só traz as ordens da cidade ACTIVA, e o
-       * módulo acabou de mudar para esta — é o único instante em que as pode
-       * ver sem custar um pedido. Guarda-se a mais próxima de todas as
-       * cidades para, no fim, pedir para voltar a essa hora em vez de
-       * esperar os 20 minutos inteiros. */
-      try {
-        const col = uw.MM.getCollections().BuildingOrder[0];
-        const agoraS = Math.floor(Date.now() / 1000);
-        for (const m of (col && col.models) || []) {
-          const fim = Number((m.attributes || {}).to_be_completed_at) || 0;
-          if (fim <= agoraS) continue;
-          if (proximaObra == null || fim < proximaObra) proximaObra = fim;
-        }
-      } catch (e) { seErroDeCodigo(e, 'Construcao'); }
       await ctx.sleep(ctx.rand(400, 900));
 
       /* Concluir o que já é grátis ANTES de decidir: liberta a fila e o nível
@@ -5963,7 +5946,33 @@ function makeConstrucaoModule(opts) {
        * Visto em jogo, no quartel e na construção.
        *
        * Se ela diz estar cheia logo à partida, confirma-se antes de desistir
-       * — custa um pedido e evita uma cidade parada. */
+      /* QUANDO É QUE ESTA CIDADE FICA SEM NADA PARA FAZER.
+       *
+       * Duas versões minhas antes desta estavam erradas. A primeira guardava
+       * a obra mais próxima de todas as cidades — com quarenta cidades há
+       * sempre uma a acabar, e o módulo acordaria de dois em dois minutos. A
+       * segunda só olhava para as cidades com a fila cheia, e a fila cheia é
+       * o estado NORMAL: o módulo enche-a até não caber mais.
+       *
+       * Uma obra a acabar não é desperdício nenhum: a fila tem mais atrás e a
+       * cidade continua a trabalhar. Desperdício é a fila ESVAZIAR-SE antes
+       * da passagem seguinte — aí a cidade fica parada à espera de mim.
+       *
+       * Por isso guarda-se a hora em que a fila desta cidade SECA, e no fim
+       * volta-se à mais próxima dessas, e só se for antes do intervalo
+       * normal. Numa conta com cidades grandes, isto nunca chega a disparar. */
+      try {
+        const col = uw.MM.getCollections().BuildingOrder[0];
+        const agoraS = Math.floor(Date.now() / 1000);
+        let seca = 0;
+        for (const m of (col && col.models) || []) {
+          const fim2 = Number((m.attributes || {}).to_be_completed_at) || 0;
+          if (fim2 > seca) seca = fim2;
+        }
+        if (seca > agoraS && (proximaObra == null || seca < proximaObra)) proximaObra = seca;
+      } catch (e) { seErroDeCodigo(e, 'Construcao'); }
+
+
       if (bdAtual.filaCheia && ctx.actualizarNumeros) {
         try {
           await ctx.actualizarNumeros(town.id, ['construcao']);
@@ -6078,18 +6087,20 @@ function makeConstrucaoModule(opts) {
     }
     if (!construiuAlgo && !aEsperar.length) rotina('Ronda de construção: nada a construir agora.');
 
-    /* VOLTAR QUANDO A OBRA MAIS PRÓXIMA ACABAR.
+    /* VOLTAR QUANDO A PRIMEIRA CIDADE FICAR PARADA.
      *
-     * De 20 em 20 minutos, uma obra que acabe logo a seguir a uma passagem
-     * deixa um lugar livre na fila durante quase vinte minutos. Com o
-     * `voltarEm`, o módulo acorda quando ela acabar.
+     * Uma cidade cuja fila seca dez minutos depois da passagem fica dez
+     * minutos sem construir nada. Com o `voltarEm`, o módulo acorda nessa
+     * altura e volta a enchê-la.
      *
-     * Nunca antes de um minuto, para não passar a vida a acordar; o
-     * intervalo normal continua a ser o tecto. */
+     * Só quando alguma cidade fica com a fila SECA antes da passagem seguinte.
+     * Se todas têm obra que chegue para os próximos vinte minutos, não há
+     * nada a ganhar em voltar mais cedo. Nunca antes de três minutos. */
     try {
       if (proximaObra != null && ctx.voltarEm) {
         const falta = proximaObra - Math.floor(Date.now() / 1000);
-        if (falta > 0) ctx.voltarEm(Math.max(60, falta + 5));
+        const tecto = (Number(opts.intervaloMin) || 20) * 60;
+        if (falta > 0 && falta < tecto) ctx.voltarEm(Math.max(180, falta + 5));
       }
     } catch (e) { seErroDeCodigo(e, 'Construcao'); }
   }
