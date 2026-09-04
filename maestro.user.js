@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.05.2230
+// @version      2026.09.05.2330
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1543,7 +1543,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.05.2230';
+  const MAESTRO_VERSAO = '2026.09.05.2330';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -2005,6 +2005,10 @@
 
     /* As CREDENCIAIS do Gist são de cada conta e nunca viajam no perfil. */
     'grepoMaestro_gist_v1',
+
+    /* Quantas cidades desta conta já cumpriram o template. É um número DELA;
+     * partilhado, todas as contas publicavam o da principal na frota. */
+    'grepoConstru_semObra_v1',
 
     /* ---- REGISTOS DO QUE CADA CONTA FEZ --------------------------------
      *
@@ -6085,6 +6089,9 @@ function makeConstrucaoModule(opts) {
     if (saltadas) {
       rotina(`Construção: ${saltadas} cidade(s) com o template cumprido — não as visitei.`);
     }
+    /* Para a frota: cidades que já não têm nada a construir. É o sinal de que
+     * a conta ficou sem objectivo, e é o único sítio onde se sabe de verdade. */
+    try { armazem.setItem('grepoConstru_semObra_v1', String(saltadas)); } catch (e) {}
     if (!construiuAlgo && !aEsperar.length) rotina('Ronda de construção: nada a construir agora.');
 
     /* VOLTAR QUANDO A PRIMEIRA CIDADE FICAR PARADA.
@@ -33443,12 +33450,24 @@ function makeFrotaModule(opts) {
      * pedido ao servidor. */
     const jogo = { pontos: 0, cultura: 0, cheio: 0, paradas: 0, favor: {} };
 
+    /* Os pontos do jogador não estão no modelo `Player` — vinham sempre a
+     * zero em todas as contas. Somam-se os das cidades, que é a leitura que o
+     * módulo dos heróis já faz e que se sabe que funciona. */
     try {
       const mp = mUw.MM.getModels().Player;
       const kp = Object.keys(mp)[0];
-      const ap = (mp[kp] || {}).attributes || {};
-      jogo.pontos = Number(ap.points) || 0;
-      jogo.cultura = Number(ap.cultural_points) || 0;
+      jogo.cultura = Number(((mp[kp] || {}).attributes || {}).cultural_points) || 0;
+    } catch (e) {}
+
+    try {
+      let pontos = 0;
+      for (const t of (ctx.getMyTowns() || [])) {
+        const town = mUw.ITowns.getTown(Number(t.id));
+        if (!town) continue;
+        const p2 = town.getPoints ? town.getPoints() : (town.attributes || {}).points;
+        pontos += Number(p2) || 0;
+      }
+      jogo.pontos = pontos;
     } catch (e) {}
 
     /* Quão cheios estão os armazéns, e quantas cidades não têm nada em fila.
@@ -33456,7 +33475,7 @@ function makeFrotaModule(opts) {
      * recursos não resolve isso, porque não há para onde a mandar. */
     try {
       const towns = ctx.getMyTowns() || [];
-      let guardado = 0, capacidade = 0, paradas = 0;
+      let guardado = 0, capacidade = 0;
       for (const t of towns) {
         const town = mUw.ITowns.getTown(Number(t.id));
         if (!town) continue;
@@ -33466,14 +33485,23 @@ function makeFrotaModule(opts) {
           for (const u of ['wood', 'stone', 'iron']) guardado += Number(r[u]) || 0;
           capacidade += cap * 3;
         } catch (e) {}
-        try {
-          const fila = (town.buildingOrders && town.buildingOrders()) || null;
-          const n = fila && (fila.models ? fila.models.length : fila.length);
-          if (!n) paradas++;
-        } catch (e) {}
+
       }
       if (capacidade > 0) jogo.cheio = Math.round((guardado / capacidade) * 100);
-      jogo.paradas = paradas;
+    } catch (e) {}
+
+    /* CIDADES SEM NADA PARA FAZER.
+     *
+     * A primeira versão contava as cidades com a fila de construção vazia,
+     * lendo `buildingOrders()` de cada uma. Não funciona: o jogo só tem a fila
+     * da cidade ACTIVA, e todas as outras vinham vazias — dava 18, 19, 21
+     * cidades paradas em contas que estavam a construir à mesma.
+     *
+     * Quem sabe isto de verdade é a construção, que visita cada cidade e conta
+     * as que já cumpriram o template. Ela deixa o número aqui. */
+    try {
+      const n = Number(armazem.getItem('grepoConstru_semObra_v1'));
+      jogo.paradas = Number.isFinite(n) ? n : 0;
     } catch (e) {}
 
     /* Favor por deus: é o que a farm de favores existe para acumular. */
