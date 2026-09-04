@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.06.2130
+// @version      2026.09.07.0130
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1595,7 +1595,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.06.2130';
+  const MAESTRO_VERSAO = '2026.09.07.0130';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -7863,7 +7863,7 @@ function makePesquisaModule(opts) {
     /* Pesquisas MARCADAS que não existem neste mundo.
      *
      * As pesquisas variam com o tipo de mundo: a `democracy`, por exemplo,
-     * existe no pt125 (revolta) e não no pt126 (cerco). Um template feito
+     * existe no pt125 (cerco) e não no pt126 (revolta). Um template feito
      * noutro mundo pode ter marcadas pesquisas que aqui não existem.
      *
      * Não dá problema — o módulo salta-as em silêncio — mas convém saber-se,
@@ -30278,6 +30278,13 @@ function makeApoioModule(opts) {
     ativo: false,
     pacote: { sword: 40, archer: 40, hoplite: 40, bireme: 20 },
     maxCidadesPorAlvo: 10,
+    /* Quanto dura a R2 depois de a R1 acabar.
+     *
+     * O comando da revolta só traz o fim da R1, por isso a cidade fica na
+     * lista mais este tempo depois da última R1 acabar. No pt126 são 7 horas,
+     * como a R1 — está nas definições do mundo. Muda-o se jogares noutro com
+     * tempo de conquista diferente. */
+    horasDeR2: 7,
     /* O transporte grande anda a 24 e o rápido a 45 — com ele na carga, o
      * apoio demora o dobro. Por omissão evita-se. */
     evitarTransporteGrande: true,
@@ -31683,6 +31690,148 @@ function makeApoioModule(opts) {
       }
     } catch (e) { seErroDeCodigo(e, 'Apoio'); }
 
+
+    /* ============ CIDADE EM REVOLTA ENTRA SOZINHA NA LISTA ============
+     *
+     * Num mundo de revolta, um ataque que ganha abre a R1. Só quando ela
+     * acaba é que o colonizador pode entrar. Essa janela é o tempo que há
+     * para encher a cidade de tropa, e é curta de mais para depender de
+     * alguém estar à frente do ecrã.
+     *
+     * As colecções `MovementsRevoltDefender` e `...Attacker` existem, mas
+     * vêm vazias enquanto a janela do jogo não for aberta — com três revoltas
+     * a decorrer, ambas tinham zero registos. Não servem.
+     *
+     * O que serve é o mesmo pedido que os alertas já usam, o
+     * `town_overviews?action=command_overview`. Lá dentro, uma revolta vem
+     * assim:
+     *
+     *   { id: "revolt_2904", type: "revolt", command_type: "revolt",
+     *     destination_town_id: 1755, destination_town_name: "55.4",
+     *     destination_town_player_id: <eu>, origin_player_name: "WXicoW",
+     *     started_at: <início>, finished_at: <fim da R1> }
+     *
+     * O `finished_at` é o prazo: a partir daí entra o colonizador. Fica
+     * guardado com o alvo, para o apoio poder um dia recusar-se a mandar de
+     * cidades que não cheguem a tempo.
+     *
+     * Só a conta PRINCIPAL escreve a lista, como tudo o resto. Pergunta-se de
+     * 5 em 5 minutos, não a cada passagem: uma revolta dura horas.
+     * ================================================================== */
+    try {
+      if (souAPrincipalDoApoio()) {
+        const AGORA = Math.floor(Date.now() / 1000);
+        let ultima = 0;
+        try { ultima = Number(armazem.getItem('grepoApoio_ultimaRevolta_v1')) || 0; } catch (e) {}
+
+        if (AGORA - ultima >= 300) {
+          armazem.setItem('grepoApoio_ultimaRevolta_v1', String(AGORA));
+
+          const base = (ctx.getMyTowns() || [])[0];
+          if (base) {
+            const url = mUw.location.origin + '/game/town_overviews?town_id=' + Number(base.id)
+              + '&action=command_overview&h=' + mUw.Game.csrfToken
+              + '&json=' + encodeURIComponent(JSON.stringify({ town_id: Number(base.id), nl_init: true }))
+              + '&_=' + Date.now();
+
+            const resp = await mUw.fetch(url, {
+              headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
+            }).then((r) => r.json()).catch(() => null);
+
+            const d = (resp && resp.json) || {};
+            const cmds = d.commands || (d.data && d.data.commands) || [];
+            const minhasIds = new Set((ctx.getMyTowns() || []).map((t) => Number(t.id)));
+
+            /* VÁRIOS JOGADORES PODEM REVOLTAR A MESMA CIDADE.
+             *
+             * Guardar uma revolta por cidade perdia informação: a segunda
+             * escrevia por cima da primeira. E o que interessa não é uma
+             * delas — são as duas pontas. A PRIMEIRA a acabar é quando o
+             * perigo começa, porque a partir daí já entra colonizador; a
+             * ÚLTIMA é quando a ameaça acaba de vez. */
+            const porCidade = {};
+            for (const x of cmds) {
+              if (!/revolt/i.test(String(x.type || x.command_type || ''))) continue;
+              const id = Number(x.destination_town_id);
+              if (!minhasIds.has(id)) continue;
+              const fim = Number(x.finished_at || x.arrival_at) || 0;
+              const e2 = porCidade[id] = porCidade[id] || {
+                id, nome: String(x.destination_town_name || id), quem: [], primeira: 0, ultima: 0,
+              };
+              e2.quem.push(String(x.origin_player_name || '?'));
+              if (fim && (!e2.primeira || fim < e2.primeira)) e2.primeira = fim;
+              if (fim > e2.ultima) e2.ultima = fim;
+            }
+            const revoltas = Object.keys(porCidade).map((k) => porCidade[k]);
+
+            const jaLa = new Set((lista.alvos || lista.targets || []).map(Number));
+            const novos = revoltas.filter((r) => !jaLa.has(r.id));
+
+            /* SAIR DA LISTA quando a ameaça acabar de vez.
+             *
+             * A cidade fica desde a primeira R1 até à última R2. O jogo não
+             * diz quanto dura a R2 — o comando só traz o fim da R1 — por isso
+             * espera-se `horasDeR2` depois da última.
+             *
+             * Só saem as que ENTRARAM sozinhas: um alvo que puseste à mão
+             * fica onde está. */
+            const auto = Object.assign({}, lista.revoltasAuto || {});
+            const graca = (Number(c.horasDeR2) || 12) * 3600;
+            const aRetirar = [];
+            for (const id of Object.keys(auto)) {
+              if (porCidade[id]) continue;                        // ainda em revolta
+              if (AGORA < Number((auto[id] || {}).ultima || 0) + graca) continue;
+              aRetirar.push(Number(id));
+              delete auto[id];
+            }
+            for (const r of revoltas) {
+              auto[r.id] = { primeira: r.primeira, ultima: r.ultima, quem: r.quem };
+            }
+
+            if (novos.length || aRetirar.length) {
+              const ficam = [].concat([...jaLa], novos.map((r) => r.id))
+                .filter((id) => aRetirar.indexOf(Number(id)) < 0);
+
+              const copia = Object.assign({}, lista, {
+                alvos: ficam,
+                maxCidadesPorAlvo: 10,
+                revoltasAuto: auto,
+              });
+              delete copia.targets;
+
+              const rr = await escreverLista(copia);
+              if (rr.ok) {
+                lista = copia;
+                for (const r of novos) {
+                  const faltam = r.primeira ? Math.round((r.primeira - AGORA) / 60) : 0;
+                  const quantas = r.quem.length;
+                  log(`🚨 ${r.nome} em REVOLTA por ${r.quem.join(', ')} — entrou na lista de `
+                    + 'apoio (10 cidades por conta)'
+                    + (faltam ? `; a primeira R1 acaba daqui a ${faltam} min` : '')
+                    + (quantas > 1 ? ` · ${quantas} revoltas nesta cidade` : '') + '.');
+                  if (ctx.avisarDiscord) {
+                    ctx.avisarDiscord('ataque', {
+                      titulo: '🚨 Cidade em revolta',
+                      descricao: `**${r.nome}** está em revolta por **${r.quem.join(', ')}**.`
+                        + (faltam ? ` A primeira R1 acaba daqui a ${faltam} min.` : '')
+                        + (quantas > 1 ? ` São ${quantas} revoltas na mesma cidade.` : '')
+                        + '\nEntrou na lista de apoio — as multis começam a mandar já.',
+                    });
+                  }
+                }
+                for (const id of aRetirar) {
+                  let nome2 = id;
+                  try { nome2 = mUw.ITowns.getTown(id).getName(); } catch (e) {}
+                  log(`✅ ${nome2}: acabaram as revoltas — sai da lista de apoio e a tropa volta.`);
+                }
+              } else {
+                log(`⚠️ Revolta detectada mas não consegui gravar a lista (${rr.msg}).`);
+              }
+            }
+          }
+        }
+      }
+    } catch (e) { seErroDeCodigo(e, 'Apoio'); }
 
     const alvos = (lista.alvos || lista.targets || []).map(Number).filter(Boolean);
 
