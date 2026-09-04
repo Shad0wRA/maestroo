@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.06.1830
+// @version      2026.09.06.2030
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1595,7 +1595,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.06.1830';
+  const MAESTRO_VERSAO = '2026.09.06.2030';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -1895,6 +1895,39 @@
 
   // Módulo aberto no momento ('' = página inicial).
   let moduloAberto = '';
+  /* ============ MODO CONTA NOVA =========================================
+   *
+   * Uma conta acabada de criar tem UMA cidade. Ligar-lhe os 23 módulos faz o
+   * oposto do que se quer: a maioria não tem o que fazer e diz isso a cada
+   * passagem — trocas precisa de 2 cidades, deuses precisa de 9, cultura quer
+   * 600 pontos e tem 4 — enquanto os poucos que agem o fazem com regularidade
+   * de relógio, desde o primeiro minuto.
+   *
+   * Vinte contas assim, criadas ao mesmo tempo, com a mesma sequência de
+   * acções à mesma hora, é o padrão que fez aparecer verificações de bot nas
+   * vinte de uma vez no mundo novo — e não foi volume: os 429 estavam a zero.
+   *
+   * Com isto ligado, só correm os módulos que uma conta de uma cidade tem
+   * mesmo o que fazer. Desliga-se quando a conta crescer.
+   *
+   * É por PERFIL e por mundo, como tudo o resto: podes ter o mundo novo
+   * assim e os outros como estão. */
+  const MODULOS_CONTA_NOVA = [
+    'aldeias', 'construcao', 'pesquisa', 'recrutamento', 'herois', 'cultura', 'fundacao',
+    /* Os alertas entram porque quase só LEEM: vão ver os comandos a chegar e
+     * mandam a mensagem. Ficar sem aviso de ataque para poupar actividade era
+     * trocar o problema por outro pior. */
+    'alertas',
+  ];
+
+  function modoContaNova() {
+    try { return !!(lerEscolhas() || {}).contaNova; } catch (e) { return false; }
+  }
+
+  function permitidoNaContaNova(modId) {
+    return MODULOS_CONTA_NOVA.indexOf(modId) >= 0;
+  }
+
   function lerEscolhas() {
     try { return JSON.parse(localStorage.getItem(MODULOS_KEY) || 'null'); } catch (e) { return null; }
   }
@@ -2828,7 +2861,18 @@
              * qualquer maneira, e escrever no disco a cada passagem de cada
              * módulo, em 21 abas, custa mais do que vale. */
             if ((Number(m.intervaloMin) || 0) >= 5) guardarUltimaExec(m.id, st.ultimaExec);
-            st.proximaExec = Date.now() + (m.intervaloMin * 60 * 1000);
+            /* DESVIO ALEATÓRIO NO INTERVALO.
+             *
+             * Correr de 10 em 10 minutos exactos é um relógio, e um relógio é
+             * o que distingue um programa de uma pessoa. Vinte contas com o
+             * mesmo relógio é ainda mais evidente.
+             *
+             * Espalha-se cada passagem em ±20% do intervalo. Um módulo de 10
+             * minutos passa a correr entre os 8 e os 12, sem nunca ficar mais
+             * do que um quinto atrasado — que para o que estes módulos fazem
+             * não muda nada. */
+            const base = m.intervaloMin * 60 * 1000;
+            st.proximaExec = Date.now() + Math.round(base * (0.8 + Math.random() * 0.4));
 
             /* O MÓDULO PODE PEDIR PARA VOLTAR MAIS CEDO.
              *
@@ -3176,8 +3220,11 @@
 
     for (const m of MODULES) {
       if (!modState[m.id]) {
-        const guardado = escolhas && escolhas.ativos && (m.id in escolhas.ativos)
+        let guardado = escolhas && escolhas.ativos && (m.id in escolhas.ativos)
           ? !!escolhas.ativos[m.id] : (m.autoStart !== false);
+        /* No modo conta nova, os que não estão na lista ficam desligados —
+         * seja o que for que o perfil diga. */
+        if (modoContaNova() && !permitidoNaContaNova(m.id)) guardado = false;
         modState[m.id] = {
           ativo: guardado,
           // arranque escalonado: cada módulo começa com um atraso aleatório
@@ -3624,6 +3671,11 @@
           <button id="maestro-perfil-aplicar">Aplicar</button>
           <button id="maestro-perfil-guardar" title="Guardar as definições actuais neste perfil">Guardar</button>
         </div>
+        <label style="display:flex;gap:6px;align-items:center;font-size:12px"
+          title="uma conta de uma cidade só corre o que tem o que fazer">
+          <input type="checkbox" id="maestro-conta-nova">
+          <span>conta nova — só recolha, construção, pesquisa, recrutamento, heróis, cultura, fundação e alertas</span>
+        </label>
         <div style="display:flex;gap:6px;align-items:center;margin-top:4px">
           <span class="mEtiq" style="flex:0 0 auto">limpar</span>
           <button id="perfil-reset" style="flex:1;color:#f88"
@@ -4076,6 +4128,31 @@
     })();
 
     const selPerfil = document.getElementById('maestro-perfil');
+    /* MODO CONTA NOVA.
+     *
+     * Vai no perfil como tudo o resto: ligas na principal do mundo novo e as
+     * outras apanham-no. Desligar volta a pôr os módulos como o perfil
+     * manda — nada se perde. */
+    const cbNova = document.getElementById('maestro-conta-nova');
+    if (cbNova) {
+      try { cbNova.checked = !!(lerEscolhas() || {}).contaNova; } catch (e) {}
+      cbNova.onchange = () => {
+        const esc = lerEscolhas() || { perfil: 'main', ativos: {} };
+        esc.contaNova = !!cbNova.checked;
+        guardarEscolhas(esc);
+        for (const m of MODULES) {
+          if (!modState[m.id]) continue;
+          if (esc.contaNova && !permitidoNaContaNova(m.id)) modState[m.id].ativo = false;
+          else if (!esc.contaNova && (m.id in (esc.ativos || {}))) modState[m.id].ativo = !!esc.ativos[m.id];
+        }
+        log('core', esc.contaNova
+          ? `Modo conta nova LIGADO — só ${MODULOS_CONTA_NOVA.length} módulos correm.`
+          : 'Modo conta nova desligado — os módulos voltam ao que o perfil manda.');
+        try { atualizarPainelEstado(); } catch (e) {}
+        if (redesenharPainelAberto) redesenharPainelAberto();
+      };
+    }
+
     const btnPerfil = document.getElementById('maestro-perfil-aplicar');
     if (selPerfil) {
       const esc = lerEscolhas();
