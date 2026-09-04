@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.07.0230
+// @version      2026.09.07.0330
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1595,7 +1595,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.07.0230';
+  const MAESTRO_VERSAO = '2026.09.07.0330';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -15513,13 +15513,22 @@ function makeFeiticosModule(opts) {
      * baterem. */
     const htmlRecebidos = (() => {
       try {
-        const col = mUw.MM.getCollections().MovementsUnits;
+        /* A MESMA FONTE QUE O BLOCO DAS TEMPESTADES.
+         *
+         * Estava a ler a COLECÇÃO e vinha vazia com um ataque a caminho — o
+         * mesmo que aconteceu com as revoltas. O bloco que trata dos
+         * colonizadores usa os MODELOS e esse funciona, por isso usa-se o
+         * mesmo aqui.
+         *
+         * Também caiu o filtro pela cidade de origem: num ataque RECEBIDO, o
+         * `home_town_id` é a cidade de quem ataca, e compará-lo com as minhas
+         * não acrescentava nada — o que distingue é o destino ser meu. */
+        const mvR = mUw.MM.getModels().MovementsUnits || {};
         const minhasIds = new Set((ctx.getMyTowns() || []).map((t) => Number(t.id)));
-        const vindos = ((col && col[0] && col[0].models) || [])
-          .map((m) => m.attributes || {})
+        const vindos = Object.keys(mvR)
+          .map((k) => (mvR[k] || {}).attributes || {})
           .filter((a2) => /attack/i.test(String(a2.type || '')))
-          .filter((a2) => minhasIds.has(Number(a2.target_town_id)))
-          .filter((a2) => !minhasIds.has(Number(a2.home_town_id)));
+          .filter((a2) => minhasIds.has(Number(a2.target_town_id)));
 
         if (!vindos.length) {
           return '<div style="opacity:.55;font-size:13px">Nenhum ataque a caminho de ti.</div>';
