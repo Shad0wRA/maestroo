@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.05.0530
+// @version      2026.09.05.0730
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -562,11 +562,49 @@
     return algumaFresca ? out : null;
   }
 
+  /* QUAIS DAS MINHAS CIDADES VALE A PENA PERGUNTAR.
+   *
+   * Perguntar às 40 é desperdício: a maioria não apoia ninguém. Os modelos do
+   * jogo podem estar errados nas QUANTIDADES, mas quanto a QUEM mandou estão
+   * certos — o `home_town_id` de cada bloco não envelhece. Junta-se a isso as
+   * que na última leitura tinham apoio, e duas ainda por conhecer, para o
+   * resto ir sendo coberto devagar sem custar nada.
+   *
+   * Uma cidade lida e vazia sai da lista sozinha: deixa de aparecer nos
+   * modelos e já não é "desconhecida". */
+  function cidadesComApoioFora(minhasIds) {
+    const out = new Set();
+    try {
+      const mods = uw.MM.getModels().Units || {};
+      for (const k of Object.keys(mods)) {
+        const a2 = mods[k].attributes || {};
+        const casa = Number(a2.home_town_id);
+        const onde = Number(a2.current_town_id);
+        if (casa && onde && casa !== onde) out.add(casa);
+      }
+    } catch (e) {}
+
+    const cache = lerCacheApoioFora();
+    try {
+      for (const id of Object.keys(cache)) {
+        if (((cache[id] || {}).blocos || []).length) out.add(Number(id));
+      }
+    } catch (e) {}
+
+    try {
+      const porConhecer = (minhasIds || []).map(Number).filter((id) => id && !cache[id]);
+      for (const id of porConhecer.slice(0, 2)) out.add(id);
+    } catch (e) {}
+
+    return [...out];
+  }
+
   try {
     uw.__maestroApoioFora = {
       daCidade: apoioForaDaCidade,
       refrescar: refrescarApoioFora,
       porAlvo: apoioForaPorAlvo,
+      candidatas: cidadesComApoioFora,
     };
   } catch (e) {}
 
@@ -1387,6 +1425,20 @@
     } catch (e) {}
   }
 
+  /* Tempo gasto por módulo desde que a página abriu: quantas passagens, a
+   * média e a pior. É o que permite dizer ONDE está o peso. */
+  const tempos = {};
+  try {
+    uw.__maestroTempos = () => {
+      const out = {};
+      for (const id of Object.keys(tempos)) {
+        const d = tempos[id];
+        out[id] = { n: d.n, medio: Math.round(d.ms / Math.max(1, d.n)), pior: d.pior };
+      }
+      return out;
+    };
+  } catch (e) {}
+
   const modState = {}; // id -> { proximaExec: timestamp, ativo: bool, aCorrer: bool }
 
   /* ESTADO DOS MÓDULOS, para o módulo da frota publicar.
@@ -1411,7 +1463,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.05.0530';
+  const MAESTRO_VERSAO = '2026.09.05.0730';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -2537,6 +2589,7 @@
           if (!maestroTimer) { log('core', 'Maestro parado a meio — não corro mais nada.'); break; }
 
           st.aCorrer = true;
+          st.comecouEm = Date.now();
           try {
             /* Nada de anunciar cada passagem: enchia o registo sem dizer nada,
              * sobretudo nos módulos que correm de 2 em 2 minutos. Em vez disso
@@ -2552,11 +2605,21 @@
           } finally {
             st.aCorrer = false;
             st.ultimaExec = Date.now();     // para o módulo da frota
+            /* Quanto demorou. Sem números, "está pesado" é opinião: isto diz
+             * QUAL módulo pesa, e o sinal de vida leva-o para a frota. */
+            try {
+              const ms = Date.now() - (st.comecouEm || Date.now());
+              const d = tempos[m.id] = tempos[m.id] || { n: 0, ms: 0, pior: 0 };
+              d.n++; d.ms += ms; if (ms > d.pior) d.pior = ms;
+            } catch (e) {}
             /* E também no disco: o `modState` morre com a página, e sem isto
              * um módulo de 12 em 12 horas voltava a correr a cada arranque.
              * Com as abas a recarregar de hora a hora, corria 12 vezes mais
              * do que devia — foi assim que as sentinelas se empilharam. */
-            guardarUltimaExec(m.id, st.ultimaExec);
+            /* Só os de intervalo longo: os curtos correriam ao arrancar de
+             * qualquer maneira, e escrever no disco a cada passagem de cada
+             * módulo, em 21 abas, custa mais do que vale. */
+            if ((Number(m.intervaloMin) || 0) >= 5) guardarUltimaExec(m.id, st.ultimaExec);
             st.proximaExec = Date.now() + (m.intervaloMin * 60 * 1000);
 
             /* O MÓDULO PODE PEDIR PARA VOLTAR MAIS CEDO.
@@ -30730,6 +30793,28 @@ function makeApoioModule(opts) {
 
     if (!c.ativo) { log('Apoio: está DESLIGADO (liga a caixa no painel e guarda).'); return; }
 
+    /* ============ LER A ÁGORA, POUCO DE CADA VEZ ======================
+     *
+     * Os números do apoio vinham dos modelos do jogo, que ficam parados
+     * durante horas depois de um ataque. A verdade está na Ágora, separador
+     * Fora, mas é uma página por cidade.
+     *
+     * Por isso não se pergunta às 40: só às que têm mesmo tropa fora, e no
+     * máximo três por passagem. Quem manda no ritmo é a validade da leitura
+     * (15 min) — cada cidade é relida quando envelhece, e não há contador
+     * nenhum a perder-se quando a página recarrega.
+     *
+     * O botão do painel faz o mesmo à força e sem limite, para quando
+     * quiseres os números na hora. */
+    try {
+      const api = mUw.__maestroApoioFora;
+      if (api && api.candidatas) {
+        const meus = (ctx.getMyTowns() || []).map((t) => Number(t.id));
+        const lidas = await api.refrescar(api.candidatas(meus), 3);
+        if (lidas) rotina(`Apoio: reli a Ágora de ${lidas} cidade(s).`);
+      }
+    } catch (e) { seErroDeCodigo(e, 'Apoio'); }
+
     /* ============ PEDIDOS VINDOS DA CONTA PRINCIPAL ===================
      *
      * O pedido é feito uma vez no painel da principal e chega a todas as
@@ -31468,7 +31553,8 @@ function makeApoioModule(opts) {
         const meus = (ctx.getMyTowns() || []).map((t) => Number(t.id));
         const api = mUw.__maestroApoioFora;
         if (!api) { ctx.log('Apoio: leitor da Ágora indisponível.'); return; }
-        const lidas = await api.refrescar(meus, meus.length);
+        const alvo = (api.candidatas ? api.candidatas(meus) : meus);
+        const lidas = await api.refrescar(alvo, alvo.length);
         ctx.log(`Apoio: li a Ágora de ${lidas} cidade(s) — os números passam a ser os do servidor.`);
       } catch (e) {
         ctx.log('Apoio: não consegui ler a Ágora — ' + (e && e.message));
