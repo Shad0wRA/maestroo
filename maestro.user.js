@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.05.0730
+// @version      2026.09.05.0930
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -777,8 +777,10 @@
    * a sua própria, mais curta, que serve para diagnóstico imediato. */
   const CAIXA_NEGRA_KEY = 'grepoMaestro_caixaNegra_v1';        // acções e erros
   const CAIXA_ROTINA_KEY = 'grepoMaestro_caixaRotina_v1';      // rotina
-  const CAIXA_NEGRA_MAX = 2000;
-  const CAIXA_ROTINA_MAX = 1500;
+  /* Tectos mais baixos: cada descarga grava a lista INTEIRA, por isso o
+   * tamanho dela é o custo de cada escrita. Mil linhas dão várias horas. */
+  const CAIXA_NEGRA_MAX = 1000;
+  const CAIXA_ROTINA_MAX = 800;
 
   /* Escrever em LOTES.
    *
@@ -789,13 +791,32 @@
   let rotinaPendente = [];
   let caixaTemporizador = null;
 
+  /* A LISTA FICA EM MEMÓRIA.
+   *
+   * Antes, cada descarga lia os 200 KB do armazenamento, convertia-os de
+   * texto, acrescentava as linhas novas, voltava a convertê-los e gravava
+   * tudo outra vez — de 3 em 3 segundos, nas duas caixas, em 21 abas. São
+   * centenas de megabytes por minuto de conversão e de escrita em disco só
+   * para guardar um registo, e foi o que pôs a VPS de rastos.
+   *
+   * Agora lê-se uma vez por sessão e a lista vive em memória. */
+  const memCaixa = {};
+
+  function listaDaCaixa(chave) {
+    if (!memCaixa[chave]) {
+      try { memCaixa[chave] = JSON.parse(localStorage.getItem(chave) || '[]') || []; }
+      catch (e) { memCaixa[chave] = []; }
+    }
+    return memCaixa[chave];
+  }
+
   function gravarNuma(chave, novas, tecto) {
     if (!novas.length) return;
     try {
-      let lista = [];
-      try { lista = JSON.parse(localStorage.getItem(chave) || '[]'); } catch (e) { seErroDeCodigo(e, 'núcleo'); }
+      const lista = listaDaCaixa(chave);
       for (const l of novas) lista.push(l);
-      while (lista.length > tecto) lista.shift();
+      /* De uma vez só: o `shift()` em ciclo é O(n) a cada linha. */
+      if (lista.length > tecto) lista.splice(0, lista.length - tecto);
       localStorage.setItem(chave, JSON.stringify(lista));
     } catch (e) {
       try {
@@ -825,7 +846,9 @@
       };
       if (ehRotina) rotinaPendente.push(linha);
       else caixaPendente.push(linha);
-      if (!caixaTemporizador) caixaTemporizador = setTimeout(descarregarCaixa, 3000);
+      /* 30 s em vez de 3: são dez vezes menos escritas de 200 KB. O que
+       * estiver pendente é gravado à mesma quando a página fecha. */
+      if (!caixaTemporizador) caixaTemporizador = setTimeout(descarregarCaixa, 30000);
       return;
     } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
@@ -1463,7 +1486,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.05.0730';
+  const MAESTRO_VERSAO = '2026.09.05.0930';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -12653,6 +12676,19 @@ function makeBandidosModule(opts) {
           catch (e) { return String(townId); }
         })();
         rotina(`Bandidos: ${nome} sem tropa em casa; espero que volte.`);
+      } else if (/arrefecimento|cooldown|cool down/i.test(String(r.msg))) {
+        /* ARREFECIMENTO NÃO É ERRO.
+         *
+         * O acampamento tem um tempo de espera entre ataques. O jogo diz-nos
+         * isso e nós tratávamos como avaria, com o aviso a ir para o
+         * sininho — a mesma confusão do "não pode recrutar mais do que 3".
+         *
+         * Passa a rotina. A cidade fica de fora até ao arrefecimento passar. */
+        const nome2 = (() => {
+          try { return mUw.ITowns.getTown(Number(townId)).getName(); }
+          catch (e) { return String(townId); }
+        })();
+        rotina(`Bandidos: ${nome2} ainda em arrefecimento; espero.`);
       } else {
         log(`⚠️ Bandidos: o ataque falhou — ${r.msg}`);
       }
