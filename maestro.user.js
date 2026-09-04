@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.06.0330
+// @version      2026.09.06.0430
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -498,7 +498,7 @@
    * poucas de cada vez.
    * ==================================================================== */
   const APOIO_FORA_KEY = 'grepoMaestro_apoioFora_v1';
-  const APOIO_FORA_VALIDADE = 15 * 60 * 1000;   // 15 min
+  const APOIO_FORA_VALIDADE = 30 * 60 * 1000;   // 30 min (era 15: ver o captcha)
 
   function lerCacheApoioFora() {
     try { return JSON.parse(localStorage.getItem(APOIO_FORA_KEY) || '{}') || {}; }
@@ -1543,7 +1543,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.06.0330';
+  const MAESTRO_VERSAO = '2026.09.06.0430';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -16377,31 +16377,21 @@ function makeAldeiasModule(opts) {
 
     forcarTrocas = false; forcarEvolucao = false;   // consumidas
 
-    /* VOLTAR QUANDO A PRÓXIMA ALDEIA FICAR PRONTA.
+    /* DESFEITO: o regresso quando a próxima aldeia fica pronta.
      *
-     * A opção de recolha por omissão é a de 5 minutos, mas o módulo passa de
-     * 10 em 10. Ou seja, a aldeia fica pronta aos 5 e só é recolhida aos 10:
-     * metade das recolhas possíveis perdia-se, em cada aldeia de cada cidade
-     * de cada conta.
+     * Fazia o módulo recolher de 5 em 5 minutos em vez de 10 em 10 — o dobro
+     * dos pedidos, na mecânica que o jogo mais vigia. Na mesma noite em que
+     * entrou, começaram a aparecer verificações de bot nas multis do mundo
+     * novo E na conta principal do 126, que tem dois meses e nunca tinha
+     * visto nenhuma.
      *
-     * O jogo diz no `lootable_at` quando cada uma fica pronta. Pede-se para
-     * voltar nessa altura em vez de esperar pela passagem seguinte — sem
-     * baixar o intervalo do módulo, que faria pedidos a mais quando não há
-     * nada para recolher. */
-    try {
-      const agora = agoraJogo();
-      let proxima = null;
-      for (const m of colModels('FarmTownPlayerRelation')) {
-        const a = m.attributes || {};
-        if (a.relation_status !== 1) continue;
-        const quando = Number(a.lootable_at) || 0;
-        if (!quando || quando <= agora) continue;
-        if (proxima == null || quando < proxima) proxima = quando;
-      }
-      if (proxima != null && ctx.voltarEm) {
-        ctx.voltarEm(Math.max(30, (proxima - agora) + 5));
-      }
-    } catch (e) { seErroDeCodigo(e, 'Aldeias'); }
+     * Não está provado que tenha sido isto. Mas é a alteração de ritmo mais
+     * agressiva das três de hoje, e o preço de estar enganado é uma conta
+     * marcada. Volta ao ritmo de sempre.
+     *
+     * Se quiseres o rendimento sem os pedidos, o caminho é a opção de recolha
+     * de 20 minutos: o jogo dá mais por cada recolha espaçada, e são quatro
+     * vezes menos pedidos do que a de 5. */
   }
 
   async function fazerRecolha(ctx, towns) {
@@ -31087,7 +31077,7 @@ function makeApoioModule(opts) {
       const api = mUw.__maestroApoioFora;
       if (api && api.candidatas) {
         const meus = (ctx.getMyTowns() || []).map((t) => Number(t.id));
-        const lidas = await api.refrescar(api.candidatas(meus), 3);
+        const lidas = await api.refrescar(api.candidatas(meus), 2);
         if (lidas) rotina(`Apoio: reli a Ágora de ${lidas} cidade(s).`);
       }
     } catch (e) { seErroDeCodigo(e, 'Apoio'); }
@@ -33987,7 +33977,7 @@ function makeFrotaModule(opts) {
         talvezApanharPerfil();
         setInterval(() => {
           verificarVersaoNova(); talvezRefrescar(); talvezApanharPerfil();
-        }, 10 * 60 * 1000);
+        }, 30 * 60 * 1000);
       }, 30000 + desvio);
     } catch (e) { seErroDeCodigo(e, 'Frota'); }
     if (autoStartLigado()) {
