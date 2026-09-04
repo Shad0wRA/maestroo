@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.06.0230
+// @version      2026.09.06.0330
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1543,7 +1543,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.06.0230';
+  const MAESTRO_VERSAO = '2026.09.06.0330';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -32503,14 +32503,38 @@ function makeFundacaoModule(opts) {
         });
       }
       if (!aTentar.length) log(`Fundação: não encontrei ilhas no(s) oceano(s) ${c.oceanos.join(', ')} perto das minhas cidades.`);
+    } else if (c.centroId) {
+      /* SÓ COM A CIDADE CENTRO: funda no oceano dela.
+       *
+       * O centro servia apenas para ORDENAR as candidatas da mais perto para
+       * a mais longe — não era origem de candidata nenhuma. Quem escrevia ali
+       * o número de uma cidade estava a dizer "funda à volta desta", e o
+       * módulo respondia que não tinha ilhas marcadas. Era o desenho a não
+       * bater certo com a frase.
+       *
+       * Continua a não adivinhar nada: usa-se o oceano de uma cidade que a
+       * pessoa indicou de propósito, e as candidatas ficam ordenadas por
+       * distância a ela — a mais perto primeiro. */
+      const centroC = await coordenadasDaCidade(c.centroId, t.id);
+      if (!centroC) {
+        rotina(`Fundação: não consegui achar a cidade ${c.centroId} que indicaste como centro.`);
+        return;
+      }
+      const oc = oceanoDe(centroC.x, centroC.y);
+      const ilhas = await ilhasDoOceano(oc, t.id);
+      for (const i of ilhas) aTentar.push({ x: i.x, y: i.y, id: i.id, origem: 'oceano ' + oc });
+      rotina(`Fundação: sem ilhas marcadas — uso o oceano ${oc}, da cidade ${c.centroId}, `
+        + `com ${aTentar.length} ilha(s) candidata(s).`);
+      if (!aTentar.length) return;
     } else {
-      /* Sem ilhas marcadas nem oceanos: NÃO funda nada.
+      /* Sem ilhas, sem oceanos e sem centro: NÃO funda nada.
        *
        * Antes usava as ilhas onde já havia cidade, e isso podia fundar em
        * sítios que o utilizador não escolheu — um colonizador gasto num sítio
        * errado é caro. Fundar é uma decisão dele. */
-      rotina('Fundação: sem ilhas marcadas nem oceanos indicados — não fundo nada. '
-        + 'Marca uma ilha na janela "Informação da ilha" ou indica um oceano no painel.');
+      rotina('Fundação: sem ilhas marcadas, sem oceanos e sem cidade centro — não fundo nada. '
+        + 'Marca uma ilha na janela "Informação da ilha", indica um oceano, '
+        + 'ou põe no centro a cidade à volta da qual queres fundar.');
       return;
     }
 
