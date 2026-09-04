@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.07.0330
+// @version      2026.09.07.0430
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1595,7 +1595,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.07.0330';
+  const MAESTRO_VERSAO = '2026.09.07.0430';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -15030,6 +15030,27 @@ function makeFeiticosModule(opts) {
    *
    * Confirmado: a Tempestade no Mar tem
    *   targets: ['target_command', 'target_support_command'] */
+  /* Os que fazem MAL a quem ataca: matam tropa ou pioram o ataque.
+   *
+   * A lista completa dos que se lançam num comando inclui os de bónus, que só
+   * fazem sentido nos ataques que EU envio. Num ataque que vem contra mim,
+   * oferecer o bónus ao atacante é o contrário do que se quer — e enchia o
+   * painel de escolhas absurdas. */
+  function feiticosContraAtaque() {
+    const out = [];
+    try {
+      const todos = todosOsFeiticos();
+      for (const id of Object.keys(todos)) {
+        const p = todos[id] || {};
+        if (!(p.targets || []).some((x) => /command/i.test(String(x)))) continue;
+        if (p.is_fake_power) continue;
+        if (!p.negative) continue;
+        out.push(id);
+      }
+    } catch (e) { seErroDeCodigo(e, 'Feiticos'); }
+    return out;
+  }
+
   function feiticosDeAtaque(soPositivos) {
     const out = [];
     try {
@@ -15534,35 +15555,56 @@ function makeFeiticosModule(opts) {
           return '<div style="opacity:.55;font-size:13px">Nenhum ataque a caminho de ti.</div>';
         }
 
-        /* Todos os que se podem lançar num comando, negativos incluídos —
-         * são esses que interessam contra quem ataca. */
-        const opcoesR = feiticosDeAtaque(false);
+        /* Só os que fazem mal a quem ataca. */
+        const opcoesR = feiticosContraAtaque();
 
-        return vindos.map((a2) => {
+        /* UMA LINHA POR ATAQUE.
+         *
+         * Cada ataque ocupava quatro linhas e uma legenda por feitiço. Com um
+         * já era grande; com quarenta seria uma bíblia. Fica o essencial numa
+         * linha e os feitiços como ícones — o nome e o custo estão no título,
+         * que aparece ao passar por cima.
+         *
+         * Mostram-se os doze que chegam primeiro: são esses que ainda dá para
+         * apanhar. */
+        const LIMITE = 12;
+        const ordenados = vindos
+          .slice()
+          .sort((x, y) => Number(x.arrival_at || 0) - Number(y.arrival_at || 0));
+        const mostrar = ordenados.slice(0, LIMITE);
+
+        const linhas = mostrar.map((a2) => {
           const cid = Number(a2.id || a2.command_id) || 0;
           const jaEscolhidos = [].concat((c.alvos || {})[cid] || []);
           const chega = a2.arrival_at
             ? new Date(Number(a2.arrival_at) * 1000).toLocaleTimeString().slice(0, 5)
             : '?';
 
-          const caixas = opcoesR.map((id) => `
-            <label style="display:inline-flex;align-items:center;gap:3px;margin-right:8px">
+          const icones = opcoesR.map((id) => `
+            <label title="${esc(nomeDoFeitico(id))} · ${custoDoFeitico(id)} de favor"
+              style="display:inline-block;cursor:pointer;opacity:${jaEscolhidos.indexOf(id) >= 0 ? '1' : '.35'}">
               <input type="checkbox" class="fei-alvo" data-cmd="${cid}" value="${id}"
-                ${jaEscolhidos.indexOf(id) >= 0 ? 'checked' : ''}>
+                ${jaEscolhidos.indexOf(id) >= 0 ? 'checked' : ''} style="display:none">
               ${iconeDoFeitico(id)}
-              <span style="font-size:11px">${esc(nomeDoFeitico(id))}</span>
-              <span style="font-size:10px;opacity:.5">${custoDoFeitico(id)}</span>
             </label>`).join('');
 
-          return `<div style="background:var(--mSurf);padding:5px 6px;border-radius:4px;margin-bottom:4px">
-            <div style="font-size:13px">
-              vem de <b>${esc(String(a2.town_name_origin || a2.home_town_id || '?'))}</b>
-              para <b>${esc(String(a2.town_name_destination || a2.target_town_id))}</b>
-              <span style="opacity:.6">· chega ${chega}</span>
-            </div>
-            <div style="margin-top:3px">${caixas}</div>
-          </div>`;
+          return `<tr>
+            <td style="padding:2px 4px;white-space:nowrap">${chega}</td>
+            <td style="padding:2px 4px;overflow:hidden;text-overflow:ellipsis;max-width:150px">
+              ${esc(String(a2.town_name_destination || a2.target_town_id))}
+              <span style="opacity:.5">← ${esc(String(a2.town_name_origin || a2.home_town_id || '?'))}</span>
+            </td>
+            <td style="padding:2px 4px;text-align:right;white-space:nowrap">${icones}</td>
+          </tr>`;
         }).join('');
+
+        return `<div style="max-height:200px;overflow:auto">
+            <table style="width:100%;border-collapse:collapse;font-size:12px">${linhas}</table>
+          </div>`
+          + (ordenados.length > LIMITE
+            ? `<div style="opacity:.5;font-size:11px;margin-top:2px">mais ${ordenados.length - LIMITE} `
+              + 'ataque(s) mais longe — aparecem à medida que se aproximam.</div>'
+            : '');
       } catch (e) { return '<div style="opacity:.55;font-size:13px">não consegui ler os ataques.</div>'; }
     })();
 
