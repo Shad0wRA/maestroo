@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.05.1730
+// @version      2026.09.05.1930
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1543,7 +1543,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.05.1730';
+  const MAESTRO_VERSAO = '2026.09.05.1930';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -16252,6 +16252,32 @@ function makeAldeiasModule(opts) {
     }
 
     forcarTrocas = false; forcarEvolucao = false;   // consumidas
+
+    /* VOLTAR QUANDO A PRÓXIMA ALDEIA FICAR PRONTA.
+     *
+     * A opção de recolha por omissão é a de 5 minutos, mas o módulo passa de
+     * 10 em 10. Ou seja, a aldeia fica pronta aos 5 e só é recolhida aos 10:
+     * metade das recolhas possíveis perdia-se, em cada aldeia de cada cidade
+     * de cada conta.
+     *
+     * O jogo diz no `lootable_at` quando cada uma fica pronta. Pede-se para
+     * voltar nessa altura em vez de esperar pela passagem seguinte — sem
+     * baixar o intervalo do módulo, que faria pedidos a mais quando não há
+     * nada para recolher. */
+    try {
+      const agora = agoraJogo();
+      let proxima = null;
+      for (const m of colModels('FarmTownPlayerRelation')) {
+        const a = m.attributes || {};
+        if (a.relation_status !== 1) continue;
+        const quando = Number(a.lootable_at) || 0;
+        if (!quando || quando <= agora) continue;
+        if (proxima == null || quando < proxima) proxima = quando;
+      }
+      if (proxima != null && ctx.voltarEm) {
+        ctx.voltarEm(Math.max(30, (proxima - agora) + 5));
+      }
+    } catch (e) { seErroDeCodigo(e, 'Aldeias'); }
   }
 
   async function fazerRecolha(ctx, towns) {
@@ -33345,13 +33371,66 @@ function makeFrotaModule(opts) {
     let cidades = 0;
     try { cidades = (ctx.getMyTowns() || []).length; } catch (e) { seErroDeCodigo(e, 'Frota'); }
 
+    /* ---- OS NÚMEROS DO JOGO ----------------------------------------------
+     *
+     * O Maestro executava bem e media mal: cada módulo fazia a sua tarefa e
+     * ninguém sabia quanto rendia. Sem isto, decidir onde optimizar é opinião.
+     *
+     * São leituras dos modelos que o jogo já tem em memória — nenhuma custa um
+     * pedido ao servidor. */
+    const jogo = { pontos: 0, cultura: 0, cheio: 0, paradas: 0, favor: {} };
+
+    try {
+      const mp = mUw.MM.getModels().Player;
+      const kp = Object.keys(mp)[0];
+      const ap = (mp[kp] || {}).attributes || {};
+      jogo.pontos = Number(ap.points) || 0;
+      jogo.cultura = Number(ap.cultural_points) || 0;
+    } catch (e) {}
+
+    /* Quão cheios estão os armazéns, e quantas cidades não têm nada em fila.
+     * Armazém cheio com a fila vazia é produção deitada fora — e a troca de
+     * recursos não resolve isso, porque não há para onde a mandar. */
+    try {
+      const towns = ctx.getMyTowns() || [];
+      let guardado = 0, capacidade = 0, paradas = 0;
+      for (const t of towns) {
+        const town = mUw.ITowns.getTown(Number(t.id));
+        if (!town) continue;
+        try {
+          const r = (town.resources && town.resources()) || {};
+          const cap = (town.getStorage && Number(town.getStorage())) || Number(r.storage) || 0;
+          for (const u of ['wood', 'stone', 'iron']) guardado += Number(r[u]) || 0;
+          capacidade += cap * 3;
+        } catch (e) {}
+        try {
+          const fila = (town.buildingOrders && town.buildingOrders()) || null;
+          const n = fila && (fila.models ? fila.models.length : fila.length);
+          if (!n) paradas++;
+        } catch (e) {}
+      }
+      if (capacidade > 0) jogo.cheio = Math.round((guardado / capacidade) * 100);
+      jogo.paradas = paradas;
+    } catch (e) {}
+
+    /* Favor por deus: é o que a farm de favores existe para acumular. */
+    try {
+      const pg = mUw.MM.getModels().PlayerGods || {};
+      const kg = Object.keys(pg)[0];
+      const prod = ((pg[kg] || {}).attributes || {}).production_overview || {};
+      for (const deus of Object.keys(prod)) {
+        const v = Math.floor(Number((prod[deus] || {}).current) || 0);
+        if (v > 0) jogo.favor[deus] = v;
+      }
+    } catch (e) {}
+
     return {
       conta: meuNome(),
       perfil: meuPerfil(),
       mundo: mWorld,
       versao: String(w.__maestroVersao || '?'),
       quando: Math.floor(Date.now() / 1000),
-      captcha, cidades, travoes, modulos, errosCodigo, erros,
+      captcha, cidades, travoes, jogo, modulos, errosCodigo, erros,
     };
   }
 
@@ -33460,6 +33539,12 @@ function makeFrotaModule(opts) {
     const atrasadas = contas.filter((x) => String(x.versao) !== minhaVersao).length;
     const comErros = contas.filter((x) => (x.errosCodigo || []).length).length;
     const comCaptcha = contas.filter((x) => Number(x.captcha)).length;
+    /* Produção deitada fora: armazém quase cheio E cidades sem nada em fila.
+     * Uma coisa sem a outra não é desperdício — cheio com obra a andar é
+     * normal, e parado com armazém vazio não custa nada. */
+    const aDesperdicar = contas.filter((x) => ((x.jogo || {}).cheio || 0) >= 85
+      && ((x.jogo || {}).paradas || 0) > 0);
+    const totalParadas = aDesperdicar.reduce((n, x) => n + Number((x.jogo || {}).paradas || 0), 0);
 
     const linhas = contas.map((x) => {
       const mudo = agora - Number(x.quando || 0) > SEM_SINAL;
@@ -33474,6 +33559,9 @@ function makeFrotaModule(opts) {
         <td style="padding:2px 4px;color:${mudo ? '#f88' : 'inherit'}">${esc(haQuanto(x.quando))}</td>
         <td style="padding:2px 4px;text-align:center">${Number(x.captcha) ? '🛑' : ''}</td>
         <td style="padding:2px 4px;text-align:center;color:${Number(x.travoes) ? '#e8a33d' : 'inherit'}">${Number(x.travoes) || ''}</td>
+        <td style="padding:2px 4px;text-align:right">${((x.jogo || {}).pontos || 0).toLocaleString('pt-PT')}</td>
+        <td style="padding:2px 4px;text-align:center;color:${((x.jogo || {}).cheio || 0) >= 85 ? 'var(--mBrass)' : 'inherit'}">${(x.jogo || {}).cheio ? (x.jogo.cheio + '%') : ''}</td>
+        <td style="padding:2px 4px;text-align:center;color:${((x.jogo || {}).paradas || 0) ? 'var(--mBrass)' : 'inherit'}">${(x.jogo || {}).paradas || ''}</td>
         <td style="padding:2px 4px;text-align:center;color:${nErros ? '#f88' : 'inherit'}">${nErros || ''}</td>
         <td style="padding:2px 4px;font-size:11px;opacity:.7">${esc(ultimo.slice(0, 70))}</td>
       </tr>`;
@@ -33486,6 +33574,7 @@ function makeFrotaModule(opts) {
         <span style="color:${atrasadas ? '#e8a33d' : 'inherit'}">${atrasadas} noutra versão</span> ·
         <span style="color:${comErros ? '#f88' : 'inherit'}">${comErros} com erros</span>
         ${comCaptcha ? ` · <span style="color:var(--mStop)">${comCaptcha} com captcha</span>` : ''}
+        ${aDesperdicar.length ? `<div style="color:var(--mBrass);margin-top:3px">${aDesperdicar.length} conta(s) a desperdiçar produção — ${totalParadas} cidade(s) com armazém cheio e nada em fila</div>` : ''}
         <div style="opacity:.6;font-size:12px;margin-top:2px">
           a minha versão é a ${esc(minhaVersao)} · calada = sem sinal há mais de ${Math.round(SEM_SINAL / 60)} min
         </div>
@@ -33499,6 +33588,9 @@ function makeFrotaModule(opts) {
             <th style="padding:2px 4px">sinal</th>
             <th style="padding:2px 4px">🛑</th>
             <th style="padding:2px 4px" title="429 na última hora">429</th>
+            <th style="padding:2px 4px;text-align:right">pontos</th>
+            <th style="padding:2px 4px" title="quão cheios estão os armazéns">cheio</th>
+            <th style="padding:2px 4px" title="cidades sem nada em fila">paradas</th>
             <th style="padding:2px 4px">erros</th>
             <th style="padding:2px 4px">último erro</th>
           </tr>
