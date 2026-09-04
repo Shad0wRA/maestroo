@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.07.0730
+// @version      2026.09.07.0830
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1595,7 +1595,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.07.0730';
+  const MAESTRO_VERSAO = '2026.09.07.0830';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -20076,12 +20076,50 @@ function makeDeusesModule(opts) {
     const tecto = Number(c.favorMaximo) || 500;
     let enviados = 0;
 
+    /* Quanto favor está no ar, por deus.
+     *
+     * Conta-se pelos enviados dos ataques que ainda vão a caminho — os que já
+     * estão de regresso já entregaram o favor e contam no número actual. O
+     * deus é o da cidade que mandou o ataque, que é quem recebe. */
+    const aCaminhoPorDeus = {};
+    try {
+      const mvs = mUw.MM.getModels().MovementsUnits || {};
+      for (const k of Object.keys(mvs)) {
+        const a2 = (mvs[k] || {}).attributes || {};
+        if (a2.return === true) continue;                 // já entregou
+        const nEnv = Number(a2.godsent) || 0;
+        if (nEnv <= 0) continue;
+        const origem = Number(a2.home_town_id) || 0;
+        const d2 = origem ? deusDa(origem) : null;
+        if (!d2) continue;
+        aCaminhoPorDeus[d2] = (aCaminhoPorDeus[d2] || 0) + nEnv * porEnviado;
+      }
+    } catch (e) { seErroDeCodigo(e, 'Deuses'); }
+
+    try {
+      const resumo = Object.keys(aCaminhoPorDeus)
+        .map((d2) => `${NOMES[d2] || d2} +${aCaminhoPorDeus[d2]}`).join(', ');
+      if (resumo) (ctx.logRotina || ctx.log)(`Farm: já vem a caminho ${resumo}.`);
+    } catch (e) {}
+
     for (const t of towns) {
       if (!farm[t.id]) continue;
       const deus = deusDa(t.id);
       if (!deus) continue;
 
-      const favor = Number(favores[deus]) || 0;
+      /* O FAVOR QUE JÁ VEM A CAMINHO CONTA.
+       *
+       * O módulo olhava só para o favor que tem AGORA. Como corre de 5 em 5
+       * minutos e os enviados demoram mais do que isso a chegar, a passagem
+       * seguinte via o mesmo número e mandava outra vaga — as duas calculadas
+       * contra o mesmo favor. Visto em jogo: dois ataques da 34.5 com mais de
+       * 80 enviados cada, a roubar 400 de favor de uma vez para uma cidade
+       * que já ia encher com o primeiro.
+       *
+       * Cada enviado a voar traz `porEnviado` de favor ao deus da cidade que
+       * o mandou. Somando isso ao que já cá está, sabe-se o favor com que a
+       * conta vai ficar — e é contra esse que se decide. */
+      const favor = (Number(favores[deus]) || 0) + (aCaminhoPorDeus[deus] || 0);
       if (favor >= limiar) continue;                 // ainda tem favor que chegue
 
       /* QUANTOS ENVIAR.
