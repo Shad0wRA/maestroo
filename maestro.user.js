@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.07.0630
+// @version      2026.09.07.0730
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1595,7 +1595,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.07.0630';
+  const MAESTRO_VERSAO = '2026.09.07.0730';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -1920,8 +1920,27 @@
     'alertas',
   ];
 
+  /* O MODO CONTA NOVA TEM DE VIAJAR NO PERFIL.
+   *
+   * Estava guardado só no `grepoMaestro_modulos_v1`, que NÃO é replicado — o
+   * perfil publica as chaves `grepoMaestro_ativos_*`, `webhooks_`, `autostart_`
+   * e `firebase_`, e mais nenhuma. Ou seja: ligavas na principal e mais nenhuma
+   * conta ficava a saber. Disse-te que viajava e não viajava.
+   *
+   * Passa a ser gravado também numa chave com o prefixo `ativos_`, que é
+   * replicada, e lê-se de qualquer uma das duas. */
+  function chaveContaNova() {
+    try {
+      const p2 = ((lerEscolhas() || {}).perfil) || 'main';
+      return `grepoMaestro_ativos_${p2}_contaNova`;
+    } catch (e) { return 'grepoMaestro_ativos_main_contaNova'; }
+  }
+
   function modoContaNova() {
-    try { return !!(lerEscolhas() || {}).contaNova; } catch (e) { return false; }
+    try {
+      if ((lerEscolhas() || {}).contaNova) return true;
+      return localStorage.getItem(chaveContaNova()) === '1';
+    } catch (e) { return false; }
   }
 
   function permitidoNaContaNova(modId) {
@@ -4135,11 +4154,13 @@
      * manda — nada se perde. */
     const cbNova = document.getElementById('maestro-conta-nova');
     if (cbNova) {
-      try { cbNova.checked = !!(lerEscolhas() || {}).contaNova; } catch (e) {}
+      try { cbNova.checked = modoContaNova(); } catch (e) {}
       cbNova.onchange = () => {
         const esc = lerEscolhas() || { perfil: 'main', ativos: {} };
         esc.contaNova = !!cbNova.checked;
         guardarEscolhas(esc);
+        /* Também na chave replicada, senão as outras contas não sabem. */
+        try { localStorage.setItem(chaveContaNova(), cbNova.checked ? '1' : '0'); } catch (e) {}
         for (const m of MODULES) {
           if (!modState[m.id]) continue;
           if (esc.contaNova && !permitidoNaContaNova(m.id)) modState[m.id].ativo = false;
