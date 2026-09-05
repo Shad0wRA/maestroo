@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.07.2230
+// @version      2026.09.07.2330
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1660,7 +1660,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.07.2230';
+  const MAESTRO_VERSAO = '2026.09.07.2330';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -20199,16 +20199,42 @@ function makeDeusesModule(opts) {
      * deus é o da cidade que mandou o ataque, que é quem recebe. */
     const aCaminhoPorDeus = {};
     try {
-      const mvs = mUw.MM.getModels().MovementsUnits || {};
-      for (const k of Object.keys(mvs)) {
-        const a2 = (mvs[k] || {}).attributes || {};
-        if (a2.return === true) continue;                 // já entregou
-        const nEnv = Number(a2.godsent) || 0;
-        if (nEnv <= 0) continue;
-        const origem = Number(a2.home_town_id) || 0;
-        const d2 = origem ? deusDa(origem) : null;
-        if (!d2) continue;
-        aCaminhoPorDeus[d2] = (aCaminhoPorDeus[d2] || 0) + nEnv * porEnviado;
+      /* OS MOVIMENTOS NÃO TRAZEM AS UNIDADES.
+       *
+       * Contava-se os enviados pelos modelos `MovementsUnits`, e eles não têm
+       * campo nenhum de tropa — só identificadores, horas e nomes. A conta
+       * dava sempre zero e o desconto nunca funcionou: viam-se três vagas de
+       * 50 enviados com cinco minutos de intervalo, todas calculadas contra o
+       * mesmo favor.
+       *
+       * Quem traz as unidades é a visão geral dos comandos, a mesma que os
+       * alertas e a detecção de revoltas já usam. Custa um pedido por
+       * passagem. */
+      const base0 = (ctx.getMyTowns() || [])[0];
+      if (base0) {
+        const url0 = mUw.location.origin + '/game/town_overviews?town_id=' + Number(base0.id)
+          + '&action=command_overview&h=' + mUw.Game.csrfToken
+          + '&json=' + encodeURIComponent(JSON.stringify({ town_id: Number(base0.id), nl_init: true }))
+          + '&_=' + Date.now();
+
+        const resp0 = await mUw.fetch(url0, {
+          headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
+        }).then((r) => r.json()).catch(() => null);
+
+        const d0 = (resp0 && resp0.json) || {};
+        const cmds0 = d0.commands || (d0.data && d0.data.commands) || [];
+        const minhas0 = new Set((ctx.getMyTowns() || []).map((t) => Number(t.id)));
+
+        for (const x of cmds0) {
+          if (x.return === true || x.cmd_return === true) continue;   // já entregou
+          const nEnv = Number(x.godsent) || 0;
+          if (nEnv <= 0) continue;
+          const origem = Number(x.origin_town_id) || 0;
+          if (!minhas0.has(origem)) continue;
+          const d2 = deusDa(origem);
+          if (!d2) continue;
+          aCaminhoPorDeus[d2] = (aCaminhoPorDeus[d2] || 0) + nEnv * porEnviado;
+        }
       }
     } catch (e) { seErroDeCodigo(e, 'Deuses'); }
 
