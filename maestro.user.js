@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.07.1330
+// @version      2026.09.07.1430
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1595,7 +1595,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.07.1330';
+  const MAESTRO_VERSAO = '2026.09.07.1430';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -25343,6 +25343,22 @@ function makeTrocaCidadesModule(opts) {
           const detalhe = Object.keys(envio).map((r) => `${envio[r]} ${r}`).join(', ');
           log(`📦 ${d.t.name} → ${carente.t.name}: ${detalhe}.`);
           await ctx.sleep(ctx.rand(800, 1600));
+        } else if (/capacidade comercial|capacidade de com/i.test(String(res.msg || ''))) {
+          /* CAPACIDADE ESGOTADA: ESTA CIDADE ACABOU POR HOJE.
+           *
+           * O mercado tem um limite de recursos em trânsito. Quando ele
+           * acaba, TODOS os envios seguintes daquela cidade falham pela mesma
+           * razão — e o módulo tentava-os todos, um por cada carente. Visto
+           * em jogo: 32 linhas de falha numa passagem, duas cidades a tentar
+           * dezasseis destinos cada.
+           *
+           * O próprio jogo diz quanto resta. Guarda-se esse valor e não se
+           * volta a tentar desta cidade nesta passagem. */
+          const resta = Number((String(res.msg).match(/(\d+)/) || [])[1]) || 0;
+          d.capacidade = resta;
+          (ctx.logRotina || ctx.log)(`${d.t.name}: capacidade de comércio esgotada (restam ${resta}) `
+            + '— não envio mais desta cidade nesta passagem.');
+          break;
         } else {
           log(`⚠️ ${d.t.name} → ${carente.t.name}: envio falhou (${res.msg}).`);
         }
