@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.07.1430
+// @version      2026.09.07.1630
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1595,7 +1595,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.07.1430';
+  const MAESTRO_VERSAO = '2026.09.07.1630';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -1877,6 +1877,7 @@
     feiticos:     { icone: '🌊', curto: 'Feitiços' },
     relatorios:   { icone: '🗑️', curto: 'Relatórios' },
     frota:        { icone: '📡', curto: 'Frota' },
+    fecharilha:   { icone: '🔒', curto: 'Fechar ilha' },
   };
 
   /* Um símbolo por grupo, para a coluna se ler de relance. */
@@ -1890,7 +1891,7 @@
     { nome: 'Cidade', ids: ['construcao', 'pesquisa', 'recrutamento', 'herois', 'cultura'] },
     { nome: 'Recursos', ids: ['aldeias', 'gruta', 'trocacidades', 'apoio'] },
     { nome: 'Combate', ids: ['alertas', 'esquiva', 'encaixe'] },
-    { nome: 'Favores e expansão', ids: ['deuses', 'colonos', 'fundacao', 'missoes'] },
+    { nome: 'Favores e expansão', ids: ['deuses', 'colonos', 'fundacao', 'fecharilha', 'missoes'] },
   ];
 
   // Módulo aberto no momento ('' = página inicial).
@@ -33845,6 +33846,44 @@ function makeFundacaoModule(opts) {
 
           const conteudo = jan.querySelector('.gpwindow_content') || jan;
           conteudo.insertBefore(bt, conteudo.firstChild);
+
+          /* FECHAR ILHA — só na conta principal.
+           *
+           * Ao lado do guardar. Cria o plano na hora: lê os lugares livres,
+           * vai à frota buscar as contas e dá um lugar a cada uma. Numa multi
+           * o botão nem aparece, para não se começar um fecho por engano. */
+          try {
+            const perfil = (JSON.parse(localStorage.getItem('grepoMaestro_modulos_v1') || '{}') || {}).perfil;
+            if (perfil === 'main' && mUw.__maestroFecharIlha) {
+              const bf = document.createElement('button');
+              bf.setAttribute('data-maestro-fechar', chave);
+              bf.style.cssText = bt.style.cssText;
+              bf.style.color = '#d9705f';
+              bf.textContent = '🔒 Fechar esta ilha com todas as contas';
+              bf.title = `Ilha ${chave}`
+                + (livres != null ? ` · ${livres} lugar(es) livre(s)` : '');
+              bf.onclick = async (ev) => {
+                ev.preventDefault(); ev.stopPropagation();
+                bf.disabled = true;
+                bf.textContent = 'a preparar o plano…';
+                const r = await mUw.__maestroFecharIlha(co.x, co.y);
+                bf.disabled = false;
+                if (!r || !r.ok) {
+                  bf.textContent = '🔒 Fechar esta ilha com todas as contas';
+                  if (ctx && ctx.log) ctx.log(`Fechar ilha: ${(r && r.msg) || 'não consegui'}.`);
+                  return;
+                }
+                const n = Object.keys(r.plano.atribuicoes).length;
+                bf.textContent = `🔒 plano criado — ${n} conta(s)`;
+                if (ctx && ctx.log) {
+                  ctx.log(`Fechar ilha ${chave}: plano criado para ${n} conta(s)`
+                    + (r.plano.deFora ? ` (${r.plano.deFora} sem lugar)` : '')
+                    + '. Vê o painel do módulo Fechar ilha para acompanhar.');
+                }
+              };
+              conteudo.insertBefore(bf, bt.nextSibling);
+            }
+          } catch (e) { seErroDeCodigo(e, 'Fundacao'); }
         });
       } catch (e) { seErroDeCodigo(e, 'Fundacao'); }
     };
@@ -35146,6 +35185,440 @@ function makeFrotaModule(opts) {
   };
 }
 
+/* ============================================================================
+ *  FECHAR ILHA — as contas todas fundam na mesma ilha, cada uma num lugar
+ *
+ *  O jogo reserva o lugar assim que um colonizador parte: ninguém mais o pode
+ *  escolher. E o envio leva o número do lugar, confirmado em jogo:
+ *
+ *    frontend_bridge?action=execute
+ *    model_url Colonization/<jogador>, action_name sendColonizer,
+ *    arguments { target_x, target_y, target_number_on_island, colonize_ship }
+ *
+ *  Isso permite dar um lugar a cada conta e partirem todas ao mesmo tempo, em
+ *  vez de se atropelarem no mesmo. Partir juntas importa: enviar aos poucos dá
+ *  tempo a que alguém de fora ocupe o resto da ilha.
+ *
+ *  COMO CORRE
+ *    1. Na conta principal marcas a ilha. Ela lê os lugares livres, vai à
+ *       frota buscar as contas conhecidas e dá um lugar a cada uma.
+ *    2. Cada conta vê o seu lugar, confirma que tem colonizador e espaço para
+ *       mais uma cidade, e diz que está pronta.
+ *    3. Quando estiverem todas prontas, a principal verifica a ilha outra vez
+ *       e dá ordem de partida. Aí cada uma envia para o SEU lugar.
+ *
+ *  SE ALGUÉM OCUPAR UM LUGAR ENTRETANTO
+ *    • foi um aliado da mesma aliança → tira-se essa conta do plano e segue-se
+ *      com menos uma;
+ *    • foi outra pessoa qualquer → aborta-se e avisa-se. Fechar meia ilha não
+ *      serve de nada e são vinte colonizadores.
+ *
+ *  Só publica e lê o plano; quem funda é o pedido do próprio jogo. Desligado
+ *  por omissão.
+ * ========================================================================== */
+function makeFecharIlhaModule(opts) {
+  opts = opts || {};
+  let mUw = null, mWorld = '';
+
+  const LUGARES = 20;
+
+  const armazem = (() => {
+    try {
+      const a = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroArmazem;
+      if (a) return a;
+    } catch (e) {}
+    return localStorage;
+  })();
+
+  const CFG_KEY = 'grepoFecharIlha_cfg_v1';
+  const DEFAULTS = { ativo: false };
+
+  function cfg() {
+    try { return Object.assign({}, DEFAULTS, JSON.parse(armazem.getItem(CFG_KEY) || '{}')); }
+    catch (e) { return Object.assign({}, DEFAULTS); }
+  }
+  function guardarCfg(c) {
+    try { armazem.setItem(CFG_KEY, JSON.stringify(c)); } catch (e) {}
+  }
+
+  const janela = () => (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window);
+  function esc(x) {
+    return String(x == null ? '' : x)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+  function meuNome() {
+    try { return String(mUw.Game.player_name || '') || '?'; } catch (e) { return '?'; }
+  }
+  function minhaAlianca() {
+    try { return Number(mUw.Game.alliance_id) || 0; } catch (e) { return 0; }
+  }
+
+  /* ---------------------- o plano, no Firebase -------------------------- */
+
+  function fb() {
+    try {
+      const f = janela().__maestroFb;
+      return (f && f.url && f.url()) ? f : null;
+    } catch (e) { return null; }
+  }
+  const caminho = () => `fecharIlha/${mWorld}`;
+
+  async function lerPlano() {
+    const f = fb();
+    if (!f) return null;
+    try { return await f.ler(caminho()); } catch (e) { return null; }
+  }
+  async function gravarPlano(p) {
+    const f = fb();
+    if (!f) return { ok: false, msg: 'sem Firebase' };
+    try { return await f.escrever(caminho(), p); } catch (e) { return { ok: false, msg: e.message }; }
+  }
+
+  /* ---------------------- leitura da ilha ------------------------------- */
+
+  /* Quem ocupa cada lugar, com a aliança — é o que decide entre desistir e
+   * seguir com menos uma conta. */
+  async function estadoDaIlha(ix, iy, townIdBase) {
+    const out = { livres: [], donos: {} };
+    try {
+      const CHUNK = 10;
+      const cx = Math.floor(ix / CHUNK), cy = Math.floor(iy / CHUNK);
+      const url = mUw.location.origin + '/game/map_data?town_id=' + Number(townIdBase)
+        + '&action=get_chunks&h=' + mUw.Game.csrfToken
+        + '&json=' + encodeURIComponent(JSON.stringify({
+            chunks: [{ x: cx, y: cy, timestamp: 0 }], town_id: Number(townIdBase), nl_init: true }));
+
+      const r = await mUw.fetch(url, {
+        headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
+      }).then((x) => x.json());
+
+      const d = (r && r.json && r.json.data) || {};
+      const bloco = d[0] || d['0'];
+      const towns = (bloco && bloco.towns) || {};
+      const ocupados = new Set();
+
+      for (const k of Object.keys(towns)) {
+        const t = towns[k];
+        if (Number(t.x) !== Number(ix) || Number(t.y) !== Number(iy)) continue;
+        const temNome = !!(t.name && String(t.name).trim());
+        const nr = Number(t.nr);
+        if (!temNome || !Number.isFinite(nr) || nr < 0 || nr >= LUGARES) continue;
+        ocupados.add(nr);
+        out.donos[nr] = {
+          nome: String(t.name),
+          jogador: Number(t.player_id) || 0,
+          alianca: Number(t.alliance_id) || 0,
+        };
+      }
+      for (let n = 0; n < LUGARES; n++) if (!ocupados.has(n)) out.livres.push(n);
+    } catch (e) { seErroDeCodigo(e, 'FecharIlha'); }
+    return out;
+  }
+
+  /* ---------------------- o que esta conta consegue --------------------- */
+
+  function tenhoColonizador() {
+    try {
+      for (const id of Object.keys(mUw.ITowns.towns)) {
+        const u = (mUw.ITowns.getTown(Number(id)).units() || {});
+        if ((Number(u.colonize_ship) || 0) > 0) return Number(id);
+      }
+    } catch (e) { seErroDeCodigo(e, 'FecharIlha'); }
+    return 0;
+  }
+
+  async function enviarColonizador(townId, x, y, numero) {
+    const url = mUw.location.origin + '/game/frontend_bridge?town_id=' + Number(townId)
+      + '&action=execute&h=' + mUw.Game.csrfToken;
+    try {
+      const r = await mUw.fetch(url, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
+          'x-requested-with': 'XMLHttpRequest',
+        },
+        credentials: 'include',
+        body: 'json=' + encodeURIComponent(JSON.stringify({
+          model_url: 'Colonization/' + (mUw.Game.player_id || ''),
+          action_name: 'sendColonizer', captcha: null,
+          arguments: {
+            target_x: Number(x), target_y: Number(y),
+            target_number_on_island: Number(numero), colonize_ship: 1,
+          },
+          town_id: Number(townId), nl_init: true,
+        })),
+      }).then((x2) => x2.json());
+      const j = r && r.json;
+      return { ok: !(j && j.error), msg: (j && (j.error || j.success)) || 'ok' };
+    } catch (e) { return { ok: false, msg: e.message }; }
+  }
+
+  /* ---------------------- criar o plano (conta principal) --------------- */
+
+  async function criarPlano(ctx, x, y) {
+    const towns = ctx.getMyTowns() || [];
+    if (!towns.length) return { ok: false, msg: 'sem cidades' };
+
+    const ilha = await estadoDaIlha(x, y, towns[0].id);
+    if (!ilha.livres.length) return { ok: false, msg: 'a ilha não tem lugares livres' };
+
+    /* As contas vêm da frota: é a lista mais completa que existe. */
+    const contas = [];
+    try {
+      const f = fb();
+      const d = (f && await f.ler(`frota/${mWorld}`)) || {};
+      for (const k of Object.keys(d)) {
+        const nome = ((d[k] || {}).conta || '').trim();
+        if (nome && contas.indexOf(nome) < 0) contas.push(nome);
+      }
+    } catch (e) {}
+    if (contas.indexOf(meuNome()) < 0) contas.push(meuNome());
+    if (!contas.length) return { ok: false, msg: 'não conheço contas nenhumas' };
+
+    /* Um lugar por conta, pela ordem dos lugares livres. Se houver mais contas
+     * do que lugares, as que sobram ficam de fora — não há onde as pôr. */
+    const atribuicoes = {};
+    const quantas = Math.min(contas.length, ilha.livres.length);
+    for (let i = 0; i < quantas; i++) atribuicoes[contas[i]] = ilha.livres[i];
+
+    const plano = {
+      chave: `${x}:${y}`, x: Number(x), y: Number(y),
+      criadoPor: meuNome(), alianca: minhaAlianca(),
+      quando: Math.floor(Date.now() / 1000),
+      estado: 'preparar',
+      atribuicoes, prontos: {}, enviados: {},
+      deFora: contas.length - quantas,
+    };
+    const r = await gravarPlano(plano);
+    return r && r.ok
+      ? { ok: true, plano }
+      : { ok: false, msg: (r && r.msg) || 'não consegui gravar' };
+  }
+
+  /* ---------------------- passagem -------------------------------------- */
+
+  async function run(ctx) {
+    mUw = ctx.uw; mWorld = ctx.WORLD;
+    const log = ctx.log;
+    const rotina = ctx.logRotina || ctx.log;
+    const c = cfg();
+
+    try {
+      const doPainel = janela().__maestroLigado;
+      if (doPainel) {
+        const v = doPainel('fecharilha');
+        if (v === true) c.ativo = true;
+        if (v === false) c.ativo = false;
+      }
+    } catch (e) {}
+    if (!c.ativo) { rotina('Fechar ilha: está desligado.'); return; }
+    if (!fb()) { rotina('Fechar ilha: sem Firebase — não dá para combinar nada.'); return; }
+
+    const plano = await lerPlano();
+    if (!plano || !plano.atribuicoes) { rotina('Fechar ilha: não há plano nenhum.'); return; }
+    if (plano.estado === 'abortado' || plano.estado === 'feito') {
+      rotina(`Fechar ilha: o plano de ${plano.chave} está ${plano.estado}.`);
+      return;
+    }
+
+    const eu = meuNome();
+    const meuLugar = plano.atribuicoes[eu];
+    const souODono = plano.criadoPor === eu;
+
+    /* ---- 1. O QUE ESTA CONTA TEM DE FAZER ---- */
+    if (meuLugar != null) {
+      if (plano.estado === 'preparar' && !plano.prontos[eu]) {
+        const cidade = tenhoColonizador();
+        if (!cidade) {
+          rotina(`Fechar ilha: guardo o lugar ${meuLugar} em ${plano.chave}, `
+            + 'mas ainda não tenho colonizador.');
+        } else {
+          plano.prontos[eu] = { cidade, quando: Math.floor(Date.now() / 1000) };
+          await gravarPlano(plano);
+          log(`🔒 Fechar ilha: pronto para o lugar ${meuLugar} em ${plano.chave}.`);
+        }
+      }
+
+      if (plano.estado === 'lancar' && !plano.enviados[eu]) {
+        const cidade = (plano.prontos[eu] || {}).cidade || tenhoColonizador();
+        if (!cidade) {
+          log(`⚠️ Fechar ilha: era a minha vez e já não tenho colonizador.`);
+        } else {
+          const r = await enviarColonizador(cidade, plano.x, plano.y, meuLugar);
+          if (r.ok) {
+            plano.enviados[eu] = Math.floor(Date.now() / 1000);
+            await gravarPlano(plano);
+            log(`🏛️ Fechar ilha: colonizador a caminho de ${plano.chave}, lugar ${meuLugar}.`);
+          } else {
+            log(`⚠️ Fechar ilha: o envio para o lugar ${meuLugar} falhou (${r.msg}).`);
+          }
+        }
+      }
+    }
+
+    /* ---- 2. O QUE A CONTA QUE CRIOU O PLANO TEM DE FAZER ---- */
+    if (!souODono || plano.estado !== 'preparar') return;
+
+    const nomes = Object.keys(plano.atribuicoes);
+    const faltam = nomes.filter((n) => !plano.prontos[n]);
+    if (faltam.length) {
+      rotina(`Fechar ilha ${plano.chave}: ${nomes.length - faltam.length} de ${nomes.length} `
+        + `prontas. Falta: ${faltam.slice(0, 5).join(', ')}`
+        + (faltam.length > 5 ? ` e mais ${faltam.length - 5}` : '') + '.');
+      return;
+    }
+
+    /* Todas prontas: última vista de olhos à ilha antes de dar a partida. */
+    const towns = ctx.getMyTowns() || [];
+    const ilha = await estadoDaIlha(plano.x, plano.y, towns[0].id);
+    const livres = new Set(ilha.livres);
+
+    const perdidos = nomes.filter((n) => !livres.has(Number(plano.atribuicoes[n])));
+    if (perdidos.length) {
+      /* De quem são os lugares que se perderam? */
+      let sóAliados = true;
+      const quem = [];
+      for (const n of perdidos) {
+        const dono = ilha.donos[Number(plano.atribuicoes[n])] || {};
+        quem.push(`${dono.nome || '?'}`);
+        if (!dono.alianca || dono.alianca !== Number(plano.alianca)) sóAliados = false;
+      }
+
+      if (!sóAliados) {
+        plano.estado = 'abortado';
+        plano.motivo = `lugares ocupados por ${quem.join(', ')}`;
+        await gravarPlano(plano);
+        log(`⛔ Fechar ilha ${plano.chave}: ABORTADO — ${plano.motivo}. `
+          + 'Meia ilha não serve de nada e são colonizadores a mais para arriscar.');
+        if (ctx.avisarDiscord) {
+          ctx.avisarDiscord('ataque', {
+            titulo: '⛔ Fechar ilha abortado',
+            descricao: `A ilha **${plano.chave}** perdeu lugares para ${quem.join(', ')}.`,
+          });
+        }
+        return;
+      }
+
+      /* Foram aliados: segue-se com menos contas. */
+      for (const n of perdidos) delete plano.atribuicoes[n];
+      await gravarPlano(plano);
+      log(`Fechar ilha ${plano.chave}: ${perdidos.length} lugar(es) ficaram para aliados `
+        + `— sigo com ${Object.keys(plano.atribuicoes).length} conta(s).`);
+      return;   // na passagem seguinte volta a verificar
+    }
+
+    plano.estado = 'lancar';
+    plano.lancadoEm = Math.floor(Date.now() / 1000);
+    await gravarPlano(plano);
+    log(`🚀 Fechar ilha ${plano.chave}: todas prontas — PARTIDA para ${nomes.length} lugares.`);
+    if (ctx.avisarDiscord) {
+      ctx.avisarDiscord('ataque', {
+        titulo: '🚀 A fechar uma ilha',
+        descricao: `**${nomes.length}** contas a fundar em **${plano.chave}** ao mesmo tempo.`,
+      });
+    }
+  }
+
+  /* ---------------------- painel ---------------------------------------- */
+
+  function painel(container, ctx) {
+    mUw = ctx.uw; mWorld = ctx.WORLD;
+    const c = cfg();
+
+    container.innerHTML = `
+      <div class="mCaixa" style="margin-bottom:8px">
+        <div style="font-size:12px;opacity:.75">
+          Marca uma ilha e as contas todas fundam nela ao mesmo tempo, cada uma
+          num lugar. Se alguém de fora ocupar um lugar entretanto, aborta; se
+          for um aliado, segue com menos uma conta.
+        </div>
+      </div>
+
+      <div style="display:flex;gap:6px;align-items:center;margin-bottom:8px">
+        <span class="mEtiq">ilha</span>
+        <input id="fi-x" placeholder="x" style="width:70px" value="${esc(c.ultimoX || '')}">
+        <input id="fi-y" placeholder="y" style="width:70px" value="${esc(c.ultimoY || '')}">
+        <button id="fi-criar">Fechar esta ilha</button>
+      </div>
+
+      <div id="fi-estado" style="font-size:12px;opacity:.7">a ler o plano…</div>
+
+      <button id="fi-apagar" style="cursor:pointer;font-size:11px;margin-top:8px">
+        apagar o plano actual
+      </button>`;
+
+    container.querySelector('#fi-criar').onclick = async () => {
+      const x = Number(container.querySelector('#fi-x').value);
+      const y = Number(container.querySelector('#fi-y').value);
+      if (!x || !y) { ctx.log('Fechar ilha: escreve as coordenadas da ilha.'); return; }
+      guardarCfg(Object.assign({}, cfg(), { ultimoX: x, ultimoY: y }));
+      ctx.log('Fechar ilha: a preparar o plano…');
+      const r = await criarPlano(ctx, x, y);
+      if (!r.ok) { ctx.log(`Fechar ilha: ${r.msg}.`); return; }
+      const n = Object.keys(r.plano.atribuicoes).length;
+      ctx.log(`Fechar ilha ${r.plano.chave}: plano criado para ${n} conta(s)`
+        + (r.plano.deFora ? ` (${r.plano.deFora} ficaram de fora, sem lugar)` : '') + '.');
+      painel(container, ctx);
+    };
+
+    container.querySelector('#fi-apagar').onclick = async () => {
+      const p = await lerPlano();
+      if (!p) { ctx.log('Fechar ilha: não há plano.'); return; }
+      p.estado = 'feito';
+      await gravarPlano(p);
+      ctx.log('Fechar ilha: plano encerrado.');
+      painel(container, ctx);
+    };
+
+    (async () => {
+      const alvo = container.querySelector('#fi-estado');
+      if (!alvo) return;
+      const p = await lerPlano();
+      if (!p || !p.atribuicoes) { alvo.textContent = 'Não há plano nenhum.'; return; }
+      const nomes = Object.keys(p.atribuicoes);
+      const linhas = nomes.map((n) => `<tr>
+          <td style="padding:2px 4px">${esc(n)}</td>
+          <td style="padding:2px 4px;text-align:center">lugar ${p.atribuicoes[n]}</td>
+          <td style="padding:2px 4px">${p.enviados[n] ? '🏛️ enviado'
+            : (p.prontos[n] ? '✅ pronto' : '⏳ à espera')}</td>
+        </tr>`).join('');
+      alvo.innerHTML = `
+        <div style="margin-bottom:4px">
+          Ilha <b>${esc(p.chave)}</b> · estado <b>${esc(p.estado)}</b>
+          ${p.motivo ? `<span style="opacity:.7">· ${esc(p.motivo)}</span>` : ''}
+        </div>
+        <table style="width:100%;border-collapse:collapse;font-size:12px">${linhas}</table>`;
+    })();
+  }
+
+  /* Para o botão da janela da ilha, que vive no módulo da fundação.
+   *
+   * Não recebe `ctx`: apanha as cidades e o mundo do próprio jogo, para poder
+   * ser chamado de fora sem depender de uma passagem. */
+  try {
+    janela().__maestroFecharIlha = async (x, y) => {
+      try {
+        mUw = janela();
+        mWorld = String(mUw.Game.world_id || '');
+        const ctxFalso = {
+          getMyTowns: () => Object.keys(mUw.ITowns.towns).map((id) => ({
+            id: Number(id), name: mUw.ITowns.getTown(Number(id)).getName(),
+          })),
+        };
+        return await criarPlano(ctxFalso, Number(x), Number(y));
+      } catch (e) { return { ok: false, msg: e.message }; }
+    };
+  } catch (e) {}
+
+  return {
+    id: 'fecharilha',
+    nome: 'Fechar ilha',
+    intervaloMin: opts.intervaloMin || 2,
+    autoStart: false,
+    run, painel,
+  };
+}
+
   /* ===================== REGISTO DOS MÓDULOS ==============================
    * ⚠️ Preenche GIST_ID e GIST_TOKEN para partilhar as configurações entre as
    *    contas. Cada módulo escreve no seu próprio ficheiro dentro do Gist.
@@ -35202,6 +35675,7 @@ function makeFrotaModule(opts) {
   registerModule(makeFundacaoModule({ intervaloMin: 30 }));
   registerModule(makeRelatoriosModule({ intervaloMin: 60 }));
   registerModule(makeFrotaModule({ intervaloMin: 5 }));
+  registerModule(makeFecharIlhaModule({ intervaloMin: 2 }));
 
   // (sem módulos registados ainda — adiciona os teus acima desta linha)
 
