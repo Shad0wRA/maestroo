@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.08.0130
+// @version      2026.09.08.0230
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1660,7 +1660,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.08.0130';
+  const MAESTRO_VERSAO = '2026.09.08.0230';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -35749,17 +35749,54 @@ function makeFecharIlhaModule(opts) {
         }
       }
 
-      if (plano.estado === 'lancar' && !plano.enviados[eu]) {
+      /* Uma conta que já desistiu não volta a tentar. */
+      if (plano.estado === 'lancar' && (plano.falhados || {})[eu]) {
+        (ctx.logRotina || log)(`Fechar ilha: já desisti em ${plano.chave} `
+          + `(${plano.falhados[eu]}).`);
+      } else if (plano.estado === 'lancar' && !plano.enviados[eu]) {
+        let meuLugarUsado = null;
         const cidade = (plano.prontos[eu] || {}).cidade || tenhoColonizador();
         if (!cidade) {
           log(`⚠️ Fechar ilha: era a minha vez e já não tenho colonizador.`);
         } else {
-          const r = await enviarColonizador(cidade, plano.x, plano.y, meuLugar);
+          let r = await enviarColonizador(cidade, plano.x, plano.y, meuLugar);
+
+          /* LUGAR OCUPADO: TENTAR OUTRO NA MESMA ILHA.
+           *
+           * O jogo reserva o lugar assim que alguém envia. Se o meu foi
+           * levado entretanto, insistir nele é garantido falhar — e era o que
+           * acontecia, de dois em dois minutos, sem fim.
+           *
+           * A ilha tem vinte lugares e o que interessa é fundar nela, não
+           * naquele em concreto. Procura-se outro livre que não esteja
+           * atribuído a ninguém que ainda tenha de enviar. */
+          if (!r.ok && /j[áa] est[áa] a ser utilizado|already/i.test(String(r.msg || ''))) {
+            const ilha2 = await estadoDaIlha(plano.x, plano.y, cidade);
+            const reservados = new Set(Object.keys(plano.atribuicoes)
+              .filter((n) => n !== eu && !plano.enviados[n])
+              .map((n) => Number(plano.atribuicoes[n])));
+            const alternativa = ilha2.livres.find((n) => !reservados.has(Number(n)));
+
+            if (alternativa == null) {
+              plano.falhados = plano.falhados || {};
+              plano.falhados[eu] = 'sem lugares livres';
+              await gravarPlano(plano);
+              log(`⚠️ Fechar ilha: o lugar ${meuLugar} foi ocupado e a ilha `
+                + `${plano.chave} já não tem nenhum livre — desisto.`);
+            } else {
+              log(`Fechar ilha: o lugar ${meuLugar} foi ocupado — tento o ${alternativa}.`);
+              plano.atribuicoes[eu] = alternativa;
+              r = await enviarColonizador(cidade, plano.x, plano.y, alternativa);
+              if (r.ok) meuLugarUsado = alternativa;
+            }
+          }
+
           if (r.ok) {
             plano.enviados[eu] = Math.floor(Date.now() / 1000);
             await gravarPlano(plano);
-            log(`🏛️ Fechar ilha: colonizador a caminho de ${plano.chave}, lugar ${meuLugar}.`);
-          } else {
+            log(`🏛️ Fechar ilha: colonizador a caminho de ${plano.chave}, `
+              + `lugar ${meuLugarUsado != null ? meuLugarUsado : meuLugar}.`);
+          } else if (!plano.falhados || !plano.falhados[eu]) {
             log(`⚠️ Fechar ilha: o envio para o lugar ${meuLugar} falhou (${r.msg}).`);
           }
         }
