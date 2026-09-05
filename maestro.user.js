@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.07.1730
+// @version      2026.09.07.1830
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -151,6 +151,54 @@
       return '';
     };
   } catch (e) {}
+
+  /* ============ QUEM QUER UM COLONIZADOR ================================
+   *
+   * Três módulos disputam o mesmo colonizador e nenhum sabia dos outros: o
+   * fechar ilha reserva um lugar e conta com ele, a fundação quer fundar, e a
+   * rotação junta-os todos no depósito. Quem corresse primeiro levava — e por
+   * isso a fundação dizia "nenhuma cidade tem colonizador" enquanto a rotação
+   * os despachava.
+   *
+   * A ordem que mandas é: fechar ilha, depois fundação, e a rotação em
+   * último. As duas primeiras são decisões tuas; a rotação repete-se todos os
+   * dias e pode esperar.
+   *
+   * Quem precisa marca-o aqui, com validade — se o módulo deixar de correr ou
+   * mudar de ideias, a marca cai sozinha e ninguém fica bloqueado para
+   * sempre. */
+  const QUER_NC_KEY = 'grepoMaestro_querNC_v1';
+  const PRIORIDADE_NC = { fecharilha: 3, fundacao: 2 };
+
+  function querNC(quem, minutos) {
+    try {
+      const d = JSON.parse(localStorage.getItem(QUER_NC_KEY) || '{}');
+      d[quem] = Math.floor(Date.now() / 1000) + (Number(minutos) || 30) * 60;
+      localStorage.setItem(QUER_NC_KEY, JSON.stringify(d));
+    } catch (e) {}
+  }
+
+  function jaNaoQuerNC(quem) {
+    try {
+      const d = JSON.parse(localStorage.getItem(QUER_NC_KEY) || '{}');
+      delete d[quem];
+      localStorage.setItem(QUER_NC_KEY, JSON.stringify(d));
+    } catch (e) {}
+  }
+
+  /* Alguém com prioridade acima de `quem` está à espera de um colonizador? */
+  function alguemQuerNC(quem) {
+    try {
+      const d = JSON.parse(localStorage.getItem(QUER_NC_KEY) || '{}');
+      const agora = Math.floor(Date.now() / 1000);
+      const minha = PRIORIDADE_NC[quem] || 0;
+      for (const k of Object.keys(d)) {
+        if (Number(d[k]) < agora) continue;                 // marca expirada
+        if ((PRIORIDADE_NC[k] || 0) > minha) return k;
+      }
+    } catch (e) {}
+    return null;
+  }
 
   function pareceErro(msg) {
     const t = String(msg || '');
@@ -1595,7 +1643,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.07.1730';
+  const MAESTRO_VERSAO = '2026.09.07.1830';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -29959,6 +30007,20 @@ function makeColonosModule(opts) {
    * Os colonizadores são navios: viajam sozinhos, sem transportes. */
   async function enviarParaDeposito(ctx, c, partilha) {
     const log = ctx.log;
+
+    /* A ROTAÇÃO É A ÚLTIMA DA FILA.
+     *
+     * Se o fechar ilha guardou um lugar para esta conta, ou se a fundação
+     * tem onde fundar, o colonizador é deles. A rotação repete-se todos os
+     * dias; as outras duas são decisões pontuais e perdem-se se o navio for
+     * despachado. */
+    const dono = alguemQuerNC('colonos');
+    if (dono) {
+      (ctx.logRotina || log)(`Colonos: não mando colonizadores para o depósito — `
+        + `o módulo "${dono}" está à espera de um.`);
+      return 0;
+    }
+
     const alvo = depositoDaMinhaEquipa(c, partilha);
     if (!alvo) { log('Colonos: não sei qual é o depósito da minha equipa.'); return 0; }
 
@@ -33490,6 +33552,11 @@ function makeFundacaoModule(opts) {
     }
 
     const comNC = ctx.getMyTowns().filter((t) => colonizadoresEm(t.id) > 0);
+    /* A fundação também marca o colonizador como seu: sem isto, a rotação
+     * despachava-o para o depósito antes de ela o poder usar. Fica atrás do
+     * fechar ilha e à frente da rotação. */
+    querNC('fundacao', 45);
+
     if (!comNC.length) { log('Fundação: nenhuma cidade tem colonizador.'); return; }
     const t = comNC[0];
 
@@ -35435,6 +35502,11 @@ function makeFecharIlhaModule(opts) {
 
     const eu = meuNome();
     const meuLugar = plano.atribuicoes[eu];
+
+    /* Enquanto tenho lugar e não enviei, este colonizador é meu: nem a
+     * fundação nem a rotação lhe tocam. */
+    if (meuLugar != null && !plano.enviados[eu]) querNC('fecharilha', 60);
+    else jaNaoQuerNC('fecharilha');
     const souODono = plano.criadoPor === eu;
 
     /* ---- 1. O QUE ESTA CONTA TEM DE FAZER ---- */
