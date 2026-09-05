@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.07.2030
+// @version      2026.09.07.2230
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1660,7 +1660,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.07.2030';
+  const MAESTRO_VERSAO = '2026.09.07.2230';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -29045,6 +29045,10 @@ function makeMissoesModule(opts) {
       (porDecidir[base] = porDecidir[base] || []).push(m);
     }
 
+    /* As que forem escolhidas nesta passagem: o tempo delas ainda tem de ser
+     * ARRANCADO, e isso é um pedido diferente. */
+    const escolhidasAgora = [];
+
     for (const base of Object.keys(porDecidir)) {
       const variantes = porDecidir[base];
       const conf = variantes[0].configuration || {};
@@ -29066,10 +29070,57 @@ function makeMissoesModule(opts) {
         log(`📜 ${(escolhida.static_data || {}).name || base} (${cidade.name}): escolhi `
           + `${ehSabedoria(escolhida) ? 'sabedoria' : 'guerra'} — ${quantasMoedas(escolhida)} moedas, tipo ${info.tipo}.`);
         agiu++;
+        escolhidasAgora.push({ id: escolhida.progressable_id, nome:
+          (escolhida.static_data || {}).name || base, cidade });
         await ctx.sleep(ctx.rand(800, 1600));
       } else {
         log(`⚠️ ${base}: não consegui escolher (${r.msg}).`);
       }
+    }
+
+    /* ARRANCAR JÁ O TEMPO DAS QUE ACABEI DE ESCOLHER.
+     *
+     * Escolher uma variante NÃO põe o relógio a andar — isso é outro pedido, o
+     * `challenge`. O módulo tratava disso mais abaixo, mas só olhava para a
+     * lista lida no INÍCIO da passagem, onde a missão ainda não constava como
+     * a decorrer. Resultado: escolhia agora e só arrancava o tempo na
+     * passagem seguinte, uma hora depois.
+     *
+     * Visto em jogo: às 14:31 escolheu a sabedoria e não há linha nenhuma de
+     * "missão iniciada" a seguir. A missão expirou sem nunca ter arrancado.
+     *
+     * Aqui pede-se a lista outra vez e arranca-se logo o que ficou por
+     * arrancar. */
+    for (const e of escolhidasAgora) {
+      try {
+        /* A colecção do jogo actualiza-se sozinha depois da escolha — basta
+         * voltar a lê-la. */
+        const m2 = (missoes() || []).find((x) => String(x.progressable_id) === String(e.id));
+        if (!m2 || String(m2.state) !== 'running') continue;
+
+        const conf2 = m2.configuration || {};
+        const soTempo2 = Number(conf2.time_to_wait) > 0
+          && !recursosEmFalta(m2)
+          && !(unidadesPedidas(m2) || []).length
+          && !Number(conf2.count_to_rally);
+        if (!soTempo2 || jaIniciada(m2)) continue;
+
+        const mudou2 = await ctx.switchToTown(e.cidade.id);
+        if (!mudou2) continue;
+        await ctx.sleep(ctx.rand(600, 1200));
+
+        const r2 = await pedirAtaque(e.cidade.id, m2.progressable_id);
+        if (r2.ok) {
+          marcarIniciada(m2);
+          log(`⏳ ${e.nome} (${e.cidade.name}): tempo arrancado na mesma passagem `
+            + `— ${Math.round(Number(conf2.time_to_wait) / 3600)} h.`);
+        } else if (/j[áa]|already|aceite/i.test(String(r2.msg))) {
+          marcarIniciada(m2);
+        } else {
+          log(`⚠️ ${e.nome}: escolhi mas não consegui arrancar o tempo (${r2.msg}).`);
+        }
+        await ctx.sleep(ctx.rand(700, 1300));
+      } catch (e2) { seErroDeCodigo(e2, 'Missoes'); }
     }
 
     /* 2b. RECOLHER as recompensas das que já acabaram.
@@ -29178,6 +29229,27 @@ function makeMissoesModule(opts) {
         && !recursosEmFalta(m)
         && !(unidadesPedidas(m) || []).length
         && !Number(conf.count_to_rally);
+
+      /* SABER SE O RELÓGIO ESTÁ MESMO A ANDAR.
+       *
+       * O módulo confia numa marca própria: "iniciei esta, há menos de 24 h".
+       * Se o pedido de arranque falhou e a marca ficou, ou se a missão foi
+       * aceite por outra via, ele acredita que está a contar quando não está —
+       * e a missão fica parada até expirar.
+       *
+       * O jogo tem de dizer isto em algum campo. Escreve-se uma vez o objecto
+       * em bruto de uma missão de tempo a decorrer, para se saber qual é e
+       * deixar de depender da marca. */
+      if (soTempo) {
+        try {
+          const vistos = JSON.parse(armazem.getItem('grepoMissoes_vistoTempo_v1') || '{}');
+          if (!vistos[String(m.progressable_id)]) {
+            vistos[String(m.progressable_id)] = 1;
+            armazem.setItem('grepoMissoes_vistoTempo_v1', JSON.stringify(vistos));
+            log(`🔎 ${nome}: missão de tempo em bruto — ${JSON.stringify(m).slice(0, 600)}`);
+          }
+        } catch (e) { seErroDeCodigo(e, 'Missoes'); }
+      }
 
       if (soTempo && !jaIniciada(m)) {
         const mudou = await ctx.switchToTown(cidade.id);
