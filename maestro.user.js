@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.07.1230
+// @version      2026.09.07.1330
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1595,7 +1595,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.07.1230';
+  const MAESTRO_VERSAO = '2026.09.07.1330';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -34839,6 +34839,48 @@ function makeFrotaModule(opts) {
     }
 
     try { await avisarErrosNovos(ctx, estado); } catch (e) { /* nunca travar por causa de um aviso */ }
+
+    /* ============ AS CIDADES DE TODAS AS CONTAS, PARA A ESQUIVA ==========
+     *
+     * Um ataque vindo de qualquer uma das contas é para esquivar: elas
+     * avisam-se umas às outras e a tropa sai. A esquiva já sabe fazer isso,
+     * mas a lista que usava vinha do ficheiro dos colonos — só cobre as
+     * contas que lá estão, e as outras ficavam de fora sem ninguém dar por
+     * isso.
+     *
+     * O sinal de vida tem as cidades de TODAS as contas que publicam. É a
+     * lista mais completa que existe, e é esta. Escreve-se na mesma chave que
+     * os colonos usam, portanto a esquiva não precisa de saber de onde veio.
+     *
+     * De 30 em 30 minutos: as cidades não mudam de dono a cada instante, e
+     * ler a frota inteira é uma leitura grande. */
+    try {
+      const ULT = 'grepoFrota_ultimoGrupo_v1';
+      const agoraS = Math.floor(Date.now() / 1000);
+      let ultimo = 0;
+      try { ultimo = Number(armazem.getItem(ULT)) || 0; } catch (e) {}
+
+      if (agoraS - ultimo >= 1800) {
+        armazem.setItem(ULT, String(agoraS));
+        const d = await fb.ler(`frota/${mWorld}`) || {};
+        const ids = [], nomes = [];
+        for (const k of Object.keys(d)) {
+          const x = d[k];
+          if (!x || !x.inventario || !Array.isArray(x.inventario.cidades)) continue;
+          for (const cid of x.inventario.cidades) {
+            if (cid && cid.id) ids.push(Number(cid.id));
+            if (cid && cid.nome) nomes.push(String(cid.nome).trim().toLowerCase());
+          }
+        }
+        if (ids.length) {
+          armazem.setItem('grepoEsquiva_cidadesGrupo_v1', JSON.stringify({
+            ids, nomes, quando: agoraS,
+          }));
+          rotina(`Frota: ${ids.length} cidade(s) das contas conhecidas — a esquiva `
+            + 'trata qualquer ataque vindo delas como amigo.');
+        }
+      }
+    } catch (e) { seErroDeCodigo(e, 'Frota'); }
   }
 
   /* ---------------------- painel ---------------------------------------- */
