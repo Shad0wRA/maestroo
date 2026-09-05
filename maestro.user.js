@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.07.1030
+// @version      2026.09.07.1230
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1595,7 +1595,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.07.1030';
+  const MAESTRO_VERSAO = '2026.09.07.1230';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -9333,7 +9333,7 @@ function makeRecrutamentoModule(opts) {
     catch (e) { return null; }
   }
 
-  function decidirRecrutamento(alvos, tenho, emFila, recursos, reservaPct, units, adiadas, favorLivre, desconto, armazemOk, descontoUnidade, armazemPorUnidade, popReservada, deusDestaCidade, townDestaDecisao) {
+  function decidirRecrutamento(alvos, tenho, emFila, recursos, reservaPct, units, adiadas, favorLivre, desconto, armazemOk, descontoUnidade, armazemPorUnidade, popReservada, deusDestaCidade, townDestaDecisao, construcaoCumprida) {
     favorLivre = favorLivre || {};
     desconto = desconto || 0;
     if (armazemOk === undefined) armazemOk = true;
@@ -9353,7 +9353,17 @@ function makeRecrutamentoModule(opts) {
     /* Além do que falta construir, guarda-se sempre uma folga mínima: mesmo
      * com o template completo, uma cidade sem população livre não pode subir
      * nada nem reagir a mudanças no template. */
-    const FOLGA_MINIMA = 30;
+    /* A FOLGA SÓ FAZ SENTIDO ENQUANTO HOUVER O QUE CONSTRUIR.
+     *
+     * Ela existe para a cidade nunca ficar sem população livre e com todos os
+     * edifícios bloqueados. Mas numa cidade com o template de construção
+     * CUMPRIDO e tudo no máximo não há nada para subir — e a folga passa a
+     * impedir o recrutamento sem proteger coisa nenhuma.
+     *
+     * Visto em jogo na 55.13: quinta 45, armazém 35, tudo no topo, 30 de
+     * população livre e a linha "população 30 − 30 reservados = 0 < 1". A
+     * cidade nunca recrutava uma única unidade e enchia o armazém. */
+    const FOLGA_MINIMA = construcaoCumprida ? 0 : 30;
     const reservaPop = Math.max(FOLGA_MINIMA, Number(popReservada) || 0);
     popLivre = Math.max(0, popLivre - reservaPop);
 
@@ -9983,7 +9993,9 @@ function makeRecrutamentoModule(opts) {
 
           return popDaOrdemPossivel(recursos, gd.resources || {}, gd.population, 0) >= minimo;
         },
-        popParaConstruir, deusDaCidade(town.id), town.id);
+        popParaConstruir, deusDaCidade(town.id), town.id,
+        /* Template de construção cumprido? Só assim se dispensa a folga. */
+        (!!orcPop && popParaConstruir <= 0));
 
       /* Quantas acções saíram? Se for zero com unidades em falta, algo há a
        * explicar — e o diagnóstico abaixo trata disso. */
@@ -10073,7 +10085,8 @@ function makeRecrutamentoModule(opts) {
              * `popReservada` é o nome do parâmetro dentro do
              * `decidirRecrutamento`, e usá-lo aqui rebentava o diagnóstico
              * inteiro em silêncio. */
-            const reservaPop = Math.max(30, Number(popParaConstruir) || 0);
+            const semObra = !!orcPop && popParaConstruir <= 0;
+            const reservaPop = Math.max(semObra ? 0 : 30, Number(popParaConstruir) || 0);
             const popOrcamento = Math.max(0, popBruta - reservaPop);
             if (popU > popOrcamento) {
               linhas.push(`${nome}: população ${popBruta} − ${reservaPop} reservados `
@@ -13398,7 +13411,28 @@ function makeSentinelasModule(opts) {
   }
 
   /* Já lá tenho tropa? O modelo `Units` diz onde está a minha tropa. */
+  /* JÁ TENHO TROPA NESTA CIDADE ALIADA?
+   *
+   * Lia os modelos do jogo, que ficam parados durante horas — a mesma fonte
+   * que punha o "repor" do apoio a dizer que não se perdia nada. Aqui o
+   * efeito era pior: não ver a sentinela significa mandar outra, e por isso
+   * apareceram cidades aliadas com nove e doze espadachins.
+   *
+   * A verdade está na leitura da Ágora, que o núcleo mantém em cache desde
+   * ontem. Só se não houver leitura nenhuma é que se cai nos modelos — e aí
+   * vale a guarda das 12 horas, que impede o envio repetido às cegas. */
   function tenhoTropaEm(townId) {
+    try {
+      const fora = (mUw.__maestroApoioFora && mUw.__maestroApoioFora.porAlvo());
+      if (fora) {
+        const u = ((fora[Number(townId)] || {}).unidades) || {};
+        return Object.keys(u).some((k) => Number(u[k]) > 0);
+      }
+    } catch (e) { seErroDeCodigo(e, 'Sentinelas'); }
+    return tenhoTropaEmPelosModelos(townId);
+  }
+
+  function tenhoTropaEmPelosModelos(townId) {
     try {
       const mods = mUw.MM.getModels().Units || {};
       for (const k of Object.keys(mods)) {
