@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.07.2330
+// @version      2026.09.08.0030
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1660,7 +1660,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.07.2330';
+  const MAESTRO_VERSAO = '2026.09.08.0030';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -32432,6 +32432,21 @@ function makeApoioModule(opts) {
         return out;
       })();
 
+      /* SÓ SE RETIRA O QUE ESTE MÓDULO ENVIOU.
+       *
+       * Antes trazia de volta TUDO o que estivesse estacionado fora e não
+       * fosse alvo. Isso apanhava tropa que não era dele: as sentinelas, que
+       * põem espadachins em cidades aliadas, e o que puseres à mão.
+       *
+       * E explicava as sentinelas a acumular: o apoio trazia-as de volta, as
+       * sentinelas não as viam lá e mandavam outras. Andámos a tratar o
+       * sintoma no módulo errado.
+       *
+       * O registo do que foi enviado é a fonte: se não está lá, não é dele e
+       * não se lhe toca. O apoio anterior a este registo tem de ser trazido à
+       * mão uma vez — é o preço de deixar de mexer no que não é seu. */
+      const enviadoPorMim = new Set(Object.keys(lerEnviado()).map(Number));
+
       const naLista = new Set(alvos);
       const ondeTenho = new Set();
       const mods = mUw.MM.getModels().Units || {};
@@ -32442,12 +32457,21 @@ function makeApoioModule(opts) {
         if (!mUw.ITowns.towns[casa]) continue;
         if ((Number(a.colonize_ship) || 0) > 0) continue;   // é da rotação
         if (naLista.has(onde) || doColonos.has(onde)) continue;
+        if (!enviadoPorMim.has(onde)) continue;             // não fui eu que o pus lá
         ondeTenho.add(onde);
       }
 
       for (const cidade of ondeTenho) {
         const n = await retirarApoio(ctx, cidade);
-        if (n) log(`↩️ Apoio: ${cidade} já não está na lista — ${n} comando(s) a voltar.`);
+        if (n) {
+          log(`↩️ Apoio: ${cidade} já não está na lista — ${n} comando(s) a voltar.`);
+          /* Saiu de lá: o registo deixa de ter razão de ser. */
+          try {
+            const reg2 = lerEnviado();
+            delete reg2[String(cidade)];
+            gravarEnviado(reg2);
+          } catch (e) { seErroDeCodigo(e, 'Apoio'); }
+        }
       }
     } catch (e) { seErroDeCodigo(e, 'Apoio'); }
 
