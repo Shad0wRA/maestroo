@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.07.1630
+// @version      2026.09.07.1730
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1595,7 +1595,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.07.1630';
+  const MAESTRO_VERSAO = '2026.09.07.1730';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -35416,6 +35416,18 @@ function makeFecharIlhaModule(opts) {
 
     const plano = await lerPlano();
     if (!plano || !plano.atribuicoes) { rotina('Fechar ilha: não há plano nenhum.'); return; }
+
+    /* O FIREBASE NÃO GUARDA OBJECTOS VAZIOS.
+     *
+     * O plano é gravado com `prontos: {}` e `enviados: {}`, e volta sem eles —
+     * a chave simplesmente não existe. Ler `plano.prontos[eu]` rebentava logo
+     * na primeira passagem, antes de alguém se ter declarado pronto:
+     * "Cannot read properties of undefined".
+     *
+     * Repõem-se aqui, uma vez, para o resto do módulo não ter de andar a
+     * verificar em cada linha. */
+    plano.prontos = plano.prontos || {};
+    plano.enviados = plano.enviados || {};
     if (plano.estado === 'abortado' || plano.estado === 'feito') {
       rotina(`Fechar ilha: o plano de ${plano.chave} está ${plano.estado}.`);
       return;
@@ -35575,12 +35587,14 @@ function makeFecharIlhaModule(opts) {
       if (!alvo) return;
       const p = await lerPlano();
       if (!p || !p.atribuicoes) { alvo.textContent = 'Não há plano nenhum.'; return; }
+      const prontos = p.prontos || {};
+      const enviados = p.enviados || {};
       const nomes = Object.keys(p.atribuicoes);
       const linhas = nomes.map((n) => `<tr>
           <td style="padding:2px 4px">${esc(n)}</td>
           <td style="padding:2px 4px;text-align:center">lugar ${p.atribuicoes[n]}</td>
-          <td style="padding:2px 4px">${p.enviados[n] ? '🏛️ enviado'
-            : (p.prontos[n] ? '✅ pronto' : '⏳ à espera')}</td>
+          <td style="padding:2px 4px">${enviados[n] ? '🏛️ enviado'
+            : (prontos[n] ? '✅ pronto' : '⏳ à espera')}</td>
         </tr>`).join('');
       alvo.innerHTML = `
         <div style="margin-bottom:4px">
