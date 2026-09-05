@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.07.1830
+// @version      2026.09.07.2030
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -149,6 +149,23 @@
         linhas.forEach((l) => console.log(l));
       }
       return '';
+    };
+  } catch (e) {}
+
+  /* ACORDAR UM MÓDULO JÁ.
+   *
+   * Serve para quem espera por alguma coisa que outro módulo produz — o favor
+   * é o caso: entrava e ficava parado até à passagem seguinte de quem o
+   * pediu. Põe a próxima passagem daqui a poucos segundos, com um desvio para
+   * não ficarem todos ao mesmo tempo. */
+  try {
+    uw.__maestroAcordar = (modId) => {
+      try {
+        const st = modState[modId];
+        if (!st || !st.ativo) return false;
+        st.proximaExec = Date.now() + 3000 + Math.floor(Math.random() * 7000);
+        return true;
+      } catch (e) { return false; }
     };
   } catch (e) {}
 
@@ -1643,7 +1660,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.07.1830';
+  const MAESTRO_VERSAO = '2026.09.07.2030';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -18860,6 +18877,22 @@ function makeDeusesModule(opts) {
     return out;
   }
 
+  /* OS PEDIDOS DE FAVOR, escritos por quem precisa.
+   *
+   * Os feitiços pedem quando lhes falta para uma tempestade; o recrutamento
+   * pede quando quer um voador. Vale duas horas: um pedido velho já não diz
+   * nada sobre o que é preciso agora. */
+  function pedidoDe(deus) {
+    if (!deus) return null;
+    try {
+      const p = JSON.parse(localStorage.getItem(chavePorPerfil('grepoFavor_pedidos_v1')) || '{}');
+      const e = p[String(deus)];
+      if (!e || !(e.quanto > 0)) return null;
+      if ((Math.floor(Date.now() / 1000) - Number(e.quando || 0)) > 2 * 3600) return null;
+      return e;
+    } catch (e) { return null; }
+  }
+
   function deusDa(townId) {
     try {
       const t = mUw.ITowns.getTown(Number(townId));
@@ -20183,12 +20216,61 @@ function makeDeusesModule(opts) {
       const resumo = Object.keys(aCaminhoPorDeus)
         .map((d2) => `${NOMES[d2] || d2} +${aCaminhoPorDeus[d2]}`).join(', ');
       if (resumo) (ctx.logRotina || ctx.log)(`Farm: já vem a caminho ${resumo}.`);
+
+      /* PEDIDO SERVIDO: apagar e acordar quem pediu.
+       *
+       * O favor entrava e ficava parado até à passagem do módulo que o pediu
+       * — cinco minutos, vinte, o que calhasse. Enquanto está parado, a
+       * produção da multi continua a encher e o roubo seguinte rende menos.
+       *
+       * Assim que o que foi pedido já cá está, o pedido sai da lista e o
+       * módulo é acordado para o gastar. */
+      try {
+        const pend = JSON.parse(localStorage.getItem(chavePorPerfil('grepoFavor_pedidos_v1')) || '{}');
+        let mudou = false;
+        for (const d2 of Object.keys(pend)) {
+          const tem = (Number(favores[d2]) || 0);
+          if (tem >= (Number(pend[d2].quanto) || 0)) {
+            delete pend[d2]; mudou = true;
+            (ctx.logRotina || ctx.log)(`Farm: ${NOMES[d2] || d2} já tem o que foi pedido.`);
+          }
+        }
+        if (mudou) {
+          localStorage.setItem(chavePorPerfil('grepoFavor_pedidos_v1'), JSON.stringify(pend));
+          try {
+            const acorda = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroAcordar;
+            if (acorda) { acorda('feiticos'); acorda('recrutamento'); }
+          } catch (e) {}
+        }
+      } catch (e) { seErroDeCodigo(e, 'Deuses'); }
     } catch (e) {}
 
-    for (const t of towns) {
+    /* Primeiro as cidades dos deuses que alguém pediu, e dentro dessas as de
+     * pedido maior. O resto fica pela ordem do costume. */
+    const ordenadas = towns.slice().sort((a2, b2) => {
+      const pa = pedidoDe(deusDa(a2.id));
+      const pb = pedidoDe(deusDa(b2.id));
+      return (pb ? pb.quanto : 0) - (pa ? pa.quanto : 0);
+    });
+
+    for (const t of ordenadas) {
       if (!farm[t.id]) continue;
       const deus = deusDa(t.id);
       if (!deus) continue;
+
+      /* ALGUÉM PEDIU FAVOR DESTE DEUS?
+       *
+       * O farm roubava por encher: olhava para o tecto e ia buscar o que
+       * faltava, sem saber para quê. Se os feitiços precisavam de 280 de
+       * Poseidon para uma tempestade, ou o recrutamento de favor de Hera para
+       * um voador, ele não fazia ideia — enchia Ártemis porque calhou estar
+       * mais vazia.
+       *
+       * Os pedidos já eram escritos por quem precisa; faltava alguém lê-los.
+       * Um pedido faz duas coisas: põe este deus à frente na ordem dos
+       * ataques, e levanta o limiar — vale a pena atacar mesmo com favor
+       * acima do normal, se o que foi pedido ainda não está lá. */
+      const pedido = pedidoDe(deus);
 
       /* O FAVOR QUE JÁ VEM A CAMINHO CONTA.
        *
@@ -20203,7 +20285,8 @@ function makeDeusesModule(opts) {
        * o mandou. Somando isso ao que já cá está, sabe-se o favor com que a
        * conta vai ficar — e é contra esse que se decide. */
       const favor = (Number(favores[deus]) || 0) + (aCaminhoPorDeus[deus] || 0);
-      if (favor >= limiar) continue;                 // ainda tem favor que chegue
+      const limiarAqui = pedido ? Math.max(limiar, pedido.quanto) : limiar;
+      if (favor >= limiarAqui) continue;             // ainda tem favor que chegue
 
       /* QUANTOS ENVIAR.
        * Cada enviado rouba `porEnviado` (5 por omissão). O que interessa é
