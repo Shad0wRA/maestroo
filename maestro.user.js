@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.08.0930
+// @version      2026.09.08.1130
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1675,7 +1675,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.08.0930';
+  const MAESTRO_VERSAO = '2026.09.08.1130';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -2174,6 +2174,21 @@
 
   const CHAVES_LOCAIS_DO_PERFIL = [
     'grepoFundacao_estado_v1',      // o que ESTA conta enviou
+
+    /* APRENDIZAGENS E REGISTOS DE CADA CONTA.
+     *
+     * Todas estas são descobertas ou marcas de UMA conta. Replicadas, uma
+     * conta herda o que a outra aprendeu: a fábrica julga que já encomendou
+     * onde não encomendou, o farm julga saber um mínimo de ataque que é de
+     * outra cidade, a fundação salta ilhas com base no tamanho medido noutro
+     * sítio. É o mesmo erro que já apanhámos com o registo do apoio e com o
+     * histórico da frota. */
+    'grepoDeuses_minimoAtaque_v1',    // o mínimo de habitantes que o jogo exigiu, por cidade
+    'grepoFundacao_tamanhoIlhas_v1',  // tamanho das ilhas que ESTA conta mediu
+    'grepoFabricaNC_ordens_v1',       // ordens de colonizador que ESTA conta fez
+    'grepoFrota_ultimoGrupo_v1',      // quando ESTA conta releu a lista das contas
+    'grepoFavor_pedidos_v1',          // quem, NESTA conta, está à espera de favor
+    'grepoMissoes_vistoTempo_v1',     // missões cujo objecto já foi despejado aqui
     /* A configuração dos colonizadores JÁ NÃO fica toda local: as bases e o
      * modo são partilhados, para bastar mudá-los numa conta. Só a EQUIPA é de
      * cada conta — ver `CAMPOS_LOCAIS_DOS_COLONOS`. */
@@ -10214,6 +10229,9 @@ function makeRecrutamentoModule(opts) {
           }
           if (linhas.length) {
             rotina(`${town.name} [porque não recruta]: ${linhas.slice(0, 4).join(' · ')}`);
+            /* Também no registo por cidade, para o `__maestroPorque()`
+             * responder sem ser preciso ler a rotina toda. */
+            try { registarPorque('recrutamento', town.name, linhas.join(' · ')); } catch (e) {}
           } else {
             /* NEM UMA RAZÃO?
              *
@@ -10608,7 +10626,10 @@ function makeRecrutamentoModule(opts) {
               try {
                 const p = JSON.parse(armazem.getItem(PEDIDOS_KEY) || '{}');
                 const lista = p[`${town.id}|${u}`] || [];
-                const limite = Date.now() - 30 * 60 * 1000;   // meia hora
+                /* Oito horas, como o resto do registo de pedidos: uma ordem
+                 * grande demora isso a sair, e com meia hora o aviso perdia
+                 * de vista o pedido que lhe deu origem. */
+                const limite = Date.now() - 8 * 3600 * 1000;
                 return lista.some((x) => Number(x.t) > limite);
               } catch (e) { return true; }   // na dúvida, avisar
             })();
@@ -19329,6 +19350,7 @@ function makeDeusesModule(opts) {
       const favorAqui = Number(favores[atual]) || 0;
       if (favorAqui >= c.limiteFavor) {
         poupadas++;
+        try { registarPorque('deuses', t.name, `não roda: favor de ${NOMES[atual] || atual} em ${favorAqui}`); } catch (e) {}
         tenhoExtra[atual] = (tenhoExtra[atual] || 0) + 1;   // fica onde está
         continue;
       }
@@ -32810,6 +32832,7 @@ function makeApoioModule(opts) {
           if (semTropa) {
             rotina(`${t.name} → ${alvo}: sem tropa disponível agora.`);
             semTropaNestaRonda.add(Number(t.id));
+            try { registarPorque('apoio', t.name, `sem tropa para ${alvo}`); } catch (e) {}
           } else {
             log(`⚠️ ${t.name} → ${alvo}: ${r.msg}`);
           }
