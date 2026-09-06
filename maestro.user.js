@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.08.0430
+// @version      2026.09.08.0530
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1675,7 +1675,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.08.0430';
+  const MAESTRO_VERSAO = '2026.09.08.0530';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -33955,8 +33955,18 @@ function makeFundacaoModule(opts) {
        * cidades na mesma ilha, que concentra o risco: um ataque à ilha apanha
        * as duas. */
       if (c.umaPorIlha) {
-        const jaTenho = (ctx.getMyTowns() || []).some(
-          (x) => Number(x.ix) === Number(ilha.x) && Number(x.iy) === Number(ilha.y));
+        /* AS COORDENADAS NÃO VÊM DO `getMyTowns`.
+         *
+         * Ele devolve só `id` e `name` — o `ix` e o `iy` são sempre
+         * indefinidos. A comparação dava NaN contra número, nunca era
+         * verdadeira, e a opção "uma cidade por ilha" nunca travou nada:
+         * fundava-se ao lado de cidades que já lá estavam.
+         *
+         * O `ilhaDe` lê as coordenadas ao próprio jogo, que é onde elas
+         * estão. Há um comentário noutro sítio deste módulo a avisar
+         * exactamente disto — escapou aqui. */
+        const alvoIlha = `${Number(ilha.x)}:${Number(ilha.y)}`;
+        const jaTenho = (ctx.getMyTowns() || []).some((x) => ilhaDe(x.id) === alvoIlha);
         if (jaTenho) {
           log(`— ${chave}: já tenho uma cidade nesta ilha; salto.`);
           continue;
