@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.08.0330
+// @version      2026.09.08.0430
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1425,13 +1425,28 @@
   }
 
   // ---- utilidades de jogo partilhadas ----
+  /* AS MINHAS CIDADES.
+   *
+   * O `getTown` devolve `undefined` para uma chave que esteja a meio de uma
+   * actualização — uma cidade acabada de conquistar ou de perder. Ler
+   * `t.getName` nesse instante rebenta, e como tudo isto estava dentro de um
+   * `try` só, a lista INTEIRA vinha vazia: os módulos ficavam sem cidades
+   * nenhumas e não faziam nada. Apareceu no Discord em dois módulos ao mesmo
+   * tempo, que é o sinal de ser uma peça partilhada.
+   *
+   * Agora salta-se a cidade que falha e devolve-se o resto. */
   function getMyTowns() {
+    const out = [];
     try {
-      return Object.keys(uw.ITowns.towns).map((id) => {
-        const t = uw.ITowns.getTown(Number(id));
-        return { id: Number(id), name: t.getName ? t.getName() : String(id) };
-      });
-    } catch (e) { return []; }
+      for (const id of Object.keys(uw.ITowns.towns)) {
+        try {
+          const t = uw.ITowns.getTown(Number(id));
+          if (!t) continue;
+          out.push({ id: Number(id), name: t.getName ? t.getName() : String(id) });
+        } catch (e) { /* uma cidade a meio de mudar de mãos: passa à frente */ }
+      }
+    } catch (e) {}
+    return out;
   }
   /* ESTOU A PREPARAR UM ENCAIXE?
    *
@@ -1660,7 +1675,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.08.0330';
+  const MAESTRO_VERSAO = '2026.09.08.0430';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -35974,9 +35989,12 @@ function makeFecharIlhaModule(opts) {
         mUw = janela();
         mWorld = String(mUw.Game.world_id || '');
         const ctxFalso = {
-          getMyTowns: () => Object.keys(mUw.ITowns.towns).map((id) => ({
-            id: Number(id), name: mUw.ITowns.getTown(Number(id)).getName(),
-          })),
+          /* Mesma armadilha do núcleo: uma cidade pode não resolver. */
+          getMyTowns: () => Object.keys(mUw.ITowns.towns).map((id) => {
+            let nome = String(id);
+            try { nome = mUw.ITowns.getTown(Number(id)).getName(); } catch (e) {}
+            return { id: Number(id), name: nome };
+          }),
         };
         return await criarPlano(ctxFalso, Number(x), Number(y));
       } catch (e) { return { ok: false, msg: e.message }; }
