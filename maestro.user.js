@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.08.0630
+// @version      2026.09.08.0930
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1675,7 +1675,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.08.0630';
+  const MAESTRO_VERSAO = '2026.09.08.0930';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -8466,13 +8466,26 @@ function makeRecrutamentoModule(opts) {
     gravarPedidos(p);
   }
 
+  /* O QUE JÁ FOI PEDIDO E AINDA NÃO CHEGOU.
+   *
+   * A janela era de CINCO MINUTOS. Uma ordem de espadachins demora horas, e a
+   * colecção `UnitOrder` do jogo só traz as ordens da cidade ACTIVA — para
+   * todas as outras, a fila lida vem vazia. Resultado: passados cinco
+   * minutos, o módulo esquecia o que tinha encomendado, via 54 em casa contra
+   * um alvo de 90, e encomendava outra vez. Visto na 34.1: três ordens de
+   * espadachins na fila, 36 + 63 + 63, para um alvo de 90.
+   *
+   * A janela passa a cobrir a produção — oito horas, que chega para as
+   * ordens grandes. O risco é o contrário: se uma ordem for cancelada à mão,
+   * o módulo conta-a como existente durante esse tempo. É bem menos mau do
+   * que triplicar a tropa. */
   function pedidoRecente(townId, unitId) {
     const p = lerPedidos();
     const k = `${townId}|${unitId}`;
     const lista = p[k];
     if (!lista || !lista.length) return 0;
 
-    const limite = Date.now() - 5 * 60 * 1000;
+    const limite = Date.now() - 8 * 3600 * 1000;
     const vivos = lista.filter((x) => Number(x.t) > limite);
     if (vivos.length !== lista.length) {
       if (vivos.length) p[k] = vivos; else delete p[k];
@@ -11663,13 +11676,22 @@ function makeHeroisModule(opts) {
       let melhor = null;
       for (const id of candidatas) {
         /* Já tem uma ordem a decorrer? Então está ocupada. */
+        /* A colecção `UnitOrder` só traz as ordens da cidade ACTIVA, portanto
+         * isto respondia sempre zero para as outras — o Argus podia ser
+         * mandado para uma cidade que já tinha um colonizador a sair, onde
+         * não serve de nada.
+         *
+         * Só se salta a cidade quando se SABE que tem ordem. Para as outras,
+         * segue-se em frente como antes: é melhor arriscar uma viagem a mais
+         * do que nunca mover o herói. */
         let naFila = 0;
         try {
           const col = mUw.MM.getCollections().UnitOrder;
-          naFila = ((col && col[0] && col[0].models) || []).filter((m) => {
-            const a = m.attributes || {};
-            return Number(a.town_id) === Number(id) && a.unit_type === 'colonize_ship';
-          }).length;
+          const models = (col && col[0] && col[0].models) || [];
+          const daCidade = models.filter((m) => Number((m.attributes || {}).town_id) === Number(id));
+          if (daCidade.length || Number(mUw.Game.townId) === Number(id)) {
+            naFila = daCidade.filter((m) => (m.attributes || {}).unit_type === 'colonize_ship').length;
+          }
         } catch (e) { seErroDeCodigo(e, 'Herois'); }
         if (naFila) continue;
 
@@ -12104,12 +12126,19 @@ function makeHeroisModule(opts) {
           if (typeof a[u] === 'number' && !['id', 'home_town_id', 'current_town_id'].includes(u)) acc[u] = (acc[u] || 0) + a[u];
         }
       }
+      /* ATENÇÃO: esta colecção só tem as ordens da cidade ACTIVA.
+       *
+       * As filas das outras cidades vêm vazias — não é que estejam vazias, é
+       * que não se sabem. Quem usa isto tem de contar com o zero poder
+       * significar "desconhecido", e não "nada a produzir". Deixa-se o que
+       * se sabe e nada mais; inventar seria pior. */
       const uo = (mUw.MM.getCollections().UnitOrder || [])[0];
       for (const m of ((uo && uo.models) || [])) {
         const a = m.attributes || {};
         const acc = filasPorCidade[a.town_id] = filasPorCidade[a.town_id] || {};
         acc[a.unit_type] = (acc[a.unit_type] || 0) + (a.units_left != null ? a.units_left : a.count || 0);
       }
+      filasPorCidade.__soDaCidadeAtiva = Number(mUw.Game.townId) || 0;
     } catch (e) { log('Rotação: não consegui ler os alvos de recrutamento.'); return; }
 
     // dados para os heróis de CONSTRUÇÃO
@@ -14234,13 +14263,56 @@ function makeFabricaNCModule(opts) {
     } catch (e) { return null; }
   }
 
+  /* JÁ HÁ UM COLONIZADOR A SER FEITO NESTA CIDADE?
+   *
+   * A colecção `UnitOrder` só traz as ordens da cidade ACTIVA. Filtrá-la por
+   * `town_id` de outra cidade devolve sempre vazio — ou seja, a resposta era
+   * sempre "não" para todas menos uma. A fábrica escolhia para juntar
+   * recursos cidades que já tinham um colonizador a caminho, e podia mandar
+   * outra ordem por cima.
+   *
+   * É a mesma armadilha que fez o recrutamento encomendar 162 espadachins
+   * para um alvo de 90.
+   *
+   * A colecção continua a valer para a cidade activa, que é verdade fresca.
+   * Para as outras usa-se o registo do que ESTA fábrica encomendou, com
+   * validade larga — um colonizador demora horas a sair. */
+  const ORDENS_KEY = 'grepoFabricaNC_ordens_v1';
+  const VALIDADE_ORDEM = 8 * 3600 * 1000;
+
+  function anotarOrdemNC(townId) {
+    try {
+      const d = JSON.parse(armazem.getItem(ORDENS_KEY) || '{}');
+      d[String(townId)] = Date.now();
+      armazem.setItem(ORDENS_KEY, JSON.stringify(d));
+    } catch (e) {}
+  }
+
   function temOrdemDeNC(townId) {
+    /* 1) A colecção, que só sabe da cidade activa mas é a verdade quando sabe. */
     try {
       const col = mUw.MM.getCollections().UnitOrder;
-      return ((col && col[0] && col[0].models) || []).some((m) => {
-        const a = m.attributes || {};
-        return Number(a.town_id) === Number(townId) && a.unit_type === NC;
-      });
+      const models = (col && col[0] && col[0].models) || [];
+      const daCidade = models.filter((m) => Number((m.attributes || {}).town_id) === Number(townId));
+      if (daCidade.length) {
+        return daCidade.some((m) => (m.attributes || {}).unit_type === NC);
+      }
+      /* Sem ordens desta cidade na colecção há duas hipóteses: ou não tem
+       * nenhuma, ou não é a activa. Se for a activa, o vazio é verdadeiro. */
+      if (Number(mUw.Game.townId) === Number(townId)) return false;
+    } catch (e) { seErroDeCodigo(e, 'FabricaNC'); }
+
+    /* 2) O que esta fábrica encomendou e ainda deve estar a sair. */
+    try {
+      const d = JSON.parse(armazem.getItem(ORDENS_KEY) || '{}');
+      const quando = Number(d[String(townId)]) || 0;
+      if (!quando) return false;
+      if (Date.now() - quando > VALIDADE_ORDEM) {
+        delete d[String(townId)];
+        armazem.setItem(ORDENS_KEY, JSON.stringify(d));
+        return false;
+      }
+      return true;
     } catch (e) { return false; }
   }
 
@@ -14791,6 +14863,9 @@ function makeFabricaNCModule(opts) {
 
     const r2 = await recrutarNC(alvo.id, cabem);
     if (r2.ok) {
+      /* Fica registado: a colecção do jogo não mostra esta ordem quando a
+       * cidade deixar de ser a activa, e sem isto voltava-se a escolhê-la. */
+      anotarOrdemNC(alvo.id);
       log(`🚢 ${alvo.name}: ordem de ${cabem} colonizador(es) ${etiqueta}.`);
 
       /* ---- 5. PASSAR À SEGUINTE ---- */
@@ -24860,13 +24935,25 @@ function makeTrocaCidadesModule(opts) {
     minEnvio: 500,
   };
 
-  /* A fila de construção está cheia? São sete lugares. */
+  /* A FILA DE CONSTRUÇÃO ESTÁ CHEIA? São sete lugares.
+   *
+   * A colecção `BuildingOrder` só traz a fila da cidade ACTIVA. Filtrá-la por
+   * outra cidade dava sempre zero, portanto a resposta era sempre "não está
+   * cheia" — e a regra que distingue uma cidade PARADA COM A FILA CHEIA de
+   * uma acabada nunca chegou a disparar. As duas guardavam o mesmo.
+   *
+   * Só se responde quando se sabe: para a cidade activa, a colecção manda;
+   * para as outras, devolve-se `null`, que quer dizer "não sei". Quem chama
+   * trata o não-sei como não-cheia, que era o comportamento antigo, mas agora
+   * é uma escolha explícita e não um engano. */
   function filaDeConstrucaoCheia(townId) {
     try {
       const col = mUw.MM.getCollections().BuildingOrder;
-      const n = ((col && col[0] && col[0].models) || [])
-        .filter((m) => Number((m.attributes || {}).town_id) === Number(townId)).length;
-      return n >= 7;
+      const models = (col && col[0] && col[0].models) || [];
+      const daCidade = models.filter((m) => Number((m.attributes || {}).town_id) === Number(townId));
+      if (daCidade.length) return daCidade.length >= 7;
+      if (Number(mUw.Game.townId) === Number(townId)) return false;   // activa e vazia
+      return null;                                                     // não sei
     } catch (e) { return false; }
   }
 
@@ -25355,7 +25442,7 @@ function makeTrocaCidadesModule(opts) {
        * esvaziar, por isso guarda mais. Mas entretanto continua a farmar, e
        * a fila são sete lugares — dá tempo de sobra para recuperar. */
       const aindaPrecisa = temTrabalhoPendente(t.id, res);
-      if (aindaPrecisa && !filaDeConstrucaoCheia(t.id)) continue;   // ainda usa o que tem
+      if (aindaPrecisa && filaDeConstrucaoCheia(t.id) !== true) continue;   // ainda usa o que tem
 
       /* Reserva EM RECURSOS para a tropa que ainda cabe na população.
        *
@@ -25364,7 +25451,9 @@ function makeTrocaCidadesModule(opts) {
        * guarda exactamente o que vai gastar e manda o resto. */
       const guardarTropa = guardarParaTropa(t.id, res);
 
-      const deixar = filaDeConstrucaoCheia(t.id) ? c.deixarParada : c.deixarCumprida;
+      /* `null` é "não sei" — trata-se como não cheia, que era o que acontecia
+       * antes, mas agora de propósito. */
+      const deixar = (filaDeConstrucaoCheia(t.id) === true) ? c.deixarParada : c.deixarCumprida;
       const limiar = 0;   // não se exige armazém nenhum: se pode dar, dá
 
       /* NÃO excluir por ter obras na fila.
