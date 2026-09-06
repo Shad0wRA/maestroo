@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.08.0230
+// @version      2026.09.08.0330
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1660,7 +1660,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.08.0230';
+  const MAESTRO_VERSAO = '2026.09.08.0330';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -8780,14 +8780,21 @@ function makeRecrutamentoModule(opts) {
    * ====================================================================== */
 
   // Favor atual de cada deus (PlayerGods: zeus_favor, hera_favor, ...).
+  /* Mesmo erro que no módulo dos deuses: o favor vive no
+   * `production_overview.<deus>.current`, e não em `<deus>_favor`. Aqui o
+   * efeito era o recrutamento achar que nunca havia favor para voadores. */
   function favorPorDeus() {
     const out = {};
+    const TODOS = ['zeus', 'poseidon', 'hera', 'athena', 'hades', 'artemis', 'aphrodite', 'ares'];
+    TODOS.forEach((d) => { out[d] = 0; });
     try {
       const g = mUw.MM.getModels().PlayerGods;
       const k = Object.keys(g)[0];
-      const a = g[k].attributes || {};
-      ['zeus', 'poseidon', 'hera', 'athena', 'hades', 'artemis', 'aphrodite', 'ares'].forEach((d) => {
-        out[d] = Math.floor(Number(a[d + '_favor']) || 0);
+      const a = (g[k] || {}).attributes || {};
+      const prod = a.production_overview || {};
+      TODOS.forEach((d) => {
+        const v = (prod[d] && prod[d].current != null) ? prod[d].current : a[d + '_favor'];
+        out[d] = Math.floor(Number(v) || 0);
       });
     } catch (e) { seErroDeCodigo(e, 'Recrutamento'); }
     return out;
@@ -18866,14 +18873,31 @@ function makeDeusesModule(opts) {
   }
 
   /* ---------------------- leitura do jogo ------------------------------- */
+  /* O FAVOR ESTÁ NO `production_overview`, NÃO EM `<deus>_favor`.
+   *
+   * Lia-se `a.zeus_favor`, que não existe — dava sempre zero para todos os
+   * deuses. O farm acreditava que estava tudo vazio e atacava sempre, mesmo
+   * com o favor no tecto: viu-se a 34.1 a tentar em cada passagem com o Zeus
+   * a 500 e o limiar em 350.
+   *
+   * O campo verdadeiro é `production_overview.<deus>.current`, confirmado em
+   * jogo. Fica o antigo como recurso, para o caso de haver mundos que ainda o
+   * usem. */
   function favorPorDeus() {
     const out = {};
+    DEUSES.forEach((d) => { out[d] = 0; });
     try {
       const g = mUw.MM.getModels().PlayerGods;
       const k = Object.keys(g)[0];
-      const a = g[k].attributes || {};
-      DEUSES.forEach((d) => { out[d] = Math.floor(Number(a[d + '_favor']) || 0); });
-    } catch (e) { DEUSES.forEach((d) => (out[d] = 0)); }
+      const a = (g[k] || {}).attributes || {};
+      const prod = a.production_overview || {};
+      DEUSES.forEach((d) => {
+        const v = (prod[d] && prod[d].current != null)
+          ? prod[d].current
+          : a[d + '_favor'];
+        out[d] = Math.floor(Number(v) || 0);
+      });
+    } catch (e) { seErroDeCodigo(e, 'Deuses'); }
     return out;
   }
 
