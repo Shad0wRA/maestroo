@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.08.0530
+// @version      2026.09.08.0630
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1675,7 +1675,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.08.0530';
+  const MAESTRO_VERSAO = '2026.09.08.0630';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -35819,14 +35819,34 @@ function makeFecharIlhaModule(opts) {
            * A ilha tem vinte lugares e o que interessa é fundar nela, não
            * naquele em concreto. Procura-se outro livre que não esteja
            * atribuído a ninguém que ainda tenha de enviar. */
-          if (!r.ok && /j[áa] est[áa] a ser utilizado|already/i.test(String(r.msg || ''))) {
+          /* Qualquer recusa sobre o LUGAR — ocupado ou inválido — leva a
+           * tentar outro. O jogo tem mais do que uma maneira de dizer que
+           * aquele não serve, e a primeira versão só conhecia uma: ficou a
+           * insistir no lugar 10 de dois em dois minutos com "Não escolheu
+           * uma posição válida". */
+          if (!r.ok && /j[áa] est[áa] a ser utilizado|already|posi[çc][ãa]o v[áa]lida|invalid/i
+            .test(String(r.msg || ''))) {
             const ilha2 = await estadoDaIlha(plano.x, plano.y, cidade);
             const reservados = new Set(Object.keys(plano.atribuicoes)
               .filter((n) => n !== eu && !plano.enviados[n])
               .map((n) => Number(plano.atribuicoes[n])));
             const alternativa = ilha2.livres.find((n) => !reservados.has(Number(n)));
 
-            if (alternativa == null) {
+            /* Quantas vezes já se tentou. Sem um tecto, uma recusa que não se
+             * resolve com outro lugar repetia-se para sempre. */
+            plano.tentativas = plano.tentativas || {};
+            plano.tentativas[eu] = (Number(plano.tentativas[eu]) || 0) + 1;
+
+            log(`Fechar ilha: lugares livres em ${plano.chave}: `
+              + `${ilha2.livres.join(', ') || 'nenhum'} (tentativa ${plano.tentativas[eu]}).`);
+
+            if (plano.tentativas[eu] >= 4) {
+              plano.falhados = plano.falhados || {};
+              plano.falhados[eu] = `4 tentativas sem sucesso (${r.msg})`;
+              await gravarPlano(plano);
+              log(`⚠️ Fechar ilha: quatro lugares recusados em ${plano.chave} — desisto. `
+                + 'Vê o painel do módulo para encerrar ou recomeçar o plano.');
+            } else if (alternativa == null) {
               plano.falhados = plano.falhados || {};
               plano.falhados[eu] = 'sem lugares livres';
               await gravarPlano(plano);
