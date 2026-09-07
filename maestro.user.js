@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.08.1630
+// @version      2026.09.08.1730
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1675,7 +1675,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.08.1630';
+  const MAESTRO_VERSAO = '2026.09.08.1730';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -27051,6 +27051,23 @@ function makeEncaixeModule(opts) {
    *
    * Os três eventos são de propósito: consoante a interface, o jogo ouve o
    * `input`, o `change` ou o `keyup`. */
+  /* TRAVA CONTRA O CICLO.
+   *
+   * Medir as composições ESCREVE nos campos. O painel vigia os campos de meio
+   * em meio segundo e, ao ver mudanças, volta a medir — que escreve outra vez.
+   * Resultado: unidades a serem postas e tiradas sem fim, com a janela de
+   * envio aberta. Foi o que aconteceu na 1630.
+   *
+   * Enquanto esta trava estiver levantada, o vigilante não faz nada e limita-se
+   * a tomar nota do que vê, para o estado reposto no fim não contar como uma
+   * mudança nova. */
+  let medindoCombos = false;
+
+  /* E não se mede a toda a hora: entre medições, pelo menos este tempo. Cada
+   * medição escreve nos campos várias vezes e demora segundos. */
+  let ultimaMedicao = 0;
+  const ESPERA_ENTRE_MEDICOES = 10000;
+
   function escreverUnidades(mapa) {
     try {
       document.querySelectorAll('input.unit_input[name]').forEach((el) => {
@@ -28036,6 +28053,10 @@ function makeEncaixeModule(opts) {
       /* ASSÍNCRONA: as combinações são MEDIDAS na janela do jogo, uma a uma,
        * com meio segundo entre cada para ele recalcular. */
       const mostrarCombos = async () => {
+        if (medindoCombos) return;         // já está uma medição a correr
+        medindoCombos = true;
+        ultimaMedicao = Date.now();
+        try {
         try {
           const el = box.querySelector('#encj-combos');
           if (!el) return;
@@ -28114,6 +28135,11 @@ function makeEncaixeModule(opts) {
           const bt = el.querySelector('#encj-combos-go');
           if (bt) bt.onclick = () => agendarCombos(combos, chegada);
         } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
+        } finally {
+          /* A trava cai sempre, mesmo que a medição rebente a meio — senão o
+           * painel ficava mudo para sempre. */
+          medindoCombos = false;
+        }
       };
 
       mostrarTolerancia();
@@ -28126,7 +28152,7 @@ function makeEncaixeModule(opts) {
         ['#encj-h', '#encj-m', '#encj-s', '#encj-dia'].forEach((sel) => {
           const el = box.querySelector(sel);
           if (!el) return;
-          el.addEventListener('input', mostrarCombos);
+          el.addEventListener('input', () => { mostrarCombos().catch(() => {}); });
           el.addEventListener('change', mostrarCombos);
         });
       } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
@@ -28160,11 +28186,22 @@ function makeEncaixeModule(opts) {
               agora2 += sel + '=' + (el ? el.value : '') + ';';
             });
 
+            /* A MEDIR: não fazer nada, mas tomar nota do que está nos campos.
+             * Assim, quando a medição acabar e repuser o que tu tinhas, isso
+             * não conta como uma mudança tua e não volta a disparar. */
+            if (medindoCombos) { ultimo = agora2; return; }
+
             if (agora2 === ultimo) return;
             ultimo = agora2;
             mostrarTolerancia();
             mostrarCarga();
-            mostrarCombos().catch(() => {});
+
+            /* As combinações são caras: escrevem nos campos e esperam pelo
+             * jogo. Uma vez de dez em dez segundos chega — as outras
+             * actualizações do painel continuam imediatas. */
+            if (Date.now() - ultimaMedicao > ESPERA_ENTRE_MEDICOES) {
+              mostrarCombos().catch(() => {});
+            }
           } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
         }, 500);
       } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
