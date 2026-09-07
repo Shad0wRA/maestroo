@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.09.0730
+// @version      2026.09.09.0830
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -187,10 +187,18 @@
   const QUER_NC_KEY = 'grepoMaestro_querNC_v1';
   const PRIORIDADE_NC = { fecharilha: 3, fundacao: 2 };
 
-  function querNC(quem, minutos) {
+  /* A marca diz QUANTOS colonizadores são precisos, não só que são precisos.
+   *
+   * Era um interruptor: "a fundação quer um colonizador". Com quinze na conta,
+   * ela queria um e bloqueava os quinze — a rotação ficou parada horas com
+   * colonizadores a acumular sem sair. */
+  function querNC(quem, minutos, quantos) {
     try {
       const d = JSON.parse(localStorage.getItem(QUER_NC_KEY) || '{}');
-      d[quem] = Math.floor(Date.now() / 1000) + (Number(minutos) || 30) * 60;
+      d[quem] = {
+        ate: Math.floor(Date.now() / 1000) + (Number(minutos) || 30) * 60,
+        n: Math.max(1, Number(quantos) || 1),
+      };
       localStorage.setItem(QUER_NC_KEY, JSON.stringify(d));
     } catch (e) {}
   }
@@ -204,13 +212,37 @@
   }
 
   /* Alguém com prioridade acima de `quem` está à espera de um colonizador? */
+  /* Quantos colonizadores estão reservados por quem tem prioridade acima de
+   * `quem`. Devolve 0 se ninguém quer nada.
+   *
+   * Aceita as marcas antigas (que eram só um número) para não perder as que
+   * já estiverem guardadas quando esta versão entrar. */
+  function quantosNCReservados(quem) {
+    let n = 0;
+    try {
+      const d = JSON.parse(localStorage.getItem(QUER_NC_KEY) || '{}');
+      const agora = Math.floor(Date.now() / 1000);
+      const minha = PRIORIDADE_NC[quem] || 0;
+      for (const k of Object.keys(d)) {
+        const e = d[k];
+        const ate = (e && typeof e === 'object') ? Number(e.ate) : Number(e);
+        if (!(ate > agora)) continue;                        // marca expirada
+        if ((PRIORIDADE_NC[k] || 0) <= minha) continue;
+        n += (e && typeof e === 'object') ? Math.max(1, Number(e.n) || 1) : 1;
+      }
+    } catch (e) {}
+    return n;
+  }
+
   function alguemQuerNC(quem) {
     try {
       const d = JSON.parse(localStorage.getItem(QUER_NC_KEY) || '{}');
       const agora = Math.floor(Date.now() / 1000);
       const minha = PRIORIDADE_NC[quem] || 0;
       for (const k of Object.keys(d)) {
-        if (Number(d[k]) < agora) continue;                 // marca expirada
+        const e = d[k];
+        const ate = (e && typeof e === 'object') ? Number(e.ate) : Number(e);
+        if (!(ate > agora)) continue;
         if ((PRIORIDADE_NC[k] || 0) > minha) return k;
       }
     } catch (e) {}
@@ -1675,7 +1707,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.09.0730';
+  const MAESTRO_VERSAO = '2026.09.09.0830';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -30811,11 +30843,15 @@ function makeColonosModule(opts) {
      * tem onde fundar, o colonizador é deles. A rotação repete-se todos os
      * dias; as outras duas são decisões pontuais e perdem-se se o navio for
      * despachado. */
-    const dono = alguemQuerNC('colonos');
-    if (dono) {
-      (ctx.logRotina || log)(`Colonos: não mando colonizadores para o depósito — `
-        + `o módulo "${dono}" está à espera de um.`);
-      return 0;
+    /* GUARDA-SE O QUE ESTÁ RESERVADO, MANDA-SE O RESTO.
+     *
+     * Antes bastava alguém querer UM colonizador para a rotação parar toda —
+     * e a conta ficava com quinze parados durante horas. Agora reserva-se o
+     * número pedido e o excedente segue viagem. */
+    const reservados = quantosNCReservados('colonos');
+    if (reservados) {
+      (ctx.logRotina || log)(`Colonos: ${reservados} colonizador(es) reservados por outro `
+        + 'módulo — mando os que sobrarem.');
     }
 
     const alvo = depositoDaMinhaEquipa(c, partilha);
@@ -34562,10 +34598,17 @@ function makeFundacaoModule(opts) {
     }
 
     const comNC = ctx.getMyTowns().filter((t) => colonizadoresEm(t.id) > 0);
-    /* A fundação também marca o colonizador como seu: sem isto, a rotação
-     * despachava-o para o depósito antes de ela o poder usar. Fica atrás do
-     * fechar ilha e à frente da rotação. */
-    querNC('fundacao', 45);
+    /* A FUNDAÇÃO SÓ RESERVA O QUE VAI USAR JÁ.
+     *
+     * Marcava sempre que tinha onde fundar — e como tem sempre ilhas
+     * candidatas, a marca nunca caía e a rotação ficava parada
+     * indefinidamente. Visto em jogo: três horas sem escoar, com quinze
+     * colonizadores presos.
+     *
+     * Agora só reserva se houver mesmo um colonizador em casa para usar
+     * nesta passagem, e reserva UM — que é o que ela funda de cada vez. */
+    if (comNC.length) querNC('fundacao', 45, 1);
+    else jaNaoQuerNC('fundacao');
 
     if (!comNC.length) { log('Fundação: nenhuma cidade tem colonizador.'); return; }
     const t = comNC[0];
@@ -36549,7 +36592,7 @@ function makeFecharIlhaModule(opts) {
 
     /* Enquanto tenho lugar e não enviei, este colonizador é meu: nem a
      * fundação nem a rotação lhe tocam. */
-    if (meuLugar != null && !plano.enviados[eu]) querNC('fecharilha', 60);
+    if (meuLugar != null && !plano.enviados[eu]) querNC('fecharilha', 60, 1);
     else jaNaoQuerNC('fecharilha');
     const souODono = plano.criadoPor === eu;
 
