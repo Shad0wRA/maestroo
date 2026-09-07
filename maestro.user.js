@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.09.0630
+// @version      2026.09.09.0730
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1675,7 +1675,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.09.0630';
+  const MAESTRO_VERSAO = '2026.09.09.0730';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -31821,9 +31821,25 @@ function makeApoioModule(opts) {
    * reiniciar a VPS voltaram apoios de dois dias antes.
    *
    * As outras contas só leem e seguem. Mexes na principal, todas obedecem. */
+  /* QUEM CONTROLA A LISTA DE ALVOS.
+   *
+   * A lista vive num ficheiro SÓ — é a mesma para a main e para as multis, e
+   * não separada por perfil. Com duas contas a escrevê-la, atropelavam-se: um
+   * alvo tirado na main voltava porque outra conta publicava a versão dela por
+   * cima. Foi o que aconteceu, com dez alvos a reaparecerem sozinhos.
+   *
+   * Passa a ser SÓ A MAIN. Além da marca de conta principal, exige-se o perfil
+   * `main` — assim, mesmo que fique marcada noutra conta por engano, a lista
+   * tem um dono único.
+   *
+   * As multis continuam a ler e a apoiar normalmente; o que deixam de fazer é
+   * escrever. */
   function souAPrincipalDoApoio() {
-    try { return localStorage.getItem('grepoMaestro_principal_v1') === '1'; }
-    catch (e) { return false; }
+    try {
+      if (localStorage.getItem('grepoMaestro_principal_v1') !== '1') return false;
+      const p2 = (JSON.parse(localStorage.getItem('grepoMaestro_modulos_v1') || '{}') || {}).perfil;
+      return p2 === 'main';
+    } catch (e) { return false; }
   }
 
   async function escreverLista(dados) {
@@ -31831,7 +31847,7 @@ function makeApoioModule(opts) {
     try { if (typeof t2 !== 'undefined' && t2 && t2.unref) t2.unref(); } catch (e) { seErroDeCodigo(e, 'Apoio'); }
 
     if (!souAPrincipalDoApoio()) {
-      return { ok: false, msg: 'só a conta principal altera a lista de apoio' };
+      return { ok: false, msg: 'só a main controla a lista de apoio' };
     }
 
     /* FIREBASE PRIMEIRO — não tem o limite de escritas do GitHub.
