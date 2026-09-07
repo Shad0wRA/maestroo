@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.08.1130
+// @version      2026.09.08.1230
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1675,7 +1675,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.08.1130';
+  const MAESTRO_VERSAO = '2026.09.08.1230';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -35771,6 +35771,30 @@ function makeFecharIlhaModule(opts) {
 
   /* ---------------------- o que esta conta consegue --------------------- */
 
+  /* TENHO VAGA PARA MAIS UMA CIDADE?
+   *
+   * Faltava. O módulo só confirmava que havia colonizador e declarava-se
+   * pronto — e depois o envio falhava com "Não escolheu uma posição válida",
+   * que é o que o jogo responde quando o limite cultural está cheio. Pior
+   * ainda no fechar ilha: a conta ocupa um lugar que não vai conseguir usar e
+   * bloqueia-o para as outras.
+   *
+   * O `cultural_step` é o limite e o `additional_town_count` são as fundações
+   * já a caminho — confirmado em jogo pelo módulo da fundação, que já fazia
+   * esta verificação. */
+  function vagaParaCidade() {
+    try {
+      const p2 = mUw.MM.getModels().Player;
+      const k = Object.keys(p2)[0];
+      const a = (p2[k] || {}).attributes || {};
+      const limite = Number(a.cultural_step) || 0;
+      const aCaminho = Number(a.additional_town_count) || 0;
+      const tenho = Object.keys(mUw.ITowns.towns || {}).length;
+      if (!limite) return { pode: true, tenho, aCaminho, limite: 0 };
+      return { pode: (tenho + aCaminho) < limite, tenho, aCaminho, limite };
+    } catch (e) { return { pode: true, tenho: 0, aCaminho: 0, limite: 0 }; }
+  }
+
   function tenhoColonizador() {
     try {
       for (const id of Object.keys(mUw.ITowns.towns)) {
@@ -35900,9 +35924,17 @@ function makeFecharIlhaModule(opts) {
     if (meuLugar != null) {
       if (plano.estado === 'preparar' && !plano.prontos[eu]) {
         const cidade = tenhoColonizador();
+        const vaga = vagaParaCidade();
+
         if (!cidade) {
           rotina(`Fechar ilha: guardo o lugar ${meuLugar} em ${plano.chave}, `
             + 'mas ainda não tenho colonizador.');
+        } else if (!vaga.pode) {
+          /* Sem vaga não vale a pena declarar-se pronta: o envio falharia e o
+           * lugar ficaria ocupado por uma conta que não o pode usar. */
+          rotina(`Fechar ilha: tenho colonizador para ${plano.chave} mas não tenho `
+            + `vaga — ${vaga.tenho} cidades e ${vaga.aCaminho} a caminho, limite ${vaga.limite}. `
+            + 'Precisa de mais cultura.');
         } else {
           plano.prontos[eu] = { cidade, quando: Math.floor(Date.now() / 1000) };
           await gravarPlano(plano);
@@ -35916,6 +35948,20 @@ function makeFecharIlhaModule(opts) {
           + `(${plano.falhados[eu]}).`);
       } else if (plano.estado === 'lancar' && !plano.enviados[eu]) {
         let meuLugarUsado = null;
+
+        /* Confirmar OUTRA VEZ à partida: entre declarar-se pronta e a ordem
+         * de partida podem passar horas, e a vaga pode ter sido gasta por
+         * outra fundação desta mesma conta. */
+        const vagaAgora = vagaParaCidade();
+        if (!vagaAgora.pode) {
+          plano.falhados = plano.falhados || {};
+          plano.falhados[eu] = `sem vaga (${vagaAgora.tenho}+${vagaAgora.aCaminho}/${vagaAgora.limite})`;
+          await gravarPlano(plano);
+          log(`⚠️ Fechar ilha: era a minha vez em ${plano.chave} mas já não tenho vaga `
+            + `para outra cidade — ${vagaAgora.tenho} cidades e ${vagaAgora.aCaminho} a caminho, `
+            + `limite ${vagaAgora.limite}.`);
+          return;
+        }
         const cidade = (plano.prontos[eu] || {}).cidade || tenhoColonizador();
         if (!cidade) {
           log(`⚠️ Fechar ilha: era a minha vez e já não tenho colonizador.`);
