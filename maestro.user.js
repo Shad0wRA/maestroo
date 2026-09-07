@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.09.0030
+// @version      2026.09.09.0230
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1675,7 +1675,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.09.0030';
+  const MAESTRO_VERSAO = '2026.09.09.0230';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -15401,6 +15401,82 @@ function makeFeiticosModule(opts) {
    * fazem sentido nos ataques que EU envio. Num ataque que vem contra mim,
    * oferecer o bónus ao atacante é o contrário do que se quer — e enchia o
    * painel de escolhas absurdas. */
+  /* OS ATAQUES QUE VÊM CONTRA MIM, DAS DUAS FONTES.
+   *
+   * Nenhuma delas está completa sozinha — confirmado em jogo: os modelos
+   * tinham dois ataques que o servidor não mostrava, e o servidor tinha um que
+   * os modelos não tinham. Os modelos guardam o que a página já carregou nesta
+   * sessão; a visão geral traz o que o servidor sabe agora.
+   *
+   * Juntam-se as duas e tiram-se os repetidos pelo identificador do comando.
+   *
+   * O pedido ao servidor só se faz quando o painel é aberto — a lista é para
+   * escolheres à mão, e não vale a pena gastar um pedido de cinco em cinco
+   * minutos por uma lista que ninguém está a ver. */
+  async function ataquesContraMim() {
+    const out = new Map();
+    const minhas = new Set(Object.keys(mUw.ITowns.towns || {}).map(Number));
+
+    const doGrupo = (() => {
+      try {
+        const g = JSON.parse(armazem.getItem('grepoEsquiva_cidadesGrupo_v1') || 'null');
+        return new Set(((g || {}).ids || []).map(Number));
+      } catch (e) { return new Set(); }
+    })();
+
+    /* 1) Os modelos, imediatos. */
+    try {
+      const mv = mUw.MM.getModels().MovementsUnits || {};
+      for (const k of Object.keys(mv)) {
+        const a2 = (mv[k] || {}).attributes || {};
+        if (!/attack/i.test(String(a2.type || ''))) continue;
+        if (!minhas.has(Number(a2.target_town_id))) continue;
+        if (doGrupo.has(Number(a2.home_town_id))) continue;      // é meu
+        const cid = Number(a2.id || a2.command_id) || 0;
+        if (!cid) continue;
+        out.set(cid, {
+          cid,
+          origem: String(a2.town_name_origin || a2.home_town_id || '?'),
+          destino: String(a2.town_name_destination || a2.target_town_id),
+          chega: Number(a2.arrival_at) || 0,
+        });
+      }
+    } catch (e) { seErroDeCodigo(e, 'Feiticos'); }
+
+    /* 2) O servidor, que sabe o que a página ainda não carregou. */
+    try {
+      const base = Object.keys(mUw.ITowns.towns || {})[0];
+      if (base) {
+        const url = mUw.location.origin + '/game/town_overviews?town_id=' + Number(base)
+          + '&action=command_overview&h=' + mUw.Game.csrfToken
+          + '&json=' + encodeURIComponent(JSON.stringify({ town_id: Number(base), nl_init: true }))
+          + '&_=' + Date.now();
+        const r = await mUw.fetch(url, {
+          headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
+        }).then((x) => x.json()).catch(() => null);
+
+        const d = (r && r.json) || {};
+        const cmds = d.commands || (d.data && d.data.commands) || [];
+        for (const x of cmds) {
+          if (!/attack/i.test(String(x.type || ''))) continue;
+          if (x.return === true || x.cmd_return === true) continue;
+          if (!minhas.has(Number(x.destination_town_id))) continue;
+          if (doGrupo.has(Number(x.origin_town_id))) continue;   // é meu
+          const cid = Number(x.id) || 0;
+          if (!cid || out.has(cid)) continue;
+          out.set(cid, {
+            cid,
+            origem: String(x.origin_town_name || x.origin_town_id || '?'),
+            destino: String(x.destination_town_name || x.destination_town_id),
+            chega: Number(x.arrival_at) || 0,
+          });
+        }
+      }
+    } catch (e) { seErroDeCodigo(e, 'Feiticos'); }
+
+    return [...out.values()].sort((a2, b2) => a2.chega - b2.chega);
+  }
+
   function feiticosContraAtaque() {
     const out = [];
     try {
@@ -15897,81 +15973,9 @@ function makeFeiticosModule(opts) {
      *
      * Só aparecem os que ainda não chegaram, e saem da lista sozinhos quando
      * baterem. */
-    const htmlRecebidos = (() => {
-      try {
-        /* A MESMA FONTE QUE O BLOCO DAS TEMPESTADES.
-         *
-         * Estava a ler a COLECÇÃO e vinha vazia com um ataque a caminho — o
-         * mesmo que aconteceu com as revoltas. O bloco que trata dos
-         * colonizadores usa os MODELOS e esse funciona, por isso usa-se o
-         * mesmo aqui.
-         *
-         * Também caiu o filtro pela cidade de origem: num ataque RECEBIDO, o
-         * `home_town_id` é a cidade de quem ataca, e compará-lo com as minhas
-         * não acrescentava nada — o que distingue é o destino ser meu. */
-        const mvR = mUw.MM.getModels().MovementsUnits || {};
-        const minhasIds = new Set((ctx.getMyTowns() || []).map((t) => Number(t.id)));
-        const vindos = Object.keys(mvR)
-          .map((k) => (mvR[k] || {}).attributes || {})
-          .filter((a2) => /attack/i.test(String(a2.type || '')))
-          .filter((a2) => minhasIds.has(Number(a2.target_town_id)));
-
-        if (!vindos.length) {
-          return '<div style="opacity:.55;font-size:13px">Nenhum ataque a caminho de ti.</div>';
-        }
-
-        /* Só os que fazem mal a quem ataca. */
-        const opcoesR = feiticosContraAtaque();
-
-        /* UMA LINHA POR ATAQUE.
-         *
-         * Cada ataque ocupava quatro linhas e uma legenda por feitiço. Com um
-         * já era grande; com quarenta seria uma bíblia. Fica o essencial numa
-         * linha e os feitiços como ícones — o nome e o custo estão no título,
-         * que aparece ao passar por cima.
-         *
-         * Mostram-se os doze que chegam primeiro: são esses que ainda dá para
-         * apanhar. */
-        const LIMITE = 12;
-        const ordenados = vindos
-          .slice()
-          .sort((x, y) => Number(x.arrival_at || 0) - Number(y.arrival_at || 0));
-        const mostrar = ordenados.slice(0, LIMITE);
-
-        const linhas = mostrar.map((a2) => {
-          const cid = Number(a2.id || a2.command_id) || 0;
-          const jaEscolhidos = [].concat((c.alvos || {})[cid] || []);
-          const chega = a2.arrival_at
-            ? new Date(Number(a2.arrival_at) * 1000).toLocaleTimeString().slice(0, 5)
-            : '?';
-
-          const icones = opcoesR.map((id) => `
-            <label title="${esc(nomeDoFeitico(id))} · ${custoDoFeitico(id)} de favor"
-              style="display:inline-block;cursor:pointer;opacity:${jaEscolhidos.indexOf(id) >= 0 ? '1' : '.35'}">
-              <input type="checkbox" class="fei-alvo" data-cmd="${cid}" value="${id}"
-                ${jaEscolhidos.indexOf(id) >= 0 ? 'checked' : ''} style="display:none">
-              ${iconeDoFeitico(id)}
-            </label>`).join('');
-
-          return `<tr>
-            <td style="padding:2px 4px;white-space:nowrap">${chega}</td>
-            <td style="padding:2px 4px;overflow:hidden;text-overflow:ellipsis;max-width:150px">
-              ${esc(String(a2.town_name_destination || a2.target_town_id))}
-              <span style="opacity:.5">← ${esc(String(a2.town_name_origin || a2.home_town_id || '?'))}</span>
-            </td>
-            <td style="padding:2px 4px;text-align:right;white-space:nowrap">${icones}</td>
-          </tr>`;
-        }).join('');
-
-        return `<div style="max-height:200px;overflow:auto">
-            <table style="width:100%;border-collapse:collapse;font-size:12px">${linhas}</table>
-          </div>`
-          + (ordenados.length > LIMITE
-            ? `<div style="opacity:.5;font-size:11px;margin-top:2px">mais ${ordenados.length - LIMITE} `
-              + 'ataque(s) mais longe — aparecem à medida que se aproximam.</div>'
-            : '');
-      } catch (e) { return '<div style="opacity:.55;font-size:13px">não consegui ler os ataques.</div>'; }
-    })();
+    /* A lista é preenchida DEPOIS, por `encherRecebidos`: juntar as duas
+     * fontes exige um pedido ao servidor e isso não se faz a desenhar. */
+    const htmlRecebidos = '<div style="opacity:.55;font-size:12px">a procurar ataques…</div>';
 
     /* ---- OS MEUS ATAQUES EM CURSO ----
      *
@@ -16106,7 +16110,7 @@ function makeFeiticosModule(opts) {
           Marca o que queres lançar em cada um. Ele insiste até o ataque
           chegar: se purificarem, a passagem seguinte volta a lançar.
         </div>
-        ${htmlRecebidos}
+        <div id="fei-recebidos">${htmlRecebidos}</div>
       </div>
 
       <div style="border-top:1px solid #234;margin:8px 0 6px;padding-top:6px">
@@ -16119,6 +16123,56 @@ function makeFeiticosModule(opts) {
       </div>
 
       <button id="fei-guardar" style="cursor:pointer;width:100%;margin-top:8px;background:#48d;color:#fff;padding:6px;border:none;border-radius:4px">Guardar</button>`;
+
+    /* ENCHER A LISTA DOS ATAQUES RECEBIDOS.
+     *
+     * Corre depois de o painel estar desenhado, porque precisa de perguntar ao
+     * servidor. É aqui que o pedido acontece — só ao abrir o painel. */
+    (async () => {
+      const alvo = container.querySelector('#fei-recebidos');
+      if (!alvo) return;
+      try {
+        const vindos = await ataquesContraMim();
+        if (!vindos.length) {
+          alvo.innerHTML = '<div style="opacity:.55;font-size:12px">Nenhum ataque a caminho de ti.</div>';
+          return;
+        }
+
+        const opcoesR = feiticosContraAtaque();
+        const LIMITE = 12;
+        const mostrar = vindos.slice(0, LIMITE);
+
+        alvo.innerHTML = `<div style="max-height:200px;overflow:auto">
+            <table style="width:100%;border-collapse:collapse;font-size:12px">
+            ${mostrar.map((v) => {
+              const jaEscolhidos = [].concat((cfg().alvos || {})[v.cid] || []);
+              const chega = v.chega
+                ? new Date(v.chega * 1000).toLocaleTimeString().slice(0, 5) : '?';
+              const icones = opcoesR.map((id) => `
+                <label title="${esc(nomeDoFeitico(id))} · ${custoDoFeitico(id)} de favor"
+                  style="display:inline-block;cursor:pointer;opacity:${jaEscolhidos.indexOf(id) >= 0 ? '1' : '.35'}">
+                  <input type="checkbox" class="fei-alvo" data-cmd="${v.cid}" value="${id}"
+                    ${jaEscolhidos.indexOf(id) >= 0 ? 'checked' : ''} style="display:none">
+                  ${iconeDoFeitico(id)}
+                </label>`).join('');
+              return `<tr>
+                <td style="padding:2px 4px;white-space:nowrap">${chega}</td>
+                <td style="padding:2px 4px;overflow:hidden;text-overflow:ellipsis;max-width:150px">
+                  ${esc(v.destino)} <span style="opacity:.5">← ${esc(v.origem)}</span>
+                </td>
+                <td style="padding:2px 4px;text-align:right;white-space:nowrap">${icones}</td>
+              </tr>`;
+            }).join('')}
+            </table>
+          </div>`
+          + (vindos.length > LIMITE
+            ? `<div style="opacity:.5;font-size:11px;margin-top:2px">mais ${vindos.length - LIMITE} `
+              + 'ataque(s) mais longe — aparecem à medida que se aproximam.</div>'
+            : '');
+      } catch (e) {
+        alvo.innerHTML = '<div style="opacity:.55;font-size:12px">não consegui ler os ataques.</div>';
+      }
+    })();
 
     container.querySelector('#fei-guardar').onclick = () => {
       const cc = cfg();
@@ -33041,7 +33095,18 @@ function makeApoioModule(opts) {
           /* Só contas que deram sinal na última meia hora: uma conta parada
            * não vai mandar nada e não deve entrar na repartição. */
           if (!x.quando || (agoraS - Number(x.quando)) > 1800) continue;
-          contasVivas++;
+
+          /* A MAIN NÃO APOIA — não pode entrar na repartição.
+           *
+           * Ela publica na frota como as outras, mas desde que o módulo passou
+           * a só vigiar revoltas no perfil main, não envia nada. Contá-la
+           * fazia a fatia ser calculada para 21 contas quando só 20 mandam, e
+           * o objectivo ficava sempre a faltar uns cinco por cento.
+           *
+           * O apoio que ela tenha estacionado CONTA para o total — isso é
+           * tropa que lá está. O que não conta é ela como remetente futuro. */
+          const ehMain = String(x.perfil || '') === 'main';
+          if (!ehMain) contasVivas++;
           const alvosDela = (x.apoio || {}).alvos || {};
           for (const id of Object.keys(alvosDela)) {
             const u = (alvosDela[id] || {}).u || {};
