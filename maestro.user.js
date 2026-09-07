@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.08.2030
+// @version      2026.09.08.2230
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1675,7 +1675,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.08.2030';
+  const MAESTRO_VERSAO = '2026.09.08.2230';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -5496,6 +5496,31 @@ function makeConstrucaoModule(opts) {
    * registo dizia apenas "sem dados" e não se percebia porquê. */
   let ultimaFalhaBuildData = '';
 
+  /* PEDIR AO JOGO OS DADOS DE CONSTRUÇÃO DE UMA CIDADE.
+   *
+   * A colecção `BuildingBuildData` não segue a cidade activa: só tem as
+   * cidades cujo SENADO foi aberto. Confirmado em jogo — a colecção tinha três
+   * cidades enquanto a activa era outra, e trocar de cidade não a mudava.
+   *
+   * O pedido que o jogo faz ao abrir o Senado é este, apanhado com a espia:
+   *   building_main?town_id=<cidade>&action=index
+   *
+   * Fazê-lo enche a colecção com aquela cidade, e o resto do módulo passa a
+   * funcionar. É um pedido pequeno, o mesmo que o jogo faz quando navegas —
+   * mas é um por cidade, por isso só se faz quando a colecção não sabe. */
+  async function pedirBuildData(townId) {
+    try {
+      const url = uw.location.origin + '/game/building_main?town_id=' + Number(townId)
+        + '&action=index&h=' + uw.Game.csrfToken
+        + '&json=' + encodeURIComponent(JSON.stringify({ town_id: Number(townId), nl_init: true }))
+        + '&_=' + Date.now();
+      await uw.fetch(url, {
+        headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
+      }).then(lerResposta).catch(() => null);
+      return true;
+    } catch (e) { seErroDeCodigo(e, 'Construcao'); return false; }
+  }
+
   function getBuildData(townId) {
     try {
       const col = uw.MM.getCollections().BuildingBuildData[0];
@@ -6233,7 +6258,11 @@ function makeConstrucaoModule(opts) {
        * é quase sempre o suficiente. */
       let bd = getBuildData(town.id);
       if (!bd) {
-        await ctx.sleep(ctx.rand(700, 1400));
+        /* A colecção não tem esta cidade: pedem-se os dados como o jogo faz
+         * ao abrir o Senado. Sem isto, o módulo saltava dezenas de cidades por
+         * passagem — e uma cidade saltada é uma cidade que não constrói. */
+        await pedirBuildData(town.id);
+        await ctx.sleep(ctx.rand(500, 1000));
         bd = getBuildData(town.id);
       }
       if (!bd) {
@@ -26924,8 +26953,17 @@ function makeEncaixeModule(opts) {
       const envioPrevisto = plano.chegada - duracao;
       const faltam = envioPrevisto - agora();
 
-      if (faltam < -60) {                       // já passou a hora
-        const hh = (t) => horaJogo(t);
+      if (faltam < -60) {
+        /* Mostrar o DIA quando não é hoje.
+         *
+         * A mensagem dava só o relógio — "envio era às 11:55, agora são
+         * 14:15, passaram 3020 min" — e parecia um erro de conta quando na
+         * verdade o envio tinha sido dois dias antes. A conta estava certa; a
+         * mensagem é que escondia metade. */
+        const hh = (t) => {
+          const dias = Math.floor((agora() - t) / 86400);
+          return horaJogo(t) + (dias > 0 ? ` (há ${dias} dia${dias > 1 ? 's' : ''})` : '');
+        };
         ctx.log(`⌛ Encaixe: plano descartado — envio era às ${hh(envioPrevisto)}, `
           + `agora são ${hh(agora())} (passaram ${Math.round(-faltam / 60)} min). `
           + `Chegada ${hh(plano.chegada)}, viagem ${Math.round(duracao / 60)} min.`);
@@ -28114,7 +28152,18 @@ function makeEncaixeModule(opts) {
               atrasosSeguidosParaParar: conf.atrasosSeguidosParaParar,
               limiteAposEnvioSeg: conf.limiteAposEnvioSeg,
               comecarAntes: conf.comecarAntes,
-              duracaoJogo: false,
+              /* GUARDAR A DURAÇÃO MEDIDA.
+               *
+               * Estava `false`, e por isso o encaixe recalculava a viagem por
+               * fórmula quando chegava a hora — e a fórmula não sabe as
+               * coordenadas de cidades de outros jogadores, dando viagens
+               * absurdas. Visto em jogo: uma composição medida em 325 minutos
+               * recalculada em 3544, o que punha o envio dois dias no passado
+               * e fazia descartar o plano.
+               *
+               * A duração medida na janela é o número do próprio jogo. É essa
+               * que vale. */
+              duracaoJogo: c2.dur,
             });
             n++;
           }
