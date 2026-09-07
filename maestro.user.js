@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.08.1430
+// @version      2026.09.08.1630
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1675,7 +1675,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.08.1430';
+  const MAESTRO_VERSAO = '2026.09.08.1630';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -26272,8 +26272,13 @@ function makeEncaixeModule(opts) {
   // NOTA: o command_overview exige ADMINISTRADOR. Sem ele responde
   // "Necessita do administrador para aceder às visões gerais". Detecta-se uma
   // vez e não se insiste — as multis não o têm.
+  /* Porque é que a última leitura veio vazia. Sem isto, o diagnóstico dizia
+   * apenas "servidor: 0 comando(s)" e não se sabia se foi um erro do jogo, um
+   * captcha, falta de Administrador, ou se não havia mesmo comandos. */
+  let ultimaRazaoVazio = '';
+
   async function comandosDoServidor(townId) {
-    if (semAdministrador()) return [];
+    if (semAdministrador()) { ultimaRazaoVazio = 'sem Administrador (marcado há pouco)'; return []; }
     try {
       const url = mUw.location.origin + '/game/town_overviews?town_id=' + Number(townId)
         + '&action=command_overview&h=' + mUw.Game.csrfToken
@@ -26289,7 +26294,14 @@ function makeEncaixeModule(opts) {
         marcarSemAdministrador();
         return [];
       }
+      if (erroAdm) { ultimaRazaoVazio = `o jogo respondeu: ${erroAdm}`; return []; }
+
       const cmds = ((r && r.json && r.json.data) || {}).commands || [];
+      if (!cmds.length) {
+        ultimaRazaoVazio = (r && r.json)
+          ? `resposta sem comandos (chaves: ${Object.keys(r.json).join(', ').slice(0, 80)})`
+          : 'resposta vazia do servidor';
+      } else { ultimaRazaoVazio = ''; }
       return cmds.map((c) => ({
         command_id: Number(c.id),
         arrival_at: Number(c.arrival_at),
@@ -26682,7 +26694,8 @@ function makeEncaixeModule(opts) {
           log('⚠️ Encaixe: não consegui ler a chegada. A cancelar o comando por segurança.');
           log(`   [diagnóstico] ${diag.tentativas} tentativa(s) · modelo local: `
             + `${diag.local ? 'devolveu comando sem hora' : 'vazio'} · `
-            + `servidor: ${diag.servidor} comando(s) devolvido(s)`);
+            + `servidor: ${diag.servidor} comando(s) devolvido(s)`
+            + (ultimaRazaoVazio ? ` · ${ultimaRazaoVazio}` : ''));
           /* Aqui já se desistiu da rajada, portanto pode-se insistir: deixar
            * um comando à solta é o pior resultado possível. */
           /* PRIMEIRO O IDENTIFICADOR QUE O ENVIO DEVOLVEU.
@@ -27023,6 +27036,44 @@ function makeEncaixeModule(opts) {
       const seg = Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]);
       return seg > 0 ? seg : null;
     } catch (e) { return null; }
+  }
+
+  /* ESCREVER NOS CAMPOS DA JANELA E DEIXAR O JOGO CALCULAR.
+   *
+   * O tempo de viagem depende da unidade mais lenta, do Farol, da Cartografia,
+   * da Meteorologia e do Navegar. Reproduzir essa fórmula é copiar o jogo e
+   * errar quando ele mudar — e já hoje pagámos caro por assumir fórmulas.
+   *
+   * O jogo calcula tudo sozinho e mostra o resultado em `.way_duration`. Basta
+   * escrever as quantidades, disparar os eventos que ele ouve, e ler. Não
+   * custa um único pedido ao servidor: confirmado em jogo, mudar as unidades
+   * não gera pedido nenhum.
+   *
+   * Os três eventos são de propósito: consoante a interface, o jogo ouve o
+   * `input`, o `change` ou o `keyup`. */
+  function escreverUnidades(mapa) {
+    try {
+      document.querySelectorAll('input.unit_input[name]').forEach((el) => {
+        const novo = mapa[el.name] != null ? String(mapa[el.name]) : '';
+        if (el.value === novo) return;
+        el.value = novo;
+        for (const ev of ['input', 'change', 'keyup']) {
+          el.dispatchEvent(new Event(ev, { bubbles: true }));
+        }
+      });
+      return true;
+    } catch (e) { seErroDeCodigo(e, 'Encaixe'); return false; }
+  }
+
+  /* Mede o tempo de UMA composição perguntando ao jogo.
+   *
+   * Meio segundo chega para ele recalcular — medido em jogo. Devolve os
+   * segundos ou null se a janela não mostrar tempo (sem tropa escolhida, o
+   * jogo não mostra nada). */
+  async function medirComposicao(mapa, esperaMs) {
+    escreverUnidades(mapa);
+    await new Promise((r) => setTimeout(r, Number(esperaMs) || 500));
+    return duracaoDaJanela();
   }
 
   // Unidades escritas nos campos da janela do jogo.
@@ -27495,7 +27546,7 @@ function makeEncaixeModule(opts) {
        * As combinações são só entre NAVIOS: a tropa de terra viaja nos
        * transportes e não muda a velocidade.
        * ================================================================== */
-      const combinacoesPossiveis = () => {
+      const combinacoesPossiveis = async () => {
         try {
           const gd = mUw.GameData.units || {};
           const alvo = alvoDaJanela();
@@ -27563,11 +27614,45 @@ function makeEncaixeModule(opts) {
             const carga = {};
             for (const u of usar) carga[u] = Number(tenho[u]) || 0;
 
-            let dur = 0;
+            /* ENCHER OS TRANSPORTES COM TROPA TERRESTRE.
+             *
+             * Uma composição não é só navios: a tropa terrestre viaja dentro
+             * dos transportes e o que a limita são os lugares. Sem isto, a
+             * lista só oferecia barcos e perdia-se metade do que se pode
+             * mandar.
+             *
+             * Enche-se com o que a cidade tem, da unidade que rende mais por
+             * lugar para a que rende menos. */
+            try {
+              let lugares = 0;
+              for (const u of ['small_transporter', 'big_transporter']) {
+                lugares += (Number(carga[u]) || 0) * (Number((gd[u] || {}).capacity) || 0);
+              }
+              if (lugares > 0) {
+                const terrestres = Object.keys(tenho)
+                  .filter((u) => gd[u] && !gd[u].is_naval && Number(tenho[u]) > 0)
+                  .sort((x, y) => (Number(gd[x].population) || 1) - (Number(gd[y].population) || 1));
+                for (const u of terrestres) {
+                  const pop = Number(gd[u].population) || 1;
+                  const cabem = Math.min(Number(tenho[u]) || 0, Math.floor(lugares / pop));
+                  if (cabem <= 0) continue;
+                  carga[u] = cabem;
+                  lugares -= cabem * pop;
+                  if (lugares <= 0) break;
+                }
+              }
+            } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
 
-            /* Preferir a regra de três com o tempo do jogo: funciona com
-             * alvos de que não sabemos as coordenadas. */
-            if (durJogo && velJanela) {
+            /* O TEMPO VEM DO JOGO, não de uma fórmula minha.
+             *
+             * Antes fazia-se uma regra de três a partir das velocidades. Isso
+             * ignora o Farol, a Cartografia e a Meteorologia, e erra sempre
+             * que o jogo mudar as contas. Agora escreve-se a composição na
+             * janela e lê-se o que ele mostra. */
+            let dur = await medirComposicao(carga, 500);
+
+            /* Se a janela não deu tempo, fica a regra de três como recurso. */
+            if (!dur && durJogo && velJanela) {
               let velEsta = 0;
               for (const u of usar) {
                 const v = Number((gd[u] || {}).speed) || 0;
@@ -27575,8 +27660,6 @@ function makeEncaixeModule(opts) {
               }
               if (velEsta) dur = Math.round(durJogo * (velJanela / velEsta));
             }
-
-            /* Sem tempo do jogo, calcula-se — só funciona com alvos nossos. */
             if (!dur) dur = duracaoPrevista(origemId, alvo, carga, conf);
             if (!dur) continue;
 
@@ -27593,9 +27676,16 @@ function makeEncaixeModule(opts) {
             });
           }
 
+          /* REPOR o que estava na janela: mediram-se composições escrevendo
+           * nos campos, e o que lá estava é o que TU montaste. */
+          try { escreverUnidades(naJanela); } catch (e) {}
+
           /* Do mais lento (sai primeiro) para o mais rápido. */
           return out.sort((a, b) => b.dur - a.dur);
-        } catch (e) { return []; }
+        } catch (e) {
+          try { escreverUnidades(unidadesDaJanela()); } catch (e2) {}
+          return [];
+        }
       };
 
       const programar = (tipoBotao) => {
@@ -27943,7 +28033,9 @@ function makeEncaixeModule(opts) {
 
       /* AS COMBINAÇÕES DE VELOCIDADE desta cidade, para agendar mais do que
        * uma tentativa ao mesmo instante. */
-      const mostrarCombos = () => {
+      /* ASSÍNCRONA: as combinações são MEDIDAS na janela do jogo, uma a uma,
+       * com meio segundo entre cada para ele recalcular. */
+      const mostrarCombos = async () => {
         try {
           const el = box.querySelector('#encj-combos');
           if (!el) return;
@@ -27983,7 +28075,13 @@ function makeEncaixeModule(opts) {
             return;
           }
 
-          const combos = combinacoesPossiveis();
+          /* Medir demora: cada composição precisa de meio segundo para o jogo
+           * recalcular. Diz-se o que está a acontecer, senão parece parado. */
+          el.innerHTML = '<div style="font-size:12px;letter-spacing:.5px;opacity:.65">'
+            + 'TENTATIVAS PARA O MESMO SEGUNDO</div>'
+            + '<div style="opacity:.55;font-size:12px">a medir os tempos na janela do jogo…</div>';
+
+          const combos = await combinacoesPossiveis();
           if (combos.length < 2) { el.innerHTML = ''; return; }
 
           const hh = (t) => new Date((t + desvioFuso()) * 1000).toISOString().substr(11, 8);
@@ -28020,7 +28118,7 @@ function makeEncaixeModule(opts) {
 
       mostrarTolerancia();
       mostrarCarga();
-      mostrarCombos();
+      mostrarCombos().catch(() => {});
 
       /* As combinações dependem da hora de chegada: recalcular quando ela
        * muda. */
@@ -28066,7 +28164,7 @@ function makeEncaixeModule(opts) {
             ultimo = agora2;
             mostrarTolerancia();
             mostrarCarga();
-            mostrarCombos();
+            mostrarCombos().catch(() => {});
           } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
         }, 500);
       } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
