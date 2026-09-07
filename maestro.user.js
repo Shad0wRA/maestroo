@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.08.1830
+// @version      2026.09.08.1930
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1675,7 +1675,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.08.1830';
+  const MAESTRO_VERSAO = '2026.09.08.1930';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -27285,7 +27285,7 @@ function makeEncaixeModule(opts) {
             <div style="font-size:12px;letter-spacing:.5px;opacity:.65;margin-bottom:3px">TOLERÂNCIA</div>
             <div id="encj-tolerancia" style="opacity:.8">a ver...</div>
           <div id="encj-carga" style="margin-top:5px;padding-top:5px;border-top:1px solid #2c3e50;font-size:13px"></div>
-          <div id="encj-combos" style="margin-top:5px;padding-top:5px;border-top:1px solid #2c3e50;font-size:13px"></div>
+          <div id="encj-combos" style="margin-top:5px;padding-top:5px;border-top:1px solid #2c3e50;font-size:13px;max-height:240px;overflow:auto"></div>
             <div style="font-size:12px;opacity:.5;margin-top:2px">
               Muda-se no painel do Maestro, em Encaixe. Se puseres um colonizador
               nas unidades, usa a tolerância dos colonizadores.
@@ -28032,8 +28032,22 @@ function makeEncaixeModule(opts) {
         } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
       };
       /* Agendar cada composição marcada como um plano próprio. */
-      const agendarCombos = (combos, chegada) => {
+      const agendarCombos = (combos, chegadaMedida) => {
         try {
+          /* A HORA É LIDA AGORA, não a que ficou guardada quando se mediu.
+           *
+           * As composições são medidas e a hora de chegada fica presa nesse
+           * instante. Se mudares a hora depois — e mudas, é a ordem natural:
+           * primeiro vês as composições, depois acertas a hora — o botão
+           * agendava para a hora ANTIGA.
+           *
+           * Visto em jogo: escrito 20:00:00, agendado para as 02:00:00, com as
+           * horas de saída todas certas para as 02:00 e erradas para o que
+           * estava no ecrã. */
+          const chegada = lerHora() || chegadaMedida;
+          if (chegada !== chegadaMedida) {
+            diz('A hora mudou desde que medi — uso a que está no ecrã.');
+          }
           const marcadas = [];
           box.querySelectorAll('[data-combo]').forEach((el) => {
             if (el.checked) marcadas.push(combos[Number(el.getAttribute('data-combo'))]);
@@ -28223,10 +28237,15 @@ function makeEncaixeModule(opts) {
               agora2 += sel + '=' + (el ? el.value : '') + ';';
             });
 
-            /* A MEDIR: não fazer nada, mas tomar nota do que está nos campos.
-             * Assim, quando a medição acabar e repuser o que tu tinhas, isso
-             * não conta como uma mudança tua e não volta a disparar. */
-            if (medindoCombos) { ultimo = agora2; return; }
+            /* A MEDIR: não fazer NADA, nem tomar nota.
+             *
+             * Tomar nota era pior: uma alteração TUA feita durante a medição
+             * ficava registada como já vista e nunca chegava a ser tratada —
+             * foi assim que uma hora de chegada escrita a meio de uma medição
+             * se perdeu. O ciclo não volta, porque o `mostrarCombos` tem a sua
+             * própria trava, e a composição reposta no fim é igual à que
+             * estava antes. */
+            if (medindoCombos) return;
 
             if (agora2 === ultimo) return;
             ultimo = agora2;
