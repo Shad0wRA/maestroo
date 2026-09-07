@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.08.2230
+// @version      2026.09.09.0030
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1675,7 +1675,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.08.2230';
+  const MAESTRO_VERSAO = '2026.09.09.0030';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -31289,6 +31289,22 @@ function makeApoioModule(opts) {
     ativo: false,
     pacote: { sword: 40, archer: 40, hoplite: 40, bireme: 20 },
     maxCidadesPorAlvo: 10,
+
+    /* ===== OBJECTIVOS DE DEFESA =========================================
+     *
+     * O limite de cidades por alvo diz quantas CONTAS mandam, não quanta
+     * tropa lá fica — dez contas com meio pacote contam o mesmo que dez com o
+     * pacote inteiro. O objectivo é o contrário: diz o que se quer LÁ, em
+     * unidades, e as contas mandam até estar cumprido.
+     *
+     * `objetivoRevolta` é fixo e serve as tuas cidades em revolta, para não
+     * teres de configurar nada no meio de uma. Os outros alvos usam o
+     * `objetivoPadrao`, que se muda no painel.
+     *
+     * Vazio = sem objectivo: o alvo volta a ser servido pela regra antiga do
+     * número de cidades. */
+    objetivoRevolta: { sword: 4500, archer: 4500, hoplite: 4500, bireme: 2750 },
+    objetivoPadrao: {},
     /* Quanto dura a R2 depois de a R1 acabar.
      *
      * O comando da revolta só traz o fim da R1, por isso a cidade fica na
@@ -32606,7 +32622,17 @@ function makeApoioModule(opts) {
       if (api && api.candidatas) {
         const meus = (ctx.getMyTowns() || []).map((t) => Number(t.id));
         const lidas = await api.refrescar(api.candidatas(meus), 2);
-        if (lidas) rotina(`Apoio: reli a Ágora de ${lidas} cidade(s).`);
+    /* ZERO NÃO É FALHA.
+     *
+     * As leituras valem 30 minutos. Se estiverem todas frescas, não há nada a
+     * refrescar e lê-se zero — o que é o comportamento certo. A mensagem dizia
+     * "li a Ágora de 0 cidade(s)" e parecia uma avaria, com apoio espalhado
+     * por 25 cidades. */
+    if (!lidas) {
+      (ctx.logRotina || log)('Apoio: as leituras da Ágora ainda estão frescas — nada a refrescar.');
+    } else {
+      log(`Apoio: li a Ágora de ${lidas} cidade(s) — os números passam a ser os do servidor.`);
+    }
       }
     } catch (e) { seErroDeCodigo(e, 'Apoio'); }
 
@@ -32991,6 +33017,60 @@ function makeApoioModule(opts) {
       }
     })();
     const pacote = lista.pacote || c.pacote;
+
+    /* ===== O QUE JÁ LÁ ESTÁ, SOMADO DE TODAS AS CONTAS ==================
+     *
+     * Cada conta só vê o apoio dela. O total existe no sinal de vida, que
+     * cada uma publica com o que tem em cada alvo — é o que o painel da frota
+     * usa para a secção da defesa por alvo.
+     *
+     * Sem esta soma, cada conta decide às cegas: manda o pacote dela porque
+     * não sabe que outras dezanove já mandaram. Com ela, manda só o que falta.
+     *
+     * Uma leitura por passagem, e guardada para as passagens seguintes desta
+     * conta. */
+    let defesaNoAlvo = {};
+    let contasVivas = 1;
+    try {
+      const f = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroFb;
+      if (f && f.url && f.url()) {
+        const d = await f.ler(`frota/${mWorld}`) || {};
+        const agoraS = Math.floor(Date.now() / 1000);
+        for (const k of Object.keys(d)) {
+          const x = d[k] || {};
+          /* Só contas que deram sinal na última meia hora: uma conta parada
+           * não vai mandar nada e não deve entrar na repartição. */
+          if (!x.quando || (agoraS - Number(x.quando)) > 1800) continue;
+          contasVivas++;
+          const alvosDela = (x.apoio || {}).alvos || {};
+          for (const id of Object.keys(alvosDela)) {
+            const u = (alvosDela[id] || {}).u || {};
+            const acc = defesaNoAlvo[id] = defesaNoAlvo[id] || {};
+            for (const un of Object.keys(u)) acc[un] = (acc[un] || 0) + Number(u[un] || 0);
+          }
+        }
+        contasVivas = Math.max(1, contasVivas - 1);
+      }
+    } catch (e) { seErroDeCodigo(e, 'Apoio'); }
+
+    /* O objectivo deste alvo: fixo se estiver em revolta, senão o do painel. */
+    const objetivoDe = (alvoId) => {
+      const auto = (lista.revoltasAuto || {})[String(alvoId)];
+      if (auto) return c.objetivoRevolta || {};
+      return lista.objetivoPadrao || c.objetivoPadrao || {};
+    };
+
+    /* Quanto ainda falta neste alvo, por unidade. */
+    const faltaNoAlvo = (alvoId) => {
+      const obj = objetivoDe(alvoId);
+      const tem = defesaNoAlvo[String(alvoId)] || {};
+      const out = {};
+      for (const u of Object.keys(obj)) {
+        const f2 = (Number(obj[u]) || 0) - (Number(tem[u]) || 0);
+        if (f2 > 0) out[u] = f2;
+      }
+      return out;
+    };
     /* O LIMITE DE CIDADES É POR ALVO.
      *
      * Era um número só para todos. Quando a revolta o punha a 10, subia
@@ -33091,8 +33171,12 @@ function makeApoioModule(opts) {
         .filter((t) => !reg[chavePar(t.id, alvo)])
         .sort((a, b) => (uso[a.id] || 0) - (uso[b.id] || 0));
 
+      /* Com objectivo, quem manda parar é o objectivo — não o número de
+       * cidades. Um alvo em revolta precisa do que precisa. */
+      const servindoObjetivo = Object.keys(faltaNoAlvo(alvo)).length > 0;
+
       for (const t of candidatas) {
-        if (Object.keys(reg).filter((k) => {
+        if (!servindoObjetivo && Object.keys(reg).filter((k) => {
           const m = k.match(/^(\d+)->(\d+)$/); return m && Number(m[2]) === alvo;
         }).length >= limiteDe(alvo)) break;
 
@@ -33104,8 +33188,34 @@ function makeApoioModule(opts) {
         const tem = (() => { try { return mUw.ITowns.getTown(Number(t.id)).units() || {}; } catch (e) { return {}; } })();
         const carga = {};
         let algum = 0;
-        for (const u of Object.keys(pacote)) {
-          const q = Math.min(Number(pacote[u]) || 0, Number(tem[u]) || 0);
+
+        /* ===== O QUE MANDAR: O PACOTE OU A FATIA DO QUE FALTA ============
+         *
+         * Sem objectivo, vale o pacote de sempre — cada conta manda o mesmo e
+         * o limite de cidades trava o total.
+         *
+         * Com objectivo, manda-se o que FALTA para o cumprir, repartido pelas
+         * contas vivas. Se cada conta mandasse tudo o que falta, as primeiras
+         * a correr enchiam o alvo e as outras chegavam a um alvo cheio; se
+         * mandasse só o pacote, nunca se chegaria ao objectivo.
+         *
+         * A fatia é recalculada a cada passagem: se uma conta não tiver tropa
+         * e não mandar, a parte dela redistribui-se pelas outras na passagem
+         * seguinte, em vez de ficar um buraco. */
+        const falta = faltaNoAlvo(alvo);
+        const temObjetivo = Object.keys(falta).length > 0;
+        const desejado = {};
+
+        if (temObjetivo) {
+          for (const u of Object.keys(falta)) {
+            desejado[u] = Math.max(1, Math.ceil(falta[u] / contasVivas));
+          }
+        } else {
+          for (const u of Object.keys(pacote)) desejado[u] = Number(pacote[u]) || 0;
+        }
+
+        for (const u of Object.keys(desejado)) {
+          const q = Math.min(Number(desejado[u]) || 0, Number(tem[u]) || 0);
           if (q > 0) { carga[u] = q; algum += q; }
         }
         if (!algum) continue;
@@ -33297,6 +33407,25 @@ function makeApoioModule(opts) {
             birremes. Num envio único tudo viaja à velocidade do mais lento — com um
             transporte grande, o apoio demora o dobro.
           </div>
+
+        <div style="border:1px solid #2c3e50;border-radius:5px;padding:6px;margin-bottom:8px">
+          <div class="mEtiq" style="margin-bottom:3px">objectivo de defesa por alvo</div>
+          <div style="opacity:.6;font-size:12px;margin-bottom:4px">
+            Quanta tropa se quer EM CADA alvo, somando as contas todas. Com
+            objectivo, as contas mandam até estar cumprido e o limite de
+            cidades deixa de mandar parar. Vazio = usa o pacote e o limite.
+          </div>
+          <div style="font-size:12px">
+            E<input type="number" id="ap-obj-sword" value="${(c.objetivoPadrao || {}).sword || ''}" style="width:60px">
+            A<input type="number" id="ap-obj-archer" value="${(c.objetivoPadrao || {}).archer || ''}" style="width:60px">
+            H<input type="number" id="ap-obj-hoplite" value="${(c.objetivoPadrao || {}).hoplite || ''}" style="width:60px">
+            B<input type="number" id="ap-obj-bireme" value="${(c.objetivoPadrao || {}).bireme || ''}" style="width:60px">
+          </div>
+          <div style="opacity:.55;font-size:11px;margin-top:3px">
+            Nas TUAS cidades em revolta usa-se sempre um objectivo fixo:
+            ${Object.keys(c.objetivoRevolta || {}).map((u) => `${(c.objetivoRevolta[u])} ${u}`).join(' · ')}.
+          </div>
+        </div>
         </div> cidades por alvo
         </div>
       </div>
@@ -33640,6 +33769,17 @@ function makeApoioModule(opts) {
           bireme: Number(container.querySelector('#ap-bireme').value) || 0,
         },
         maxCidadesPorAlvo: Number(container.querySelector('#ap-max').value) || 10,
+        objetivoPadrao: (() => {
+          /* Vazio ou zero = sem objectivo para esse tipo de unidade. */
+          const o = {};
+          for (const [id, u] of [['#ap-obj-sword', 'sword'], ['#ap-obj-archer', 'archer'],
+            ['#ap-obj-hoplite', 'hoplite'], ['#ap-obj-bireme', 'bireme']]) {
+            const el = container.querySelector(id);
+            const n = el ? Number(el.value) : 0;
+            if (n > 0) o[u] = n;
+          }
+          return o;
+        })(),
         evitarTransporteGrande: !!(container.querySelector('#ap-sotr') || {}).checked,
       });
       ctx.log('Apoio: definições guardadas.');
