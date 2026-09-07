@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.08.1930
+// @version      2026.09.08.2030
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1675,7 +1675,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.08.1930';
+  const MAESTRO_VERSAO = '2026.09.08.2030';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -5488,11 +5488,26 @@ function makeConstrucaoModule(opts) {
   /* ---------------------- leitura do estado do jogo -------------------- */
   let uw; // preenchido no run via ctx
 
+  /* Porque é que a última leitura dos dados de construção falhou.
+   *
+   * A colecção `BuildingBuildData` só traz a cidade ACTIVA — a mesma
+   * armadilha das ordens e das filas. Quando a troca de cidade ainda não
+   * terminou, a colecção tem a anterior e a procura falha. Sem isto, o
+   * registo dizia apenas "sem dados" e não se percebia porquê. */
+  let ultimaFalhaBuildData = '';
+
   function getBuildData(townId) {
     try {
       const col = uw.MM.getCollections().BuildingBuildData[0];
       const m = col.models.find((x) => Number(x.attributes.town_id) === Number(townId));
-      if (!m) return null;
+      if (!m) {
+        try {
+          const tinha = (col.models || []).map((x) => Number(x.attributes.town_id)).slice(0, 3);
+          ultimaFalhaBuildData = `a colecção tinha ${tinha.join(', ') || 'nada'} `
+            + `e a cidade activa é ${Number(uw.Game.townId)}`;
+        } catch (e) { ultimaFalhaBuildData = ''; }
+        return null;
+      }
       const bd = m.attributes.building_data;
       const out = {};
       Object.keys(bd).forEach((k) => {
@@ -6210,8 +6225,22 @@ function makeConstrucaoModule(opts) {
       if (cfgGratis()) await concluirGratuitas(ctx, town.id);
 
       let popEsgotada = false;
-      const bd = getBuildData(town.id);
-      if (!bd) { log(`${town.name}: sem dados de construção.`); continue; }
+      /* SEGUNDA TENTATIVA antes de desistir.
+       *
+       * A troca de cidade pode ainda não ter chegado ao fim quando se lê. Com
+       * dezenas de cidades a verificar de seguida, isso acontecia em cadeia e
+       * o módulo saltava-as todas. Espera-se um pouco e tenta-se outra vez —
+       * é quase sempre o suficiente. */
+      let bd = getBuildData(town.id);
+      if (!bd) {
+        await ctx.sleep(ctx.rand(700, 1400));
+        bd = getBuildData(town.id);
+      }
+      if (!bd) {
+        (ctx.logRotina || log)(`${town.name}: sem dados de construção`
+          + (ultimaFalhaBuildData ? ` (${ultimaFalhaBuildData})` : '') + '.');
+        continue;
+      }
 
       /* POPULAÇÃO ESGOTADA: quando `blocked` iguala `max`, NENHUM edifício
        * pode subir — o jogo põe can_upgrade a falso em todos. Sem este aviso,
