@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.09.0330
+// @version      2026.09.09.0430
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1675,7 +1675,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.09.0330';
+  const MAESTRO_VERSAO = '2026.09.09.0430';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -3716,8 +3716,15 @@
 
     // Tamanho comedido: o painel não deve tapar o jogo. Ajusta-se pelo canto
     // e o tamanho fica guardado.
-    const larguraOmissao = Math.min(560, Math.max(420, Math.floor(window.innerWidth * 0.36)));
-    const alturaOmissao = Math.min(820, Math.max(480, Math.floor(window.innerHeight * 0.82)));
+    /* MAIS ESPAÇO POR OMISSÃO.
+     *
+     * Eram 36% da largura, e com vinte e quatro módulos — muitos deles com
+     * tabelas e listas — ficava tudo espremido. Metade do ecrã dá folga para
+     * a coluna dos módulos e o conteúdo ao lado sem tapar o jogo.
+     *
+     * Continua a ajustar-se pelo canto e o tamanho fica guardado. */
+    const larguraOmissao = Math.min(880, Math.max(560, Math.floor(window.innerWidth * 0.50)));
+    const alturaOmissao = Math.min(900, Math.max(520, Math.floor(window.innerHeight * 0.86)));
     /* A posição guardada pode ficar fora do ecrã se a janela encolher (ou se
      * ficou de uma resolução maior). Limitar sempre ao que é visível — senão o
      * cabeçalho fica inacessível e não há como arrastar de volta. */
@@ -3832,9 +3839,13 @@
           </div>
         </div>
 
-        <div style="background:#0d141c;padding:6px 8px;border-radius:4px;margin-top:7px">
-          <b style="font-size:11px">Gist (partilha entre contas)</b>
-          <div style="opacity:.6;font-size:10px;margin:2px 0 4px">
+        <!-- CONFIGURAÇÃO QUE SE PÕE UMA VEZ FICA FECHADA.
+             As credenciais, o endereço do Firebase e os avisos do Discord
+             mexem-se uma vez e nunca mais. Estarem sempre abertos empurrava
+             para baixo tudo o que se consulta todos os dias. -->
+        <details style="background:#0d141c;padding:6px 8px;border-radius:4px;margin-top:7px">
+          <summary style="cursor:pointer;font-size:11px;font-weight:600">Gist (partilha entre contas)</summary>
+          <div style="opacity:.6;font-size:10px;margin:4px 0">
             Guardado NESTA conta — não se perde quando o script se actualiza.
           </div>
           <div style="display:flex;gap:4px;align-items:center;margin-bottom:3px">
@@ -3850,11 +3861,11 @@
           <button id="maestro-gist-guardar" style="width:100%;margin-top:4px;font-size:10px">
             Guardar credenciais
           </button>
-        </div>
+        </details>
 
-        <div style="background:#0d141c;padding:6px 8px;border-radius:4px;margin-top:7px">
-          <b style="font-size:11px">Firebase (avisos de ataque)</b>
-          <div style="opacity:.6;font-size:10px;margin:2px 0 4px">
+        <details style="background:#0d141c;padding:6px 8px;border-radius:4px;margin-top:7px">
+          <summary style="cursor:pointer;font-size:11px;font-weight:600">Firebase (avisos de ataque)</summary>
+          <div style="opacity:.6;font-size:10px;margin:4px 0">
             A main avisa as multis dos ataques que envia. Sem isto, uma conta
             sem Administrador não vê os ataques a chegar e não esquiva.
           </div>
@@ -3865,7 +3876,7 @@
             Guardar e testar
           </button>
           <div id="maestro-fb-estado" style="font-size:10px;opacity:.75;margin-top:3px"></div>
-        </div>
+        </details>
         <div style="display:flex;gap:6px;align-items:center">
           <span class="mEtiq" style="flex:0 0 auto">partilhar</span>
           <button id="perfil-publicar" style="flex:1" title="Enviar este perfil para as outras contas">↑ Publicar</button>
@@ -3977,6 +3988,33 @@
           text-align:left; letter-spacing:0;
         }
         #maestro-panel *{ text-align:inherit; font-family:inherit; box-sizing:border-box; }
+
+        /* HIERARQUIA.
+         *
+         * O painel tinha tudo com o mesmo peso — título, explicação, opções e
+         * campos na mesma cor e tamanho — e o olho não tinha por onde entrar.
+         * Estas regras dão três níveis: o que se lê primeiro, o que se lê a
+         * seguir, e o que só se lê quando faz falta. */
+        #maestro-panel h3, #maestro-panel .mTitulo{
+          font-size:15px; font-weight:600; color:var(--mTxt);
+          margin:0 0 2px; letter-spacing:-.1px;
+        }
+        #maestro-panel .mAjuda{
+          font-size:11.5px; line-height:1.4; color:var(--mDim); margin:0 0 6px;
+        }
+        /* Caixas dentro de caixas roubavam espaço e atenção: uma moldura só,
+         * e o resto separado por espaço em vez de linhas. */
+        #maestro-panel .mCaixa .mCaixa{
+          border:0; background:transparent; padding:0; margin:6px 0 0;
+        }
+        #maestro-panel details > summary{
+          list-style:none; padding:2px 0; color:var(--mTxt); opacity:.9;
+        }
+        #maestro-panel details > summary::-webkit-details-marker{ display:none; }
+        #maestro-panel details > summary::before{
+          content:'▸ '; color:var(--mFaint);
+        }
+        #maestro-panel details[open] > summary::before{ content:'▾ '; }
         #maestro-panel b,#maestro-panel strong{ font-weight:600; }
 
         /* micro-etiquetas: maiúsculas espaçadas, o registo de sala de controlo */
@@ -4774,6 +4812,9 @@
       }
     }
 
+    /* O que está escrito na caixa de procura dos módulos. */
+    let filtroModulos = '';
+
     /* Que grupos estão abertos na coluna. Guardado para o painel não esquecer
      * de cada vez que se abre. */
     function gruposAbertos() {
@@ -4813,7 +4854,20 @@
       const abertos = gruposAbertos();
       const doAberto = (blocos.find((g) => g.mods.some((m) => m.id === moduloAberto)) || {}).nome;
 
+      /* PROCURA.
+       *
+       * Vinte e quatro módulos são muitos para percorrer com os olhos. Escreve
+       * duas letras e a lista filtra — e quando há procura, os grupos abrem
+       * todos, senão o que se procura ficava escondido dentro de um fechado. */
+      const termo = (filtroModulos || '').trim().toLowerCase();
+      const bate = (m) => !termo || String(m.nome || '').toLowerCase().includes(termo)
+        || String(m.id || '').toLowerCase().includes(termo);
+
       rail.innerHTML = `
+        <input id="mRailProcura" placeholder="procurar módulo…" value="${esc(filtroModulos || '')}"
+          style="width:100%;margin-bottom:5px;font-size:12px;padding:3px 5px;
+                 background:var(--mSurf);border:1px solid var(--mLine);
+                 border-radius:4px;color:var(--mTxt)">
         <div class="mRailItem ${moduloAberto === '' ? 'mSel' : ''} mLigado" data-ir="">
           <span class="mPonto"></span>
           <span style="font-size:13px;width:17px;text-align:center;flex:0 0 auto">🏠</span>
@@ -4821,7 +4875,9 @@
         </div>
         ${blocos.map((g) => {
           const on = g.mods.filter(estaAtivo).length;
-          const aberto = abertos[g.nome] !== false && (abertos[g.nome] || g.nome === doAberto);
+          /* Com procura activa, os grupos abrem todos. */
+          const aberto = !!termo
+            || (abertos[g.nome] !== false && (abertos[g.nome] || g.nome === doAberto));
           return `
           <div class="mRailGrupo" data-grupo="${g.nome}" style="cursor:pointer">
             <span style="width:9px;color:var(--mFaint)">${aberto ? '▾' : '▸'}</span>
@@ -4830,8 +4886,16 @@
             <a href="#" data-grupo-off="${g.nome}" title="desligar todos"
                style="font-size:9px;color:var(--mFaint)">off</a>
           </div>
-          ${aberto ? g.mods.map((m) => item(m.id, m.nome, estaAtivo(m))).join('') : ''}`;
+          ${aberto ? g.mods.filter(bate).map((m) => item(m.id, m.nome, estaAtivo(m))).join('') : ''}`;
         }).join('')}`;
+
+      /* A procura não redesenha o painel todo: só filtra a lista. Redesenhar
+       * fazia perder o que estivesse escrito ao fim de cada tecla. */
+      const proc = rail.querySelector('#mRailProcura');
+      if (proc) {
+        proc.oninput = () => { filtroModulos = proc.value; desenhar(); };
+        if (termo) { proc.focus(); proc.setSelectionRange(termo.length, termo.length); }
+      }
 
       rail.querySelectorAll('[data-grupo]').forEach((el) => {
         el.addEventListener('click', (ev) => {
