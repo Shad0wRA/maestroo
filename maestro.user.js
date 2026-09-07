@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.09.0930
+// @version      2026.09.09.1030
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1694,7 +1694,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.09.0930';
+  const MAESTRO_VERSAO = '2026.09.09.1030';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -36415,17 +36415,74 @@ function makeFecharIlhaModule(opts) {
       return (f && f.url && f.url()) ? f : null;
     } catch (e) { return null; }
   }
+  /* ===== FILA DE ILHAS, UMA DE CADA VEZ ================================
+   *
+   * Guardava-se UM plano: marcar outra ilha apagava a anterior. Com 20 lugares
+   * por ilha e 21 contas sobra sempre uma conta, e quem expande a sério quer
+   * várias ilhas em vista.
+   *
+   * Agora há uma FILA. Marcas as que quiseres, entram pela ordem em que as
+   * marcaste, e só a PRIMEIRA recebe contas. Quando ela fechar — os vinte
+   * lugares ocupados, não apenas os envios feitos — a seguinte arranca
+   * sozinha.
+   *
+   * Um aborto PÁRA a fila e avisa: alguém de fora entrou na ilha e convém
+   * olhar antes de mandar mais vinte colonizadores.
+   *
+   * O caminho antigo continua a ser lido uma vez, para não perder um plano em
+   * curso quando esta versão entrar. */
   const caminho = () => `fecharIlha/${mWorld}`;
+  const caminhoFila = () => `fecharIlhaFila/${mWorld}`;
 
-  async function lerPlano() {
+  async function lerFila() {
     const f = fb();
-    if (!f) return null;
-    try { return await f.ler(caminho()); } catch (e) { return null; }
+    if (!f) return { planos: [], parada: false };
+    try {
+      const d = await f.ler(caminhoFila());
+      if (d && Array.isArray(d.planos)) return { planos: d.planos, parada: !!d.parada, motivo: d.motivo };
+
+      /* Nada na fila: aproveitar um plano antigo, se existir. */
+      const velho = await f.ler(caminho());
+      if (velho && velho.atribuicoes) return { planos: [velho], parada: false };
+      return { planos: [], parada: false };
+    } catch (e) { return { planos: [], parada: false }; }
   }
-  async function gravarPlano(p) {
+
+  async function gravarFila(fila) {
     const f = fb();
     if (!f) return { ok: false, msg: 'sem Firebase' };
-    try { return await f.escrever(caminho(), p); } catch (e) { return { ok: false, msg: e.message }; }
+    try { return await f.escrever(caminhoFila(), fila); }
+    catch (e) { return { ok: false, msg: e.message }; }
+  }
+
+  /* O plano ACTIVO é o primeiro que ainda não fechou nem abortou. */
+  function planoActivo(fila) {
+    return (fila.planos || []).find((p2) => p2 && p2.estado !== 'feito' && p2.estado !== 'abortado') || null;
+  }
+
+  /* Compatibilidade: o resto do módulo continua a falar de um plano só. */
+  let filaEmMemoria = { planos: [], parada: false };
+
+  async function lerPlano() {
+    filaEmMemoria = await lerFila();
+    if (filaEmMemoria.parada) return null;
+    return planoActivo(filaEmMemoria);
+  }
+
+  async function gravarPlano(p) {
+    /* Substitui o plano com a mesma chave dentro da fila. */
+    const fila = filaEmMemoria && Array.isArray(filaEmMemoria.planos)
+      ? filaEmMemoria : await lerFila();
+    const i = (fila.planos || []).findIndex((x) => x && x.chave === p.chave);
+    if (i >= 0) fila.planos[i] = p; else fila.planos.push(p);
+
+    /* Um aborto pára a fila inteira. */
+    if (p.estado === 'abortado') {
+      fila.parada = true;
+      fila.motivo = `${p.chave}: ${p.motivo || 'abortado'}`;
+    }
+    filaEmMemoria = fila;
+    return gravarFila(fila);
   }
 
   /* ---------------------- leitura da ilha ------------------------------- */
@@ -36567,9 +36624,19 @@ function makeFecharIlhaModule(opts) {
       atribuicoes, prontos: {}, enviados: {},
       deFora: contas.length - quantas,
     };
-    const r = await gravarPlano(plano);
+    /* Entra no FIM da fila. Se já houver uma ilha em curso, esta espera. */
+    const fila = await lerFila();
+    if ((fila.planos || []).some((x) => x && x.chave === plano.chave
+      && x.estado !== 'feito' && x.estado !== 'abortado')) {
+      return { ok: false, msg: 'essa ilha já está na fila' };
+    }
+    fila.planos = (fila.planos || []).concat([plano]);
+    filaEmMemoria = fila;
+
+    const r = await gravarFila(fila);
+    const posicao = fila.planos.filter((x) => x.estado !== 'feito' && x.estado !== 'abortado').length;
     return r && r.ok
-      ? { ok: true, plano }
+      ? { ok: true, plano, posicao }
       : { ok: false, msg: (r && r.msg) || 'não consegui gravar' };
   }
 
@@ -36593,6 +36660,11 @@ function makeFecharIlhaModule(opts) {
     if (!fb()) { rotina('Fechar ilha: sem Firebase — não dá para combinar nada.'); return; }
 
     const plano = await lerPlano();
+    if (filaEmMemoria && filaEmMemoria.parada) {
+      rotina(`Fechar ilha: a fila está PARADA — ${filaEmMemoria.motivo || 'um plano abortou'}. `
+        + 'Vê o painel para continuar ou apagar.');
+      return;
+    }
     if (!plano || !plano.atribuicoes) { rotina('Fechar ilha: não há plano nenhum.'); return; }
 
     /* O FIREBASE NÃO GUARDA OBJECTOS VAZIOS.
@@ -36730,6 +36802,34 @@ function makeFecharIlhaModule(opts) {
       }
     }
 
+    /* ---- 1b. A ILHA JÁ FECHOU? ----
+     *
+     * Não basta terem partido: um plano só acaba quando os VINTE lugares
+     * estiverem ocupados. É por isso que a fila espera pela viagem — a ilha só
+     * está fechada quando está mesmo. */
+    if (souODono && plano.estado === 'lancar') {
+      const townsD = ctx.getMyTowns() || [];
+      if (townsD.length) {
+        const ilhaAgora = await estadoDaIlha(plano.x, plano.y, townsD[0].id);
+        if (!ilhaAgora.livres.length) {
+          plano.estado = 'feito';
+          plano.fechadaEm = Math.floor(Date.now() / 1000);
+          await gravarPlano(plano);
+          log(`✅ Fechar ilha ${plano.chave}: os ${LUGARES} lugares estão ocupados — ilha fechada. `
+            + 'A seguinte da fila arranca agora.');
+          if (ctx.avisarDiscord) {
+            ctx.avisarDiscord('ataque', {
+              titulo: '✅ Ilha fechada',
+              descricao: `A ilha **${plano.chave}** está fechada.`,
+            });
+          }
+          return;
+        }
+        rotina(`Fechar ilha ${plano.chave}: faltam ${ilhaAgora.livres.length} lugar(es) `
+          + 'por ocupar — a fila espera pela chegada dos colonizadores.');
+      }
+    }
+
     /* ---- 2. O QUE A CONTA QUE CRIOU O PLANO TEM DE FAZER ---- */
     if (!souODono || plano.estado !== 'preparar') return;
 
@@ -36818,7 +36918,7 @@ function makeFecharIlhaModule(opts) {
       <div id="fi-estado" style="font-size:12px;opacity:.7">a ler o plano…</div>
 
       <button id="fi-apagar" style="cursor:pointer;font-size:11px;margin-top:8px">
-        apagar o plano actual
+        limpar a fila toda
       </button>`;
 
     container.querySelector('#fi-criar').onclick = async () => {
@@ -36836,19 +36936,42 @@ function makeFecharIlhaModule(opts) {
     };
 
     container.querySelector('#fi-apagar').onclick = async () => {
-      const p = await lerPlano();
-      if (!p) { ctx.log('Fechar ilha: não há plano.'); return; }
-      p.estado = 'feito';
-      await gravarPlano(p);
-      ctx.log('Fechar ilha: plano encerrado.');
+      filaEmMemoria = { planos: [], parada: false };
+      await gravarFila(filaEmMemoria);
+      ctx.log('Fechar ilha: fila limpa.');
       painel(container, ctx);
     };
 
     (async () => {
       const alvo = container.querySelector('#fi-estado');
       if (!alvo) return;
-      const p = await lerPlano();
-      if (!p || !p.atribuicoes) { alvo.textContent = 'Não há plano nenhum.'; return; }
+
+      const fila = await lerFila();
+      const emCurso = (fila.planos || []).filter((x) => x && x.estado !== 'feito' && x.estado !== 'abortado');
+
+      /* A FILA, com o activo em primeiro. */
+      const htmlFila = (fila.planos || []).length
+        ? `<div style="margin-bottom:6px">
+            ${fila.parada ? `<div style="color:var(--mStop);font-size:12px;margin-bottom:4px">
+              ⛔ fila PARADA — ${esc(fila.motivo || 'um plano abortou')}</div>` : ''}
+            ${(fila.planos || []).map((x, i) => {
+              const activo = emCurso.length && x === emCurso[0];
+              return `<div style="display:flex;gap:6px;align-items:center;font-size:12px;
+                        padding:2px 0;opacity:${x.estado === 'feito' || x.estado === 'abortado' ? '.5' : '1'}">
+                <span style="width:16px;opacity:.6">${activo ? '▶' : (i + 1)}</span>
+                <span style="flex:1"><b>${esc(x.chave)}</b> · ${esc(x.estado)}</span>
+                <a href="#" data-tirar="${esc(x.chave)}" style="font-size:11px;color:var(--mFaint)">tirar</a>
+              </div>`;
+            }).join('')}
+          </div>`
+        : '';
+
+      const p = emCurso[0];
+      if (!p || !p.atribuicoes) {
+        alvo.innerHTML = htmlFila + '<div style="opacity:.6;font-size:12px">Não há nenhuma ilha em curso.</div>';
+        ligarTirar();
+        return;
+      }
       const prontos = p.prontos || {};
       const enviados = p.enviados || {};
       const nomes = Object.keys(p.atribuicoes);
@@ -36858,12 +36981,30 @@ function makeFecharIlhaModule(opts) {
           <td style="padding:2px 4px">${enviados[n] ? '🏛️ enviado'
             : (prontos[n] ? '✅ pronto' : '⏳ à espera')}</td>
         </tr>`).join('');
-      alvo.innerHTML = `
+      alvo.innerHTML = htmlFila + `
         <div style="margin-bottom:4px">
           Ilha <b>${esc(p.chave)}</b> · estado <b>${esc(p.estado)}</b>
           ${p.motivo ? `<span style="opacity:.7">· ${esc(p.motivo)}</span>` : ''}
         </div>
         <table style="width:100%;border-collapse:collapse;font-size:12px">${linhas}</table>`;
+      ligarTirar();
+
+      function ligarTirar() {
+        alvo.querySelectorAll('[data-tirar]').forEach((el) => {
+          el.onclick = async (ev) => {
+            ev.preventDefault();
+            const chave = el.getAttribute('data-tirar');
+            const f2 = await lerFila();
+            f2.planos = (f2.planos || []).filter((x) => x && x.chave !== chave);
+            /* Tirar o plano que abortou liberta a fila. */
+            if (!f2.planos.some((x) => x.estado === 'abortado')) { f2.parada = false; delete f2.motivo; }
+            filaEmMemoria = f2;
+            await gravarFila(f2);
+            ctx.log(`Fechar ilha: ${chave} saiu da fila.`);
+            painel(container, ctx);
+          };
+        });
+      }
     })();
   }
 
