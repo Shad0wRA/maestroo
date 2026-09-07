@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.08.1230
+// @version      2026.09.08.1330
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1675,7 +1675,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.08.1230';
+  const MAESTRO_VERSAO = '2026.09.08.1330';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -5336,13 +5336,48 @@ function makeConstrucaoModule(opts) {
     return { mapa, conflitos };
   }
 
-  function atualizarBloqueios(contadores, blockedSet, naoDaoAgora, deuAgora, limite) {
+  /* BLOQUEAR NÃO É DESISTIR PARA SEMPRE.
+   *
+   * Um edifício que não avança dez rondas seguidas era posto de lado e nunca
+   * mais tentado. Mas as razões mudam: uma cidade sem população livre
+   * desbloqueia quando a tropa morre ou sai, um requisito cumpre-se quando
+   * outro edifício sobe. Só o caso do especial já construído noutra cidade é
+   * permanente, e o código tratava todos como se fossem.
+   *
+   * Agora o bloqueio tem PRAZO, e o prazo cresce: a primeira vez volta-se a
+   * tentar daí a uma hora, depois a três, depois a seis, até um tecto de doze.
+   * Se for mesmo permanente, custa uma tentativa de meio em meio dia em vez de
+   * dez seguidas. Se as condições mudarem, ele apanha sozinho. */
+  const ESPERAS_H = [1, 3, 6, 12];
+
+  function atualizarBloqueios(contadores, blockedSet, naoDaoAgora, deuAgora, limite, ate) {
     limite = limite || BLOCK_AFTER_ROUNDS;
+    ate = ate || {};
     const recem = [];
-    for (const b of deuAgora) { contadores[b] = 0; if (blockedSet.has(b)) blockedSet.delete(b); }
+    const agora = Date.now();
+
+    /* Prazos cumpridos: sai do bloqueio e volta a tentar. */
+    for (const b of Object.keys(ate)) {
+      if (Number(ate[b].quando) > agora) continue;
+      blockedSet.delete(b);
+      contadores[b] = 0;
+      ate[b].quando = 0;                 // guarda-se o nível para a próxima espera ser maior
+    }
+
+    for (const b of deuAgora) {
+      contadores[b] = 0;
+      if (blockedSet.has(b)) blockedSet.delete(b);
+      delete ate[b];                     // avançou: esquece o histórico de esperas
+    }
+
     for (const b of naoDaoAgora) {
       contadores[b] = (contadores[b] || 0) + 1;
-      if (contadores[b] >= limite && !blockedSet.has(b)) { blockedSet.add(b); recem.push(b); }
+      if (contadores[b] >= limite && !blockedSet.has(b)) {
+        blockedSet.add(b);
+        const nivel = Math.min((Number((ate[b] || {}).nivel) || 0), ESPERAS_H.length - 1);
+        ate[b] = { nivel: nivel + 1, quando: agora + ESPERAS_H[nivel] * 3600 * 1000 };
+        recem.push({ b, horas: ESPERAS_H[nivel] });
+      }
     }
     return recem;
   }
@@ -6381,10 +6416,13 @@ function makeConstrucaoModule(opts) {
       // com a população esgotada, não se conta nada contra os edifícios
       const recem = popEsgotada
         ? []
-        : atualizarBloqueios(cst.contadores, blockedSet, naoDaoArr, deuAgora, BLOCK_AFTER_ROUNDS);
-      for (const b of recem) {
-        log(`🚫 ${town.name}: ${NOMES_PT[b] || b} não avança há ${BLOCK_AFTER_ROUNDS} rondas e NÃO é falta de recursos`
-          + ` — deixo de o tentar. Verifica os requisitos ou se é um especial já construído noutra cidade.`);
+        : atualizarBloqueios(cst.contadores, blockedSet, naoDaoArr, deuAgora, BLOCK_AFTER_ROUNDS,
+          (cst.ate = cst.ate || {}));
+      for (const r2 of recem) {
+        const b = r2.b || r2;
+        rotina(`${town.name}: ${NOMES_PT[b] || b} não avança há ${BLOCK_AFTER_ROUNDS} rondas `
+          + `e não é falta de recursos — descanso ${r2.horas || 1} h e tento outra vez. `
+          + 'Se for um especial já construído noutra cidade, tira-o do template.');
       }
       /* "À espera de recursos" é o estado NORMAL de quase todas as cidades —
        * uma linha por cidade enchia o registo e escondia o que interessa.
