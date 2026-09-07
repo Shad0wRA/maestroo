@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.09.0830
+// @version      2026.09.09.0930
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -234,20 +234,7 @@
     return n;
   }
 
-  function alguemQuerNC(quem) {
-    try {
-      const d = JSON.parse(localStorage.getItem(QUER_NC_KEY) || '{}');
-      const agora = Math.floor(Date.now() / 1000);
-      const minha = PRIORIDADE_NC[quem] || 0;
-      for (const k of Object.keys(d)) {
-        const e = d[k];
-        const ate = (e && typeof e === 'object') ? Number(e.ate) : Number(e);
-        if (!(ate > agora)) continue;
-        if ((PRIORIDADE_NC[k] || 0) > minha) return k;
-      }
-    } catch (e) {}
-    return null;
-  }
+  
 
   function pareceErro(msg) {
     const t = String(msg || '');
@@ -1707,7 +1694,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.09.0830';
+  const MAESTRO_VERSAO = '2026.09.09.0930';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -2206,6 +2193,41 @@
 
   const CHAVES_LOCAIS_DO_PERFIL = [
     'grepoFundacao_estado_v1',      // o que ESTA conta enviou
+
+    /* ============ MEMÓRIAS DE CADA CONTA ==================================
+     *
+     * Vinte e uma chaves que estavam a viajar no perfil por engano. A conta
+     * principal publica e as outras dezanove aplicam — e ficavam com o estado
+     * DELA: as missões que ela já iniciou, o conteúdo das grutas dela, os
+     * edifícios que ela aprendeu serem indemolíveis, os desvios do encaixe
+     * dela, as cidades que ELA levou com ataques.
+     *
+     * Nenhuma destas é configuração. São coisas que cada conta descobre a
+     * jogar, e partilhá-las faz uma conta agir com base no que aconteceu a
+     * outra. É a mesma falha que já apanhámos com a equipa dos colonizadores,
+     * o registo do apoio e o histórico da frota — desta vez em maior escala.
+     * ==================================================================== */
+    'grepoAldeias_captcha_v1',           // captcha visto NESTA conta
+    'grepoAlertas_reforco_v1',           // reforços que ESTA conta pediu
+    'grepoAlertas_ultimaPassagem_v1',    // quando ESTA conta olhou pela última vez
+    'grepoApoio_cacheAlvos_v1',          // os alvos como ESTA conta os leu
+    'grepoApoio_porRemover_v1',          // remoções pendentes DESTA conta
+    'grepoApoio_ultimaRevolta_v1',       // quando ESTA conta procurou revoltas
+    'grepoApoio_pedidosFeitos_v1',       // pedidos que ESTA conta fez
+    'grepoColonos_ultimaPartilha_v1',    // quando ESTA conta publicou os colonos
+    'grepoConstru_atacadas_v1',          // cidades DESTA conta que foram atacadas
+    'grepoConstru_gratis_v1',            // obras grátis que ESTA conta apanhou
+    'grepoConstru_indemoliveis_v1',      // o que ESTA conta aprendeu não dar para demolir
+    'grepoConstrucao_estado_v1',         // onde ESTA conta ia na volta das cidades
+    'grepoDeuses_ultimoEquilibrio_v1',   // quando ESTA conta equilibrou
+    'grepoEncaixe_desvios_v1',           // os desvios medidos NESTA conta
+    'grepoEncaixe_rajadas_v1',           // as rajadas DESTA conta
+    'grepoFabricaNC_estado_v1',          // em que cidade ESTA fábrica ia
+    'grepoFeiticos_estado_v1',           // feitiços que ESTA conta lançou
+    'grepoGruta_conteudo_v1',            // prata nas grutas DESTA conta
+    'grepoHerois_adiar_v1',              // heróis que ESTA conta adiou
+    'grepoMissoes_iniciadas_v1',         // missões que ESTA conta começou
+    'grepoPesquisa_gratis_v1',           // pesquisas grátis DESTA conta
 
     /* APRENDIZAGENS E REGISTOS DE CADA CONTA.
      *
@@ -8566,6 +8588,18 @@ function makeRecrutamentoModule(opts) {
   /* Guarda o que se leu de cada cidade, para não repetir o pedido. */
   const cacheTropasReais = {};
 
+  /* ADORMECIDA DE PROPÓSITO — NÃO APAGAR.
+   *
+   * Lê a tropa REAL no servidor, abrindo o quartel e o porto daquela cidade.
+   * É a cura da família de erro que mais nos custou esta semana: confiar em
+   * colecções e registos locais desactualizados ou que só têm a cidade activa.
+   *
+   * Não está ligada porque custa DOIS pedidos por cidade. Com trinta cidades
+   * são sessenta por passagem, e andamos a poupar pedidos por causa das
+   * verificações de bot.
+   *
+   * Quando usar: como confirmação PONTUAL, quando os números locais disserem
+   * algo improvável, e não como fonte de rotina. */
   async function tropasReaisDoServidor(townId, validadeMs) {
     /* Uma leitura por cidade e por passagem, não uma por unidade. Com 30
      * cidades e 8 unidades, sem isto seriam 480 pedidos por passagem. */
@@ -8900,26 +8934,7 @@ function makeRecrutamentoModule(opts) {
     } catch (e) { return Infinity; }
   }
 
-  function armazemSuficiente(recursos, pct, custo) {
-    if (!pct || !recursos || !recursos.storage) return { ok: true };
-    if (!custo) return { ok: true };
-    const cw = Number(custo.wood) || 0, cs = Number(custo.stone) || 0, ci = Number(custo.iron) || 0;
-    if (!cw && !cs && !ci) return { ok: true };         // não gasta recursos
-
-    const cabemAgora = Math.min(
-      cw ? Math.floor((recursos.wood || 0) / cw) : Infinity,
-      cs ? Math.floor((recursos.stone || 0) / cs) : Infinity,
-      ci ? Math.floor((recursos.iron || 0) / ci) : Infinity);
-    const cabemCheio = Math.min(
-      cw ? Math.floor(recursos.storage / cw) : Infinity,
-      cs ? Math.floor(recursos.storage / cs) : Infinity,
-      ci ? Math.floor(recursos.storage / ci) : Infinity);
-    if (!Number.isFinite(cabemCheio) || cabemCheio <= 0) return { ok: true };
-
-    const fracao = cabemAgora / cabemCheio;
-    if (fracao >= pct / 100) return { ok: true };
-    return { ok: false, pctAtual: Math.floor(fracao * 100), cabem: cabemAgora };
-  }
+  
 
   function getRecursos(townId) {
     try {
@@ -9651,10 +9666,7 @@ function makeRecrutamentoModule(opts) {
   }
 
   /* Deus da cidade activa — é dele que sai o favor do enviado divino. */
-  function deusDaCidadeAtiva() {
-    try { return mUw.ITowns.getTown(Number(mUw.Game.townId)).god() || null; }
-    catch (e) { return null; }
-  }
+  
 
   function decidirRecrutamento(alvos, tenho, emFila, recursos, reservaPct, units, adiadas, favorLivre, desconto, armazemOk, descontoUnidade, armazemPorUnidade, popReservada, deusDestaCidade, townDestaDecisao, construcaoCumprida) {
     favorLivre = favorLivre || {};
@@ -22352,6 +22364,18 @@ function makeEsquivaModule(opts) {
    * número que a interface mostra, e é o certo.
    *
    * Devolve `{ hoplite: 19, sword: 40, ... }` ou null se não conseguir. */
+  /* ADORMECIDA DE PROPÓSITO — NÃO APAGAR.
+   *
+   * Lê a tropa REAL no servidor, abrindo o quartel e o porto daquela cidade.
+   * É a cura da família de erro que mais nos custou esta semana: confiar em
+   * colecções e registos locais desactualizados ou que só têm a cidade activa.
+   *
+   * Não está ligada porque custa DOIS pedidos por cidade. Com trinta cidades
+   * são sessenta por passagem, e andamos a poupar pedidos por causa das
+   * verificações de bot.
+   *
+   * Quando usar: como confirmação PONTUAL, quando os números locais disserem
+   * algo improvável, e não como fonte de rotina. */
   async function tropasReaisDoServidor(townId) {
     const out = {};
     let algum = false;
