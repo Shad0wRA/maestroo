@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.08.1730
+// @version      2026.09.08.1830
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1675,7 +1675,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.08.1730';
+  const MAESTRO_VERSAO = '2026.09.08.1830';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -27573,10 +27573,41 @@ function makeEncaixeModule(opts) {
           const t = mUw.ITowns.getTown(origemId);
           const tenho = (t && t.units && t.units()) || {};
 
-          /* Os navios que a cidade tem, do mais lento ao mais rápido. */
+          /* A SEREIA NÃO É CARGA, É UM ACELERADOR.
+           *
+           * Cada sereia dá 2% de velocidade a TODA a frota, até 100%. Não é a
+           * unidade mais lenta e não ocupa lugar nos transportes — é como um
+           * navio à parte que faz o resto andar mais depressa.
+           *
+           * Tratá-la como as outras era perder o essencial: com 3 sereias há
+           * QUATRO tempos diferentes para a mesma composição (com 0, 1, 2 ou
+           * 3), e nenhum deles aparecia na lista. Cada um é uma hora de saída
+           * distinta para a mesma chegada — que é exactamente o que dá mais
+           * tentativas.
+           *
+           * Não é preciso saber os 2%: mede-se na janela e o jogo faz a conta.
+           */
+          const SEREIA = 'siren';
+          const temSereias = Number(tenho[SEREIA]) || 0;
+
+          /* Os navios que a cidade tem, do mais lento ao mais rápido. A sereia
+           * fica de fora desta lista: ela varia por si. */
           const navios = Object.keys(tenho)
-            .filter((u) => (gd[u] || {}).is_naval && Number(tenho[u]) > 0)
+            .filter((u) => (gd[u] || {}).is_naval && Number(tenho[u]) > 0 && u !== SEREIA)
             .sort((a, b) => (Number(gd[a].speed) || 0) - (Number(gd[b].speed) || 0));
+
+          /* Quantas sereias experimentar. Uma a uma seria demais — com vinte
+           * sereias e três navios eram sessenta medições, meio minuto com os
+           * campos a mexer. Vai-se por passos, e o tecto é de quinze
+           * combinações no total. */
+          const passosSereia = (() => {
+            if (!temSereias) return [0];
+            const base = [0, 1, 2, 3, 5, 8, 13, 21];
+            const out = base.filter((n) => n <= temSereias);
+            if (out.indexOf(temSereias) < 0) out.push(temSereias);   // todas, sempre
+            return out;
+          })();
+          const TECTO_COMBOS = 15;
 
           if (!navios.length) return [];
 
@@ -27626,10 +27657,13 @@ function makeEncaixeModule(opts) {
             }
           } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
 
-          for (let i = 0; i < navios.length; i++) {
+          for (let i = 0; i < navios.length && out.length < TECTO_COMBOS; i++) {
+           for (const nSereias of passosSereia) {
+            if (out.length >= TECTO_COMBOS) break;
             const usar = navios.slice(i);             // sem os i mais lentos
             const carga = {};
             for (const u of usar) carga[u] = Number(tenho[u]) || 0;
+            if (nSereias > 0) carga[SEREIA] = nSereias;
 
             /* ENCHER OS TRANSPORTES COM TROPA TERRESTRE.
              *
@@ -27689,8 +27723,11 @@ function makeEncaixeModule(opts) {
               unidades: carga,
               dur,
               maisLento: usar[0],
-              nome: usar.map((u) => `${carga[u]} ${(gd[u] || {}).name || u}`).join(' + '),
+              nome: Object.keys(carga)
+                .filter((u) => carga[u] > 0)
+                .map((u) => `${carga[u]} ${(gd[u] || {}).name || u}`).join(' + '),
             });
+           }
           }
 
           /* REPOR o que estava na janela: mediram-se composições escrevendo
