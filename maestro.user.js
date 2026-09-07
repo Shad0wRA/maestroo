@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.09.0230
+// @version      2026.09.09.0330
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1675,7 +1675,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.09.0230';
+  const MAESTRO_VERSAO = '2026.09.09.0330';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -15414,7 +15414,19 @@ function makeFeiticosModule(opts) {
    * escolheres à mão, e não vale a pena gastar um pedido de cinco em cinco
    * minutos por uma lista que ninguém está a ver. */
   async function ataquesContraMim() {
+    /* SEM REPETIDOS, MAS PELO QUE O ATAQUE É.
+     *
+     * As duas fontes dão identificadores DIFERENTES ao mesmo comando — visto
+     * em jogo: o ataque do 011 apareceu duas vezes na lista. Comparar o número
+     * não chega.
+     *
+     * Um ataque é o mesmo se vier da mesma cidade, para a mesma cidade, à
+     * mesma hora. A hora arredonda-se ao minuto, porque as duas fontes podem
+     * diferir num segundo ou dois. */
     const out = new Map();
+    const chaveDe = (origem, destino, chega) =>
+      `${String(origem).trim().toLowerCase()}|${String(destino).trim().toLowerCase()}`
+      + `|${Math.round(Number(chega || 0) / 60)}`;
     const minhas = new Set(Object.keys(mUw.ITowns.towns || {}).map(Number));
 
     const doGrupo = (() => {
@@ -15434,12 +15446,10 @@ function makeFeiticosModule(opts) {
         if (doGrupo.has(Number(a2.home_town_id))) continue;      // é meu
         const cid = Number(a2.id || a2.command_id) || 0;
         if (!cid) continue;
-        out.set(cid, {
-          cid,
-          origem: String(a2.town_name_origin || a2.home_town_id || '?'),
-          destino: String(a2.town_name_destination || a2.target_town_id),
-          chega: Number(a2.arrival_at) || 0,
-        });
+        const origem = String(a2.town_name_origin || a2.home_town_id || '?');
+        const destino = String(a2.town_name_destination || a2.target_town_id);
+        const chega = Number(a2.arrival_at) || 0;
+        out.set(chaveDe(origem, destino, chega), { cid, origem, destino, chega });
       }
     } catch (e) { seErroDeCodigo(e, 'Feiticos'); }
 
@@ -15463,13 +15473,13 @@ function makeFeiticosModule(opts) {
           if (!minhas.has(Number(x.destination_town_id))) continue;
           if (doGrupo.has(Number(x.origin_town_id))) continue;   // é meu
           const cid = Number(x.id) || 0;
-          if (!cid || out.has(cid)) continue;
-          out.set(cid, {
-            cid,
-            origem: String(x.origin_town_name || x.origin_town_id || '?'),
-            destino: String(x.destination_town_name || x.destination_town_id),
-            chega: Number(x.arrival_at) || 0,
-          });
+          if (!cid) continue;
+          const origem = String(x.origin_town_name || x.origin_town_id || '?');
+          const destino = String(x.destination_town_name || x.destination_town_id);
+          const chega = Number(x.arrival_at) || 0;
+          const k2 = chaveDe(origem, destino, chega);
+          if (out.has(k2)) continue;                 // já veio pelos modelos
+          out.set(k2, { cid, origem, destino, chega });
         }
       }
     } catch (e) { seErroDeCodigo(e, 'Feiticos'); }
