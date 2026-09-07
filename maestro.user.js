@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.09.0430
+// @version      2026.09.09.0630
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1675,7 +1675,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.09.0430';
+  const MAESTRO_VERSAO = '2026.09.09.0630';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -3810,33 +3810,36 @@
             Apagar todas as notificações
           </button>
         </div>
-        <label style="display:block;margin-top:3px;font-size:11px">
+        <!-- MARCAS DE UMA VEZ: a opção à vista, a explicação escondida.
+             Eram quinze linhas de texto sempre abertas por duas opções que se
+             marcam uma vez e nunca mais. -->
+        <label style="display:flex;align-items:center;gap:5px;margin-top:5px;font-size:12px">
           <input type="checkbox" id="maestro-refresh"${refreshHorarioLigado() ? ' checked' : ''}>
-          recarregar a página de hora a hora
+          <span style="flex:1">recarregar a página de hora a hora</span>
+          <span class="mPorque" data-porque="porque-refresh"
+            style="cursor:pointer;font-size:11px;color:var(--mFaint)">porquê?</span>
         </label>
-        <div style="opacity:.6;font-size:10px;margin-left:18px">
+        <div id="porque-refresh" style="display:none;opacity:.6;font-size:11px;margin-left:20px">
           Mantém os dados do jogo frescos — as tropas e as filas de construção não
           se actualizam sozinhas — e faz o Tampermonkey procurar versões novas.<br>
-          Nunca recarrega com uma esquiva ou encaixe a sair nos próximos minutos.
-        </div>
-        <div style="opacity:.6;font-size:10px;margin-left:18px">
+          Nunca recarrega com uma esquiva ou encaixe a sair nos próximos minutos.<br>
           <b>Cuidado:</b> o jogo actualiza os contadores de tropas ao processar as
           notificações. Apagá-las deixa os números presos até recarregares a página —
           e isso estraga o recrutamento e a esquiva.<br>
           Com o recarregamento de hora a hora ligado, a lista limpa-se sozinha.
         </div>
 
-        <div style="background:#0d141c;padding:6px 8px;border-radius:4px;margin-top:7px">
-          <label style="font-size:11px">
-            <input type="checkbox" id="maestro-principal"${souPrincipal() ? ' checked' : ''}>
-            <b>Esta é a conta PRINCIPAL deste perfil</b>
-          </label>
-          <div style="opacity:.6;font-size:10px;margin:2px 0 0 18px">
+        <label style="display:flex;align-items:center;gap:5px;margin-top:5px;font-size:12px">
+          <input type="checkbox" id="maestro-principal"${souPrincipal() ? ' checked' : ''}>
+          <span style="flex:1"><b>Esta é a conta PRINCIPAL deste perfil</b></span>
+          <span class="mPorque" data-porque="porque-principal"
+            style="cursor:pointer;font-size:11px;color:var(--mFaint)">porquê?</span>
+        </label>
+        <div id="porque-principal" style="display:none;opacity:.6;font-size:11px;margin-left:20px">
             A principal <b>publica</b> a configuração; as outras <b>aplicam-na</b> ao
             arrancar. Configura só aqui e reinicia as restantes.<br>
             Marca isto em <b>UMA</b> conta por perfil e mundo — se marcares em várias,
             a última a gravar manda.
-          </div>
         </div>
 
         <!-- CONFIGURAÇÃO QUE SE PÕE UMA VEZ FICA FECHADA.
@@ -4307,6 +4310,17 @@
         if (redesenharPainelAberto) redesenharPainelAberto();
       };
     }
+
+    /* Os "porquê?" abrem e fecham a explicação ao lado. */
+    document.querySelectorAll('.mPorque').forEach((el) => {
+      el.onclick = () => {
+        const alvo = document.getElementById(el.getAttribute('data-porque'));
+        if (!alvo) return;
+        const aberto = alvo.style.display !== 'none';
+        alvo.style.display = aberto ? 'none' : 'block';
+        el.textContent = aberto ? 'porquê?' : 'fechar';
+      };
+    });
 
     const btnPerfil = document.getElementById('maestro-perfil-aplicar');
     if (selPerfil) {
@@ -4864,7 +4878,8 @@
         || String(m.id || '').toLowerCase().includes(termo);
 
       rail.innerHTML = `
-        <input id="mRailProcura" placeholder="procurar módulo…" value="${esc(filtroModulos || '')}"
+        <input id="mRailProcura" placeholder="procurar módulo…"
+          value="${String(filtroModulos || '').replace(/[<>"&]/g, '')}"
           style="width:100%;margin-bottom:5px;font-size:12px;padding:3px 5px;
                  background:var(--mSurf);border:1px solid var(--mLine);
                  border-radius:4px;color:var(--mTxt)">
