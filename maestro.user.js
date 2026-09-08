@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.09.2330
+// @version      2026.09.10.0130
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1694,7 +1694,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.09.2330';
+  const MAESTRO_VERSAO = '2026.09.10.0130';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -4067,16 +4067,96 @@
       const est = document.createElement('style');
       est.id = 'maestro-estilo';
       est.textContent = `
+        /* ============ PALETA ==============================================
+         *
+         * Azul-noite profundo com um ciano frio como cor de acção. Os tons
+         * antigos vinham de dias diferentes — havia verdes, azuis e cinzentos
+         * do sistema a conviver sem se falarem.
+         *
+         * Os nomes das variáveis são os mesmos de antes, para não haver que
+         * mexer em vinte e seis painéis: muda-se a cor, não o código. */
         #maestro-panel{
-          --mBg:#0f141b; --mSurf:#161d26; --mSurf2:#1c2530; --mLine:#28323f;
-          --mTxt:#dce4ee; --mDim:#8493a5; --mFaint:#5b6878;
-          --mBrass:#d8a33f; --mBrassDim:#8a6b2b;
-          --mLive:#4fc7a1; --mStop:#d9705f;
+          --mBg:#0b0f16; --mSurf:#121822; --mSurf2:#1a2230; --mLine:#243040;
+          --mTxt:#e6edf6; --mDim:#8fa1b8; --mFaint:#5a6b82;
+          /* O "latão" passa a ciano: é a cor do que se pode carregar. */
+          --mBrass:#4dd4e8; --mBrassDim:#1f6d7a;
+          --mLive:#3ddc97; --mStop:#ff6b6b;
+          --mFoco:rgba(77,212,232,.25);
           color:var(--mTxt);
-          font:13px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
-          text-align:left; letter-spacing:0;
+          font:13px/1.5 "Inter",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+          text-align:left; letter-spacing:.1px;
+          background:
+            radial-gradient(900px 500px at 15% -10%, rgba(77,212,232,.07), transparent 60%),
+            var(--mBg);
         }
         #maestro-panel *{ text-align:inherit; font-family:inherit; box-sizing:border-box; }
+
+        /* ============ CAMPOS E BOTÕES ====================================
+         *
+         * Eram os do navegador: caixas cinzentas de sistema ao lado de botões
+         * verdes, azuis e cinzentos vindos de alturas diferentes. Nada
+         * combinava.
+         *
+         * Agora todos partilham a mesma forma — mesma altura, mesma moldura,
+         * mesmo raio — e a cor só aparece onde há uma acção. */
+        #maestro-panel input[type=text], #maestro-panel input[type=number],
+        #maestro-panel input:not([type]), #maestro-panel select,
+        #maestro-panel textarea{
+          background:var(--mSurf2); color:var(--mTxt);
+          border:1px solid var(--mLine); border-radius:6px;
+          padding:4px 7px; font-size:12px; line-height:1.3;
+          outline:none; transition:border-color .12s, box-shadow .12s;
+        }
+        #maestro-panel input:focus, #maestro-panel select:focus,
+        #maestro-panel textarea:focus{
+          border-color:var(--mBrass); box-shadow:0 0 0 3px var(--mFoco);
+        }
+        #maestro-panel select{ cursor:pointer; }
+
+        #maestro-panel button{
+          background:var(--mSurf2); color:var(--mTxt);
+          border:1px solid var(--mLine); border-radius:6px;
+          padding:4px 10px; font-size:12px; cursor:pointer;
+          transition:background .12s, border-color .12s, transform .06s;
+        }
+        #maestro-panel button:hover{ border-color:var(--mBrassDim); background:#1f2a3a; }
+        #maestro-panel button:active{ transform:translateY(1px); }
+
+        /* O botão principal de cada painel — só um por ecrã. */
+        #maestro-panel button.mPrim,
+        #maestro-panel button[id$="-guardar"], #maestro-panel button[id$="-go"]{
+          background:linear-gradient(180deg,#1d7f8e,#155f6b);
+          border-color:#2b93a5; color:#eafcff; font-weight:600;
+        }
+        #maestro-panel button.mPrim:hover,
+        #maestro-panel button[id$="-guardar"]:hover{ background:linear-gradient(180deg,#249aab,#18707e); }
+
+        /* Caixas de marcar com a mesma cor de acção. */
+        #maestro-panel input[type=checkbox]{ accent-color:var(--mBrass); cursor:pointer; }
+
+        /* As caixas de conteúdo: uma moldura leve e cantos suaves. */
+        #maestro-panel .mCaixa{
+          background:var(--mSurf); border:1px solid var(--mLine);
+          border-radius:10px; padding:9px 11px;
+        }
+
+        /* Tabelas: linhas separadas por um traço muito ténue em vez de
+         * molduras completas. */
+        #maestro-panel table{ border-collapse:collapse; width:100%; }
+        #maestro-panel table tr + tr td{ border-top:1px solid rgba(255,255,255,.05); }
+        #maestro-panel table td, #maestro-panel table th{ padding:3px 5px; }
+
+        /* A barra dos módulos, com a selecção marcada por uma barra de cor à
+         * esquerda em vez de um fundo pesado. */
+        #maestro-panel .mRailItem{
+          border-radius:7px; padding:4px 8px;
+          border-left:2px solid transparent;
+          transition:background .12s, border-color .12s;
+        }
+        #maestro-panel .mRailItem:hover{ background:var(--mSurf); }
+        #maestro-panel .mRailItem.mSel{
+          background:var(--mSurf2); border-left-color:var(--mBrass);
+        }
 
         /* HIERARQUIA.
          *
@@ -10777,6 +10857,39 @@ function makeRecrutamentoModule(opts) {
                * é uma avaria e não tem de ir para o sininho. */
               (ctx.logRotina || log)(`${town.name}: não recruto ${a.nome} — já tem ${jaCom} `
                 + `e o alvo é ${alvoFinal}.`);
+
+              /* JÁ CHEGA: CANCELAR O QUE AINDA ESTÁ NA FILA.
+               *
+               * Se o que está EM CASA já atinge o alvo, as ordens em curso são
+               * excesso puro — continuar a fazê-las gasta recursos e ocupa a
+               * fila. Só se cancelam as desta unidade; o resto fica.
+               *
+               * Visto em jogo na 55.1: 191 transportes em casa contra um alvo
+               * de 133, e quatro ordens ainda a caminho de piorar. */
+              try {
+                const emCasaAgora = Number(agoraTenho[a.unitId]) || 0;
+                if (emCasaAgora >= alvoFinal) {
+                  /* Já havia um `cancelarOrdem` e um `ordensDaCidade` neste
+                   * módulo — o verificador apanhou a cópia que eu ia criar. */
+                  const ordens = ordensDaCidade(town.id, a.unitId);
+                  for (const o of ordens) {
+                    /* O `kind` vem do próprio jogo — 'naval' ou 'land' — e é
+                     * mais de confiança do que deduzir pela unidade. */
+                    const rc = await cancelarOrdem(o.id, o.kind
+                      || ((units[a.unitId] || {}).is_naval ? 'naval' : 'land'), town.id);
+                    if (rc.ok) {
+                      log(`✂️ ${town.name}: cancelei uma ordem de ${a.nome} — `
+                        + `já tem ${emCasaAgora} e o alvo é ${alvoFinal}.`);
+                    } else {
+                      (ctx.logRotina || log)(`${town.name}: não consegui cancelar `
+                        + `a ordem de ${a.nome} (${rc.msg}).`);
+                      break;
+                    }
+                    await ctx.sleep(ctx.rand(500, 1000));
+                  }
+                }
+              } catch (e2) { seErroDeCodigo(e2, 'Recrutamento'); }
+
               continue;
             }
             /* Cortar a ordem ao que falta, se pedir de mais. */
