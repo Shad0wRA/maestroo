@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.09.1230
+// @version      2026.09.09.1330
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1694,7 +1694,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.09.1230';
+  const MAESTRO_VERSAO = '2026.09.09.1330';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -34799,7 +34799,15 @@ function makeFundacaoModule(opts) {
        * permitido. O que esta opção evita é a MESMA conta ficar com duas
        * cidades na mesma ilha, que concentra o risco: um ataque à ilha apanha
        * as duas. */
-      if (c.umaPorIlha) {
+      /* UMA CIDADE POR ILHA — REGRA FIXA.
+       *
+       * Era uma opção que se podia desligar e que se perdia ao trocar de
+       * perfil. Passa a valer sempre, em todas as contas: concentrar cidades
+       * na mesma ilha concentra o risco, e nenhuma conta ganha com isso.
+       *
+       * Não colide com o fechar ilha: aí são VÁRIAS contas na mesma ilha, uma
+       * cidade cada — e esta regra é dentro da mesma conta. */
+      if (true) {
         /* AS COORDENADAS NÃO VÊM DO `getMyTowns`.
          *
          * Ele devolve só `id` e `name` — o `ix` e o `iy` são sempre
@@ -37355,8 +37363,14 @@ function makeTiqueModule(opts) {
        * Só os que já não estão trancados. Tentar os trancados seria levar
        * dezenas de recusas por passagem — são 76 ao todo. */
       const porIndice = {};
+      /* SÓ OS `unlocked`.
+       *
+       * Há três estados, confirmado em jogo: `locked` (73), `claimed` (1) e
+       * `unlocked` (2). Excluir apenas os `locked` deixava passar os já
+       * recolhidos — e o jogo respondia "You have already claimed this
+       * prize!" a cada passagem. */
       for (const m of (ev.marcos || [])) {
-        if (String(m.state || '') === 'locked') continue;
+        if (String(m.state || '') !== 'unlocked') continue;
         const k = `${m.page}:${m.index}`;
         (porIndice[k] = porIndice[k] || []).push(m);
       }
