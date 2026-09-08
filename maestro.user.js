@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.09.2230
+// @version      2026.09.09.2330
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1694,7 +1694,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.09.2230';
+  const MAESTRO_VERSAO = '2026.09.09.2330';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -4898,9 +4898,28 @@
        * Cada um com o seu cabeçalho e o seu interruptor, como se estivesse
        * sozinho — só que na mesma página, em vez de numa linha da barra. */
       if (FAMILIAS[id]) {
+        /* SEPARADORES NO TOPO.
+         *
+         * Empilhar os módulos todos da família na mesma página dava uma
+         * parede de conteúdo. Com separadores vê-se um de cada vez: um
+         * clique para a família, outro para o módulo, e sabe-se sempre onde
+         * se está.
+         *
+         * O separador mostra o ponto de estado de cada módulo, para a
+         * informação que a barra deixou de dar não se perder. */
         const fam = FAMILIAS[id];
         const membros = fam.membros
           .map((x) => disponiveis.find((mm) => mm.id === x)).filter(Boolean);
+        if (!membros.length) { moduloAberto = ''; desenhar(); return; }
+
+        /* Qual dos membros está aberto. Guarda-se por família, para voltar ao
+         * mesmo sítio da última vez. */
+        if (!separadorAberto[id] || !membros.some((mm) => mm.id === separadorAberto[id])) {
+          separadorAberto[id] = membros[0].id;
+        }
+        const activo = membros.find((mm) => mm.id === separadorAberto[id]) || membros[0];
+        const at = estaAtivo(activo);
+        const icA = ICONES[activo.id] || { icone: '⚙️' };
 
         const caixaFam = modsBox.querySelector('#mConteudo') || modsBox;
         caixaFam.innerHTML = `
@@ -4908,34 +4927,48 @@
             <button id="maestro-voltar" style="padding:3px 9px">‹ Hoje</button>
             <span style="font-size:16px">${fam.icone}</span>
             <b style="flex:1;font-size:13px">${fam.nome}</b>
-            <span style="font-size:11px;opacity:.6">${membros.length} módulos</span>
           </div>
-          ${membros.map((mm) => {
-            const at = estaAtivo(mm);
-            const ic2 = ICONES[mm.id] || { icone: '⚙️' };
-            return `<details class="mCaixa" style="margin-bottom:6px"${at ? ' open' : ''}>
-              <summary style="display:flex;align-items:center;gap:6px;cursor:pointer">
-                <span>${ic2.icone}</span>
-                <b style="flex:1;font-size:13px">${mm.nome}</b>
-                <label style="font-size:11px;display:flex;align-items:center;gap:4px"
-                  onclick="event.stopPropagation()">
-                  <input type="checkbox" id="maestro-ativo-${mm.id}"${at ? ' checked' : ''}>
-                  <span>${at ? 'ligado' : 'desligado'}</span>
-                </label>
-              </summary>
-              <div id="maestro-painel-${mm.id}" style="margin-top:6px"></div>
-            </details>`;
-          }).join('')}`;
+
+          <div style="display:flex;gap:3px;flex-wrap:wrap;margin:0 0 8px;
+                      border-bottom:1px solid var(--mLine);padding-bottom:5px">
+            ${membros.map((mm) => {
+              const sel = mm.id === activo.id;
+              const lig = estaAtivo(mm);
+              const ic2 = ICONES[mm.id] || { icone: '⚙️' };
+              return `<button data-sep="${mm.id}" style="cursor:pointer;font-size:12px;
+                  padding:3px 8px;border-radius:4px;border:1px solid ${sel ? 'var(--mBrass)' : 'transparent'};
+                  background:${sel ? 'var(--mSurf2)' : 'transparent'};
+                  color:var(--mTxt);display:flex;align-items:center;gap:4px">
+                <span style="width:6px;height:6px;border-radius:50%;
+                      background:${lig ? 'var(--mLive)' : 'var(--mFaint)'}"></span>
+                <span>${ic2.icone}</span><span>${mm.nome}</span>
+              </button>`;
+            }).join('')}
+          </div>
+
+          <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
+            <span style="font-size:15px">${icA.icone}</span>
+            <b style="flex:1;font-size:13px">${activo.nome}</b>
+            <label style="font-size:11px;display:flex;align-items:center;gap:5px;cursor:pointer">
+              <input type="checkbox" id="maestro-ativo-${activo.id}"${at ? ' checked' : ''}>
+              <span>${at ? 'ligado' : 'desligado'}</span>
+            </label>
+          </div>
+          <div id="maestro-painel-${activo.id}"></div>`;
 
         modsBox.querySelector('#maestro-voltar').onclick = () => { moduloAberto = ''; desenhar(); };
+        caixaFam.querySelectorAll('[data-sep]').forEach((el) => {
+          el.onclick = () => {
+            separadorAberto[id] = el.getAttribute('data-sep');
+            desenharModulo(id);
+          };
+        });
 
-        for (const mm of membros) {
-          try { ligarInterruptor(mm); } catch (e) { seErroDeCodigo(e, 'painel'); }
-          try {
-            const caixa = document.getElementById(`maestro-painel-${mm.id}`);
-            if (caixa && mm.painel) mm.painel(caixa, makeCtx(mm.id));
-          } catch (e) { seErroDeCodigo(e, 'painel'); }
-        }
+        try { ligarInterruptor(activo); } catch (e) { seErroDeCodigo(e, 'painel'); }
+        try {
+          const caixa = document.getElementById(`maestro-painel-${activo.id}`);
+          if (caixa && activo.painel) activo.painel(caixa, makeCtx(activo.id));
+        } catch (e) { seErroDeCodigo(e, 'painel'); }
         return;
       }
 
@@ -4969,6 +5002,9 @@
         } catch (e) { log('core', `Painel do módulo "${m.nome}" falhou: ${e.message}`); }
       }
     }
+
+    /* Que separador está aberto em cada família. */
+    const separadorAberto = {};
 
     /* O que está escrito na caixa de procura dos módulos. */
     let filtroModulos = '';
