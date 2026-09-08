@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.09.1330
+// @version      2026.09.09.1430
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1694,7 +1694,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.09.1330';
+  const MAESTRO_VERSAO = '2026.09.09.1430';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -37480,7 +37480,9 @@ function makeTiqueModule(opts) {
   return {
     id: 'tique',
     nome: 'Fortuna de Tique',
-    intervaloMin: opts.intervaloMin || 30,
+    /* De hora a hora: as moedas entram devagar e cada passagem gasta tudo o
+     * que dá — roda em ciclo até elas acabarem. */
+    intervaloMin: opts.intervaloMin || 60,
     autoStart: false,
     run, painel,
   };
@@ -37543,7 +37545,7 @@ function makeTiqueModule(opts) {
   registerModule(makeRelatoriosModule({ intervaloMin: 60 }));
   registerModule(makeFrotaModule({ intervaloMin: 5 }));
   registerModule(makeFecharIlhaModule({ intervaloMin: 2 }));
-  registerModule(makeTiqueModule({ intervaloMin: 30 }));
+  registerModule(makeTiqueModule({ intervaloMin: 60 }));
 
   // (sem módulos registados ainda — adiciona os teus acima desta linha)
 
