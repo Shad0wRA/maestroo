@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.09.1030
+// @version      2026.09.09.1130
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1694,7 +1694,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.09.1030';
+  const MAESTRO_VERSAO = '2026.09.09.1130';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -2207,6 +2207,7 @@
      * outra. É a mesma falha que já apanhámos com a equipa dos colonizadores,
      * o registo do apoio e o histórico da frota — desta vez em maior escala.
      * ==================================================================== */
+    'grepoApoio_transpVolta_v1',         // transportes que ESTA conta já mandou vir
     'grepoAldeias_captcha_v1',           // captcha visto NESTA conta
     'grepoAlertas_reforco_v1',           // reforços que ESTA conta pediu
     'grepoAlertas_ultimaPassagem_v1',    // quando ESTA conta olhou pela última vez
@@ -33111,6 +33112,22 @@ function makeApoioModule(opts) {
      *
      * Usa o `send_back_part`, que devolve só o que se indicar. */
     try {
+      /* JÁ MANDEI ESTES DE VOLTA? NÃO REPETIR.
+       *
+       * O número de transportes vem da leitura da Ágora, que vale 30 minutos.
+       * Depois de os mandar vir, a leitura continua a dizer que lá estão — e o
+       * módulo, que corre de dois em dois minutos, voltava a mandá-los vir
+       * quinze vezes seguidas.
+       *
+       * Visto em jogo: a 55.4 a repetir isto durante três horas, com o número
+       * a descer devagar à medida que a leitura ia sendo refrescada.
+       *
+       * Regista-se o pedido e não se repete enquanto a leitura for MAIS VELHA
+       * do que ele. Quando a Ágora for lida de novo e disser a verdade, a
+       * decisão volta a ser tomada com dados frescos. */
+      let jaPedidos = {};
+      try { jaPedidos = JSON.parse(armazem.getItem('grepoApoio_transpVolta_v1') || '{}'); } catch (e) {}
+
       for (const alvoT of alvos) {
         const sobram = transportesASobrar(alvoT);
         if (sobram < 1) continue;
@@ -33118,8 +33135,23 @@ function makeApoioModule(opts) {
         const meu = meuApoioEm(alvoT);
         if (!meu || !meu.unitsId) continue;
 
+        /* Quando foi lida a Ágora desta cidade de origem? */
+        let lidoEm = 0;
+        try {
+          const cacheAg = JSON.parse(localStorage.getItem('grepoMaestro_apoioFora_v1') || '{}');
+          lidoEm = Number((cacheAg[String(meu.de)] || {}).quando) || 0;
+        } catch (e) {}
+
+        const pedido = Number(jaPedidos[String(alvoT)]) || 0;
+        if (pedido && lidoEm <= pedido) {
+          /* Já pedi e a leitura ainda é a mesma: espero por dados frescos. */
+          continue;
+        }
+
         const rv = await mandarParteDeVolta(meu.unitsId, meu.de, { small_transporter: sobram });
         if (rv.ok) {
+          jaPedidos[String(alvoT)] = Date.now();
+          try { armazem.setItem('grepoApoio_transpVolta_v1', JSON.stringify(jaPedidos)); } catch (e) {}
           const inf = cacheCidades[alvoT] || { nome: '#' + alvoT };
           log(`🚤 ${inf.nome}: ${sobram} transporte(s) a mais voltaram para casa.`);
         } else {
