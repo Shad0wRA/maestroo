@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.09.1730
+// @version      2026.09.09.1830
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1694,7 +1694,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.09.1730';
+  const MAESTRO_VERSAO = '2026.09.09.1830';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -2208,6 +2208,7 @@
      * outra. É a mesma falha que já apanhámos com a equipa dos colonizadores,
      * o registo do apoio e o histórico da frota — desta vez em maior escala.
      * ==================================================================== */
+    'grepoFundacao_recemFundadas_v1',    // ilhas onde ESTA conta acabou de fundar
     'grepoApoio_transpVolta_v1',         // transportes que ESTA conta já mandou vir
     'grepoAldeias_captcha_v1',           // captcha visto NESTA conta
     'grepoAlertas_reforco_v1',           // reforços que ESTA conta pediu
@@ -34919,7 +34920,38 @@ function makeFundacaoModule(opts) {
        * repetir-se-iam em todos. */
       let recusas = 0;
       const motivos = {};
-      const paraTudo = /colonizad|cultura|pontos|porto|academia|docks|academy|premium|ouro/i;
+      /* "Não há unidades suficientes nesta cidade" é da CIDADE, não do lugar.
+       *
+       * Faltava nesta lista, e o resultado era percorrer os vinte lugares de
+       * cada ilha a levar sempre a mesma recusa. Visto em jogo: 288 tentativas
+       * em cinco minutos, dezoito ilhas, todas recusadas por a cidade não ter
+       * colonizador — nenhuma tinha hipótese. */
+      const paraTudo = new RegExp('colonizad|cultura|pontos|porto|academia|docks|academy'
+        + '|premium|ouro|unidades suficientes|not enough units', 'i');
+
+      /* SEGURANÇA À BEIRA DO ENVIO.
+       *
+       * A regra de uma cidade por ilha é verificada mais acima, quando a lista
+       * de candidatas é montada. Mas entre montar a lista e enviar podem
+       * passar minutos, e nesse tempo outra fundação desta mesma conta pode ter
+       * chegado — e a lista de cidades do jogo demora a reflectir isso.
+       *
+       * Esta é a última barreira, imediatamente antes do envio: se já houver
+       * uma cidade minha nesta ilha, não se funda e ponto. */
+      const jaTenhoAqui = (() => {
+        try {
+          const alvoK = `${Number(ilha.x)}:${Number(ilha.y)}`;
+          if ((ctx.getMyTowns() || []).some((x) => ilhaDe(x.id) === alvoK)) return true;
+          /* E as que esta conta acabou de fundar, que o jogo ainda não mostra. */
+          const recentes = JSON.parse(armazem.getItem('grepoFundacao_recemFundadas_v1') || '{}');
+          return !!recentes[alvoK] && (Date.now() - Number(recentes[alvoK])) < 6 * 3600 * 1000;
+        } catch (e) { return false; }
+      })();
+
+      if (jaTenhoAqui) {
+        log(`— ${chave}: já tenho uma cidade nesta ilha (verificação final); não fundo.`);
+        continue;
+      }
 
       for (const numero of livres) {
         const r = await fundarCidade(t.id, { x: ilha.x, y: ilha.y, numero });
@@ -34927,6 +34959,22 @@ function makeFundacaoModule(opts) {
           log(`🏛️ ${t.name}: colonizador a caminho de ${chave}, lugar ${numero}`
             + (recusas ? ` (${recusas} lugar(es) já ocupados antes deste)` : '') + '.');
           anotarIlha(chave, { enviadoEm: agoraSeg(), lugar: numero, deCidade: t.name });
+
+          /* A ILHA FICA MARCADA COMO MINHA JÁ.
+           *
+           * O jogo só a mostra como minha quando o colonizador chegar, e até
+           * lá a regra de uma cidade por ilha não a vê. Foi assim que duas
+           * cidades com identificadores seguidos foram parar à mesma ilha.
+           *
+           * Vale seis horas — mais do que qualquer viagem de colonizador. */
+          try {
+            const recentes = JSON.parse(armazem.getItem('grepoFundacao_recemFundadas_v1') || '{}');
+            recentes[`${Number(ilha.x)}:${Number(ilha.y)}`] = Date.now();
+            armazem.setItem('grepoFundacao_recemFundadas_v1', JSON.stringify(recentes));
+          } catch (e) { seErroDeCodigo(e, 'Fundacao'); }
+
+          /* UMA POR PASSAGEM. Continuar seria decidir a seguinte com a lista
+           * de cidades ainda por actualizar. */
           return;
         }
 
