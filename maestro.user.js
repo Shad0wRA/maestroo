@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.09.1530
+// @version      2026.09.09.1630
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1694,7 +1694,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.09.1530';
+  const MAESTRO_VERSAO = '2026.09.09.1630';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -37290,9 +37290,43 @@ function makeTiqueModule(opts) {
    * cidade a treinar aquela unidade.
    *
    * Empate: fica o primeiro, que é o que o jogo mostra à esquerda. */
+  /* ESCOLHER ENTRE DOIS PRÉMIOS DE MARCO.
+   *
+   * Os prémios dividem-se pela DURAÇÃO, e isso vê-se na configuração:
+   *
+   *   sem `lifetime`  → fica para sempre: nível de cultura, população
+   *                     permanente, favor, recursos, moedas, aspectos
+   *   com `lifetime`  → expira. Alguns duram muito (residência luxuosa 28
+   *                     dias, defesa de longo prazo 49) e outros são de
+   *                     horas.
+   *
+   * A ordem é: o que não expira primeiro, depois o que dura mais, e por fim os
+   * impulsos curtos — com os de tropa em último, porque exigem estar na cidade
+   * certa para valerem alguma coisa.
+   *
+   * Entre permanentes, o NÍVEL DE CULTURA vem à frente: é o que abre lugar
+   * para mais cidades, e isso não se compra de outra maneira. */
+  const ORDEM_PERMANENTES = ['culture_level', 'culture_points', 'population_boost',
+    'favor_of_the_gods', 'instant_resources_epic', 'instant_currency'];
+
+  function valorDoPremio(x) {
+    const power = String(x.power || '');
+    const vida = Number((x.configuration || {}).lifetime) || 0;
+
+    if (!vida) {
+      /* Permanente. Quanto mais acima na lista, melhor. */
+      const i = ORDEM_PERMANENTES.findIndex((k) => power.startsWith(k));
+      return 1000000 - (i >= 0 ? i : ORDEM_PERMANENTES.length) * 1000;
+    }
+
+    /* Temporário: vale pela duração, e o impulso de tropa desce um degrau por
+     * depender da cidade activa. */
+    const penaliza = power === 'unit_training_boost' ? 0.5 : 1;
+    return Math.min(900000, vida * penaliza);
+  }
+
   function melhorDoMarco(lista) {
-    const semTropa = lista.find((x) => String(x.power || '') !== 'unit_training_boost');
-    return semTropa || lista[0];
+    return lista.slice().sort((a, b) => valorDoPremio(b) - valorDoPremio(a))[0];
   }
 
   /* ---------------------- passagem -------------------------------------- */
