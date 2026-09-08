@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.09.1130
+// @version      2026.09.09.1230
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1694,7 +1694,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.09.1130';
+  const MAESTRO_VERSAO = '2026.09.09.1230';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -1977,6 +1977,7 @@
     relatorios:   { icone: '🗑️', curto: 'Relatórios' },
     frota:        { icone: '📡', curto: 'Frota' },
     fecharilha:   { icone: '🔒', curto: 'Fechar ilha' },
+    tique:        { icone: '🎡', curto: 'Tique' },
   };
 
   /* Um símbolo por grupo, para a coluna se ler de relance. */
@@ -37071,6 +37072,406 @@ function makeFecharIlhaModule(opts) {
   };
 }
 
+/* ============================================================================
+ *  FORTUNA DE TIQUE — roda a roda e trata dos prémios
+ *
+ *  Tudo confirmado em jogo com a espia. Os três pedidos são estes:
+ *
+ *    rodar     PlayerRota/<id>              action_name: 'spin'
+ *    usar      RotaEventInventoryItem/<id>  action_name: 'utilize'
+ *    descartar RotaEventInventoryItem/<id>  action_name: 'trash'
+ *
+ *  E os números do evento vêm do `frontend_bridge` com `window_type: 'rota'`:
+ *
+ *    RotaEventData        spin_cost 10 · inventory_limit 8
+ *                         grand_prize_threshold 14 · double_reward_threshold 15
+ *    PlayerLedger         rota_tyche_coins — as moedas que há
+ *    RotaEventInventoryItems  os prémios ganhos e ainda por usar
+ *
+ *  A REGRA
+ *    • roda enquanto houver moedas — não servem para mais nada;
+ *    • usa de imediato tudo o que NÃO for impulso de tropa;
+ *    • impulso de tropa: nas multis descarta-se; na MAIN procura-se uma cidade
+ *      que treine aquela unidade, troca-se para lá e usa-se — o impulso
+ *      aplica-se à cidade ACTIVA. Se nenhuma servir, descarta-se também: com
+ *      oito lugares no inventário, guardar o que não se usa trava o evento.
+ *
+ *  Desligado por omissão.
+ * ========================================================================== */
+function makeTiqueModule(opts) {
+  opts = opts || {};
+  let mUw = null;
+
+  const armazem = (() => {
+    try {
+      const a = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroArmazem;
+      if (a) return a;
+    } catch (e) {}
+    return localStorage;
+  })();
+
+  const CFG_KEY = 'grepoTique_cfg_v1';
+  const DEFAULTS = {
+    ativo: false,
+    /* Deixar de rodar abaixo disto. A zero roda tudo, que é o que faz sentido:
+     * as moedas do evento não servem para mais nada. */
+    guardarMoedas: 0,
+    maxPorPassagem: 12,
+  };
+
+  function cfg() {
+    try { return Object.assign({}, DEFAULTS, JSON.parse(armazem.getItem(CFG_KEY) || '{}')); }
+    catch (e) { return Object.assign({}, DEFAULTS); }
+  }
+  function guardarCfg(c) {
+    try { armazem.setItem(CFG_KEY, JSON.stringify(c)); } catch (e) {}
+  }
+
+  function esc(x) {
+    return String(x == null ? '' : x)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  /* ---------------------- ler o estado do evento ------------------------ */
+
+  async function lerEvento() {
+    try {
+      const t = Number(mUw.Game.townId);
+      const url = mUw.location.origin + '/game/frontend_bridge?town_id=' + t
+        + '&action=fetch&h=' + mUw.Game.csrfToken
+        + '&json=' + encodeURIComponent(JSON.stringify({
+            window_type: 'rota', tab_type: 'index',
+            known_data: { models: [], templates: [], l10n: [], css: [], js: [] },
+            town_id: t, nl_init: true,
+          }))
+        + '&_=' + Date.now();
+
+      const r = await mUw.fetch(url, {
+        headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
+      }).then((x) => x.json());
+
+      const d = (r && r.json) || {};
+      const modelos = d.models || {};
+      const coleccoes = d.collections || {};
+
+      const rota = ((modelos.PlayerRota || {}).data) || {};
+      const dados = ((modelos.RotaEventData || {}).data) || {};
+      const ledger = ((modelos.PlayerLedger || {}).data)
+        || ((modelos.PlayerLedger || {}).attributes) || {};
+
+      const itens = (((coleccoes.RotaEventInventoryItems || {}).data) || [])
+        .map((x) => (x && x.d) || {})
+        .filter((x) => x.id);
+
+      /* Os prémios de MARCO não caem no inventário: ficam numa lista própria
+       * à espera de serem recolhidos. Cada um traz o `state` — `locked`
+       * enquanto não se atingir o marco — e, quando há escolha entre dois,
+       * partilham o `index` com `position` diferente. */
+      const marcos = (((coleccoes.PlayerEventPassRewards || {}).data) || [])
+        .map((x) => (x && x.d) || {})
+        .filter((x) => x.id);
+
+      return {
+        rotaId: Number(rota.id) || 0,
+        moedas: Number(ledger.rota_tyche_coins) || 0,
+        custo: Number(dados.spin_cost) || 10,
+        limite: Number(dados.inventory_limit) || 8,
+        marcoGrande: Number(dados.grand_prize_threshold) || 0,
+        marcoDobro: Number(dados.double_reward_threshold) || 0,
+        progresso: Number(rota.double_reward_progress) || 0,
+        premioGrande: rota.grand_prize_index_to_collect,
+        itens, marcos,
+      };
+    } catch (e) { seErroDeCodigo(e, 'Tique'); return null; }
+  }
+
+  /* ---------------------- os três pedidos ------------------------------- */
+
+  async function pedir(modelUrl, accao, argumentos) {
+    try {
+      const t = Number(mUw.Game.townId);
+      const url = mUw.location.origin + '/game/frontend_bridge?town_id=' + t
+        + '&action=execute&h=' + mUw.Game.csrfToken;
+      const r = await mUw.fetch(url, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
+          'x-requested-with': 'XMLHttpRequest',
+        },
+        credentials: 'include',
+        body: 'json=' + encodeURIComponent(JSON.stringify({
+          model_url: modelUrl, action_name: accao, captcha: null,
+          arguments: argumentos || {}, town_id: t, nl_init: true,
+        })),
+      }).then((x) => x.json());
+      const j = r && r.json;
+      return { ok: !(j && j.error), msg: (j && (j.error || j.success)) || 'ok' };
+    } catch (e) { return { ok: false, msg: e.message }; }
+  }
+
+  const rodar = (rotaId) => pedir(`PlayerRota/${rotaId}`, 'spin', {});
+  const recolherMarco = (id) => pedir(`PlayerEventPassReward/${id}`, 'utilize', { id: Number(id) });
+  const usarItem = (id) => pedir(`RotaEventInventoryItem/${id}`, 'utilize', { inventory_item_id: Number(id) });
+  const deitarFora = (id) => pedir(`RotaEventInventoryItem/${id}`, 'trash', { inventory_item_id: Number(id) });
+
+  /* ---------------------- que prémio é este? ---------------------------- */
+
+  /* Um impulso de TREINO DE TROPA traz o tipo de unidade na configuração:
+   *   power_id: 'unit_training_boost', configuration: { type: 'trireme', ... }
+   * É o único que precisa da cidade certa — os outros valem em qualquer sítio. */
+  function unidadeDoItem(item) {
+    try {
+      const p = item.properties || {};
+      if (String(p.power_id || '') !== 'unit_training_boost') return null;
+      return String((p.configuration || {}).type || '') || null;
+    } catch (e) { return null; }
+  }
+
+  function nomeDoItem(item) {
+    try {
+      const p = item.properties || {};
+      const u = unidadeDoItem(item);
+      const nomeU = u ? (((mUw.GameData.units || {})[u] || {}).name || u) : '';
+      return String(p.power_id || 'prémio') + (nomeU ? ` (${nomeU})` : '');
+    } catch (e) { return 'prémio'; }
+  }
+
+  /* Uma cidade da MAIN que treine esta unidade e possa aproveitar o impulso.
+   *
+   * Procura-se pelo template de recrutamento: se a cidade pede aquela unidade
+   * e ainda não a tem toda, o impulso rende. */
+  function cidadeQueTreina(unidade, ctx) {
+    try {
+      const perfil = (JSON.parse(localStorage.getItem('grepoMaestro_modulos_v1') || '{}') || {}).perfil;
+      const exp = JSON.parse(armazem.getItem('grepoRecruta_expandido_v1') || '{}');
+      for (const t of (ctx.getMyTowns() || [])) {
+        const alvos = exp[t.id] || exp[String(t.id)];
+        if (!alvos || !alvos[unidade]) continue;
+        const tem = (() => {
+          try { return Number((mUw.ITowns.getTown(Number(t.id)).units() || {})[unidade]) || 0; }
+          catch (e) { return 0; }
+        })();
+        if (tem < Number(alvos[unidade])) return t;
+      }
+    } catch (e) { seErroDeCodigo(e, 'Tique'); }
+    return null;
+  }
+
+  /* ESCOLHER ENTRE DOIS PRÉMIOS DE MARCO.
+   *
+   * Quando o marco dá escolha, os prémios vêm com o mesmo `index` e `position`
+   * diferente. A regra é a mesma dos outros: prefere-se o que NÃO é impulso de
+   * tropa, porque esse serve em qualquer lado e não depende de haver uma
+   * cidade a treinar aquela unidade.
+   *
+   * Empate: fica o primeiro, que é o que o jogo mostra à esquerda. */
+  function melhorDoMarco(lista) {
+    const semTropa = lista.find((x) => String(x.power || '') !== 'unit_training_boost');
+    return semTropa || lista[0];
+  }
+
+  /* ---------------------- passagem -------------------------------------- */
+
+  async function run(ctx) {
+    mUw = ctx.uw;
+    const log = ctx.log;
+    const rotina = ctx.logRotina || ctx.log;
+    const c = cfg();
+
+    try {
+      const doPainel = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroLigado;
+      if (doPainel) {
+        const v = doPainel('tique');
+        if (v === true) c.ativo = true;
+        if (v === false) c.ativo = false;
+      }
+    } catch (e) {}
+    if (!c.ativo) { rotina('Tique: está desligado.'); return; }
+
+    let ev = await lerEvento();
+    if (!ev || !ev.rotaId) { rotina('Tique: o evento não está a decorrer.'); return; }
+
+    const perfil = (() => {
+      try { return (JSON.parse(localStorage.getItem('grepoMaestro_modulos_v1') || '{}') || {}).perfil; }
+      catch (e) { return 'multi'; }
+    })();
+    const ehMain = perfil === 'main';
+
+    let rodadas = 0;
+    let usados = 0;
+    let deitados = 0;
+
+    for (let volta = 0; volta < (Number(c.maxPorPassagem) || 12); volta++) {
+      /* ---- 1. ESVAZIAR O INVENTÁRIO ----
+       *
+       * Só leva oito. Se estiver cheio, rodar perde o prémio — por isso
+       * trata-se dos itens ANTES de rodar, não depois. */
+      for (const item of ev.itens) {
+        const unidade = unidadeDoItem(item);
+
+        if (!unidade) {
+          /* Não é tropa: usa-se sempre, vale em qualquer cidade. */
+          const r = await usarItem(item.id);
+          if (r.ok) { usados++; log(`🎁 Tique: usei ${nomeDoItem(item)}.`); }
+          else rotina(`Tique: não consegui usar ${nomeDoItem(item)} — ${r.msg}`);
+          await ctx.sleep(ctx.rand(600, 1200));
+          continue;
+        }
+
+        /* É tropa. Nas multis não vale a pena: deita-se fora. */
+        if (!ehMain) {
+          const r = await deitarFora(item.id);
+          if (r.ok) { deitados++; rotina(`Tique: descartei ${nomeDoItem(item)} (multi).`); }
+          await ctx.sleep(ctx.rand(600, 1200));
+          continue;
+        }
+
+        /* Na main: o impulso aplica-se à cidade ACTIVA, por isso é preciso
+         * estar na cidade certa antes de o usar. */
+        const cidade = cidadeQueTreina(unidade, ctx);
+        if (!cidade) {
+          const r = await deitarFora(item.id);
+          if (r.ok) {
+            deitados++;
+            rotina(`Tique: nenhuma cidade treina ${nomeDoItem(item)} — descartei `
+              + '(o inventário só leva ' + ev.limite + ').');
+          }
+          await ctx.sleep(ctx.rand(600, 1200));
+          continue;
+        }
+
+        const mudou = await ctx.switchToTown(cidade.id);
+        if (!mudou) { rotina(`Tique: não consegui ir a ${cidade.name} para usar o impulso.`); continue; }
+        await ctx.sleep(ctx.rand(500, 1000));
+
+        const r = await usarItem(item.id);
+        if (r.ok) { usados++; log(`🎁 Tique: ${nomeDoItem(item)} usado em ${cidade.name}.`); }
+        else rotina(`Tique: não consegui usar ${nomeDoItem(item)} — ${r.msg}`);
+        await ctx.sleep(ctx.rand(600, 1200));
+      }
+
+      /* ---- 1b. RECOLHER OS PRÉMIOS DE MARCO ----
+       *
+       * Só os que já não estão trancados. Tentar os trancados seria levar
+       * dezenas de recusas por passagem — são 76 ao todo. */
+      const porIndice = {};
+      for (const m of (ev.marcos || [])) {
+        if (String(m.state || '') === 'locked') continue;
+        const k = `${m.page}:${m.index}`;
+        (porIndice[k] = porIndice[k] || []).push(m);
+      }
+
+      for (const k of Object.keys(porIndice)) {
+        const escolhido = melhorDoMarco(porIndice[k]);
+        if (!escolhido) continue;
+        const r2 = await recolherMarco(escolhido.id);
+        if (r2.ok) {
+          usados++;
+          log(`🏆 Tique: prémio de marco recolhido — ${escolhido.power}`
+            + (escolhido.subtype ? ` (${escolhido.subtype})` : '')
+            + (porIndice[k].length > 1 ? ' · escolhi entre dois' : '') + '.');
+        } else {
+          rotina(`Tique: não consegui recolher o prémio de marco — ${r2.msg}`);
+        }
+        await ctx.sleep(ctx.rand(700, 1400));
+      }
+
+      /* ---- 2. RODAR ---- */
+      if (ev.moedas - (Number(c.guardarMoedas) || 0) < ev.custo) break;
+
+      const r = await rodar(ev.rotaId);
+      if (!r.ok) { rotina(`Tique: não consegui rodar — ${r.msg}`); break; }
+      rodadas++;
+      await ctx.sleep(ctx.rand(900, 1600));
+
+      /* Reler: as moedas baixaram e há um prémio novo no inventário. */
+      ev = await lerEvento();
+      if (!ev || !ev.rotaId) break;
+    }
+
+    if (rodadas || usados || deitados) {
+      log(`🎡 Tique: ${rodadas} rodagem(ns) · ${usados} prémio(s) usado(s) · `
+        + `${deitados} descartado(s). Ficam ${ev ? ev.moedas : '?'} moedas.`);
+    } else {
+      rotina(`Tique: ${ev.moedas} moedas (rodar custa ${ev.custo}) — nada a fazer.`);
+    }
+
+    /* Os marcos são informação, não acção: o jogo entrega-os sozinho. */
+    if (ev && ev.marcoDobro) {
+      rotina(`Tique: ${ev.progresso}/${ev.marcoDobro} para a recompensa dobrada`
+        + (ev.marcoGrande ? ` · ${ev.progresso}/${ev.marcoGrande} para o prémio grande` : '') + '.');
+    }
+  }
+
+  /* ---------------------- painel ---------------------------------------- */
+
+  function painel(container, ctx) {
+    mUw = ctx.uw;
+    const c = cfg();
+
+    container.innerHTML = `
+      <div class="mCaixa" style="margin-bottom:8px">
+        <div style="font-size:12px;opacity:.75">
+          Roda a Fortuna de Tique enquanto houver moedas e trata dos prémios:
+          usa tudo o que não for impulso de tropa; os de tropa são descartados
+          nas multis e, na main, usados numa cidade que treine essa unidade —
+          ou descartados se nenhuma servir.
+        </div>
+      </div>
+
+      <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;font-size:12px">
+        <span class="mEtiq">guardar</span>
+        <input type="number" id="tq-guardar" value="${Number(c.guardarMoedas) || 0}" style="width:60px">
+        <span style="opacity:.6">moedas sem gastar</span>
+      </div>
+
+      <div style="display:flex;gap:6px;align-items:center;margin-bottom:8px;font-size:12px">
+        <span class="mEtiq">máximo</span>
+        <input type="number" id="tq-max" value="${Number(c.maxPorPassagem) || 12}" style="width:60px">
+        <span style="opacity:.6">rodagens por passagem</span>
+      </div>
+
+      <div id="tq-estado" style="font-size:12px;opacity:.7">a ler o evento…</div>
+
+      <button id="tq-guardar-btn" style="cursor:pointer;width:100%;margin-top:8px;
+        background:#3a6ea5;color:#fff;padding:5px;border:none;border-radius:4px">Guardar</button>`;
+
+    container.querySelector('#tq-guardar-btn').onclick = () => {
+      guardarCfg(Object.assign({}, cfg(), {
+        guardarMoedas: Number(container.querySelector('#tq-guardar').value) || 0,
+        maxPorPassagem: Number(container.querySelector('#tq-max').value) || 12,
+      }));
+      ctx.log('Tique: definições guardadas.');
+    };
+
+    (async () => {
+      const alvo = container.querySelector('#tq-estado');
+      if (!alvo) return;
+      const ev = await lerEvento();
+      if (!ev || !ev.rotaId) { alvo.textContent = 'O evento não está a decorrer.'; return; }
+      alvo.innerHTML = `
+        <div><b>${ev.moedas}</b> moedas · rodar custa ${ev.custo}
+          → dá para <b>${Math.floor(ev.moedas / ev.custo)}</b> rodagem(ns)</div>
+        <div style="margin-top:2px">inventário ${ev.itens.length}/${ev.limite}
+          ${ev.itens.length ? '· ' + ev.itens.map((i) => esc(nomeDoItem(i))).join(', ') : ''}</div>
+        <div style="margin-top:2px">prémios de marco por recolher:
+          <b>${(ev.marcos || []).filter((m) => String(m.state || '') !== 'locked').length}</b>
+          <span style="opacity:.6">de ${(ev.marcos || []).length}</span></div>
+        <div style="margin-top:2px;opacity:.7">progresso ${ev.progresso}
+          ${ev.marcoDobro ? `· dobro aos ${ev.marcoDobro}` : ''}
+          ${ev.marcoGrande ? `· prémio grande aos ${ev.marcoGrande}` : ''}</div>`;
+    })();
+  }
+
+  return {
+    id: 'tique',
+    nome: 'Fortuna de Tique',
+    intervaloMin: opts.intervaloMin || 30,
+    autoStart: false,
+    run, painel,
+  };
+}
+
   /* ===================== REGISTO DOS MÓDULOS ==============================
    * ⚠️ Preenche GIST_ID e GIST_TOKEN para partilhar as configurações entre as
    *    contas. Cada módulo escreve no seu próprio ficheiro dentro do Gist.
@@ -37128,6 +37529,7 @@ function makeFecharIlhaModule(opts) {
   registerModule(makeRelatoriosModule({ intervaloMin: 60 }));
   registerModule(makeFrotaModule({ intervaloMin: 5 }));
   registerModule(makeFecharIlhaModule({ intervaloMin: 2 }));
+  registerModule(makeTiqueModule({ intervaloMin: 30 }));
 
   // (sem módulos registados ainda — adiciona os teus acima desta linha)
 
