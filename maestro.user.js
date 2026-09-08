@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.09.1430
+// @version      2026.09.09.1530
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1694,7 +1694,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.09.1430';
+  const MAESTRO_VERSAO = '2026.09.09.1530';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -37164,8 +37164,25 @@ function makeTiqueModule(opts) {
 
       const rota = ((modelos.PlayerRota || {}).data) || {};
       const dados = ((modelos.RotaEventData || {}).data) || {};
-      const ledger = ((modelos.PlayerLedger || {}).data)
-        || ((modelos.PlayerLedger || {}).attributes) || {};
+      /* AS MOEDAS VÊM DOS MODELOS DO JOGO, não da resposta do pedido.
+       *
+       * O `PlayerLedger` da resposta vem `null` — confirmado em jogo — e por
+       * isso a contagem dava sempre zero e nunca se rodava, com 58 moedas na
+       * conta. O sítio certo é `MM.getModels().PlayerLedger`, que foi onde as
+       * vimos pela primeira vez.
+       *
+       * A resposta fica como recurso, para o caso de os modelos ainda não
+       * estarem carregados. */
+      let ledger = {};
+      try {
+        const lm = mUw.MM.getModels().PlayerLedger || {};
+        const k = Object.keys(lm)[0];
+        ledger = (lm[k] || {}).attributes || {};
+      } catch (e) {}
+      if (ledger.rota_tyche_coins == null) {
+        ledger = ((modelos.PlayerLedger || {}).data)
+          || ((modelos.PlayerLedger || {}).attributes) || {};
+      }
 
       const itens = (((coleccoes.RotaEventInventoryItems || {}).data) || [])
         .map((x) => (x && x.d) || {})
