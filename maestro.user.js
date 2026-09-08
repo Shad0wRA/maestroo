@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.09.1830
+// @version      2026.09.09.2230
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1694,7 +1694,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.09.1830';
+  const MAESTRO_VERSAO = '2026.09.09.2230';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -1978,6 +1978,7 @@
     frota:        { icone: '📡', curto: 'Frota' },
     fecharilha:   { icone: '🔒', curto: 'Fechar ilha' },
     tique:        { icone: '🎡', curto: 'Tique' },
+    reforco:      { icone: '🛡️', curto: 'Reforço' },
   };
 
   /* Um símbolo por grupo, para a coluna se ler de relance. */
@@ -1990,9 +1991,36 @@
   const GRUPOS = [
     { nome: 'Cidade', ids: ['construcao', 'pesquisa', 'recrutamento', 'herois', 'cultura'] },
     { nome: 'Recursos', ids: ['aldeias', 'gruta', 'trocacidades', 'apoio'] },
-    { nome: 'Combate', ids: ['alertas', 'esquiva', 'encaixe'] },
-    { nome: 'Favores e expansão', ids: ['deuses', 'colonos', 'fundacao', 'fecharilha', 'missoes'] },
+    { nome: 'Combate', ids: ['ataques', 'encaixe'] },
+    { nome: 'Favores e expansão', ids: ['deuses', 'expansao', 'missoes'] },
+    { nome: 'Outros', ids: ['tique', 'bandidos', 'diaria', 'relatorios', 'frota'] },
   ];
+
+  /* ============ FAMÍLIAS: VÁRIOS MÓDULOS NUMA SÓ ENTRADA ================
+   *
+   * Vinte e seis linhas na barra é mais do que se consegue percorrer com os
+   * olhos. Os módulos que tratam da mesma coisa passam a partilhar uma
+   * entrada, com uma secção por módulo lá dentro.
+   *
+   * Isto é SÓ apresentação: cada módulo continua com o seu intervalo, o seu
+   * registo e o seu interruptor. Nada de lógica muda. */
+  const FAMILIAS = {
+    ataques: {
+      nome: 'Ataques', icone: '⚔️',
+      membros: ['alertas', 'esquiva', 'reforco', 'feiticos'],
+    },
+    expansao: {
+      nome: 'Expansão', icone: '🏛️',
+      membros: ['fundacao', 'fecharilha', 'colonos', 'fabricanc'],
+    },
+    apoio: {
+      nome: 'Apoio', icone: '🛡️',
+      membros: ['apoio', 'sentinelas'],
+    },
+  };
+
+  const familiaDe = (id) => Object.keys(FAMILIAS)
+    .find((k) => FAMILIAS[k].membros.indexOf(id) >= 0) || null;
 
   // Módulo aberto no momento ('' = página inicial).
   let moduloAberto = '';
@@ -2208,6 +2236,7 @@
      * outra. É a mesma falha que já apanhámos com a equipa dos colonizadores,
      * o registo do apoio e o histórico da frota — desta vez em maior escala.
      * ==================================================================== */
+    'grepoConstru_ultimaVerificacao_v1', // quando ESTA conta reviu as cumpridas
     'grepoFundacao_recemFundadas_v1',    // ilhas onde ESTA conta acabou de fundar
     'grepoApoio_transpVolta_v1',         // transportes que ESTA conta já mandou vir
     'grepoAldeias_captcha_v1',           // captcha visto NESTA conta
@@ -4797,28 +4826,15 @@
     /* ---------------- vista: UM módulo, à direita ---------------- */
     
 
-    /* ---------------- vista: UM módulo ---------------- */
-    function desenharModulo(id) {
-      const m = disponiveis.find((x) => x.id === id);
-      if (!m) { moduloAberto = ''; desenhar(); return; }
-      const ic = ICONES[m.id] || { icone: '⚙️' };
-      const ativo = estaAtivo(m);
-
-      const caixaDir = modsBox.querySelector('#mConteudo') || modsBox;
-      caixaDir.innerHTML = `
-        <div class="mModCab">
-          <button id="maestro-voltar" style="padding:3px 9px">‹ Hoje</button>
-          <span style="font-size:16px">${ic.icone}</span>
-          <b style="flex:1;font-size:13px">${m.nome}</b>
-          <label style="font-size:11px;display:flex;align-items:center;gap:5px;cursor:pointer">
-            <input type="checkbox" id="maestro-ativo-${m.id}"${ativo ? ' checked' : ''}>
-            <span>${ativo ? 'ligado' : 'desligado'}</span>
-          </label>
-        </div>
-        <div id="maestro-painel-${m.id}"></div>`;
-
-      modsBox.querySelector('#maestro-voltar').onclick = () => { moduloAberto = ''; desenhar(); };
-      modsBox.querySelector(`#maestro-ativo-${m.id}`).onchange = (e) => {
+    /* O INTERRUPTOR DE UM MÓDULO, reaproveitável.
+     *
+     * Estava escrito à mão dentro da vista de um módulo. As famílias
+     * mostram vários módulos na mesma página e precisam do mesmo
+     * comportamento em cada um — por isso passa a função. */
+    function ligarInterruptor(m) {
+      const el = modsBox.querySelector(`#maestro-ativo-${m.id}`);
+      if (!el) return;
+      el.onchange = (e) => {
         const rot = e.target.parentElement && e.target.parentElement.querySelector('span');
         if (rot) rot.textContent = e.target.checked ? 'ligado' : 'desligado';
         if (!modState[m.id]) modState[m.id] = { ativo: e.target.checked, proximaExec: Date.now(), aCorrer: false };
@@ -4873,6 +4889,77 @@
           : `⏹ ${m.nome}: desligado${st && st.aCorrer ? ' — vai parar já' : ''}.`);
         atualizarPainelEstado();
       };
+    }
+
+    /* ---------------- vista: UM módulo ---------------- */
+    function desenharModulo(id) {
+      /* UMA FAMÍLIA DESENHA OS MEMBROS UM A SEGUIR AO OUTRO.
+       *
+       * Cada um com o seu cabeçalho e o seu interruptor, como se estivesse
+       * sozinho — só que na mesma página, em vez de numa linha da barra. */
+      if (FAMILIAS[id]) {
+        const fam = FAMILIAS[id];
+        const membros = fam.membros
+          .map((x) => disponiveis.find((mm) => mm.id === x)).filter(Boolean);
+
+        const caixaFam = modsBox.querySelector('#mConteudo') || modsBox;
+        caixaFam.innerHTML = `
+          <div class="mModCab">
+            <button id="maestro-voltar" style="padding:3px 9px">‹ Hoje</button>
+            <span style="font-size:16px">${fam.icone}</span>
+            <b style="flex:1;font-size:13px">${fam.nome}</b>
+            <span style="font-size:11px;opacity:.6">${membros.length} módulos</span>
+          </div>
+          ${membros.map((mm) => {
+            const at = estaAtivo(mm);
+            const ic2 = ICONES[mm.id] || { icone: '⚙️' };
+            return `<details class="mCaixa" style="margin-bottom:6px"${at ? ' open' : ''}>
+              <summary style="display:flex;align-items:center;gap:6px;cursor:pointer">
+                <span>${ic2.icone}</span>
+                <b style="flex:1;font-size:13px">${mm.nome}</b>
+                <label style="font-size:11px;display:flex;align-items:center;gap:4px"
+                  onclick="event.stopPropagation()">
+                  <input type="checkbox" id="maestro-ativo-${mm.id}"${at ? ' checked' : ''}>
+                  <span>${at ? 'ligado' : 'desligado'}</span>
+                </label>
+              </summary>
+              <div id="maestro-painel-${mm.id}" style="margin-top:6px"></div>
+            </details>`;
+          }).join('')}`;
+
+        modsBox.querySelector('#maestro-voltar').onclick = () => { moduloAberto = ''; desenhar(); };
+
+        for (const mm of membros) {
+          try { ligarInterruptor(mm); } catch (e) { seErroDeCodigo(e, 'painel'); }
+          try {
+            const caixa = document.getElementById(`maestro-painel-${mm.id}`);
+            if (caixa && mm.painel) mm.painel(caixa, makeCtx(mm.id));
+          } catch (e) { seErroDeCodigo(e, 'painel'); }
+        }
+        return;
+      }
+
+      const m = disponiveis.find((x) => x.id === id);
+      if (!m) { moduloAberto = ''; desenhar(); return; }
+      const ic = (FAMILIAS[m.id] ? { icone: FAMILIAS[m.id].icone } : null)
+        || ICONES[m.id] || { icone: '⚙️' };
+      const ativo = estaAtivo(m);
+
+      const caixaDir = modsBox.querySelector('#mConteudo') || modsBox;
+      caixaDir.innerHTML = `
+        <div class="mModCab">
+          <button id="maestro-voltar" style="padding:3px 9px">‹ Hoje</button>
+          <span style="font-size:16px">${ic.icone}</span>
+          <b style="flex:1;font-size:13px">${m.nome}</b>
+          <label style="font-size:11px;display:flex;align-items:center;gap:5px;cursor:pointer">
+            <input type="checkbox" id="maestro-ativo-${m.id}"${ativo ? ' checked' : ''}>
+            <span>${ativo ? 'ligado' : 'desligado'}</span>
+          </label>
+        </div>
+        <div id="maestro-painel-${m.id}"></div>`;
+
+      modsBox.querySelector('#maestro-voltar').onclick = () => { moduloAberto = ''; desenhar(); };
+      ligarInterruptor(m);
 
       if (typeof m.painel === 'function') {
         try {
@@ -5096,11 +5183,28 @@
     }
 
     function desenhar() {
+      /* AS FAMÍLIAS ENTRAM COMO UMA LINHA SÓ.
+       *
+       * Um id do grupo pode ser um módulo ou uma família. A família aparece
+       * com o seu nome e ícone, e os membros ficam lá dentro — não na barra.
+       * É só apresentação: cada módulo mantém intervalo, registo e
+       * interruptor próprios. */
       const jaVistos = new Set();
       const blocos = [];
       for (const g of GRUPOS) {
-        const mods = disponiveis.filter((m) => g.ids.indexOf(m.id) >= 0);
-        mods.forEach((m) => jaVistos.add(m.id));
+        const mods = [];
+        for (const id of g.ids) {
+          if (FAMILIAS[id]) {
+            const membros = FAMILIAS[id].membros
+              .map((x) => disponiveis.find((m) => m.id === x)).filter(Boolean);
+            if (!membros.length) continue;
+            membros.forEach((m) => jaVistos.add(m.id));
+            mods.push({ id, nome: FAMILIAS[id].nome, familia: true, membros });
+            continue;
+          }
+          const m = disponiveis.find((x) => x.id === id);
+          if (m) { jaVistos.add(m.id); mods.push(m); }
+        }
         if (mods.length) blocos.push({ nome: g.nome, mods });
       }
       const restantes = disponiveis.filter((m) => !jaVistos.has(m.id));
@@ -6270,8 +6374,22 @@ function makeConstrucaoModule(opts) {
      * mal e as marcas ficarem outra vez desactualizadas, um recarregamento
      * resolve. */
     try {
-      if (!primeiraPassagemFeita) {
+      /* DE SEIS EM SEIS HORAS, NÃO A CADA ARRANQUE.
+       *
+       * A página recarrega de hora a hora, portanto "uma vez por arranque"
+       * era na prática de hora a hora — e com 33 cidades cumpridas são 33
+       * trocas de cidade de cada vez, só para confirmar o que já estava bem.
+       *
+       * Seis horas chegam: uma muralha derrubada ou um edifício partido não
+       * precisam de ser apanhados ao minuto. */
+      const ULT_VERIF = 'grepoConstru_ultimaVerificacao_v1';
+      let ultimaVerif = 0;
+      try { ultimaVerif = Number(armazem.getItem(ULT_VERIF)) || 0; } catch (e) {}
+      const passaram6h = (Date.now() - ultimaVerif) > 6 * 3600 * 1000;
+
+      if (!primeiraPassagemFeita && passaram6h) {
         primeiraPassagemFeita = true;
+        try { armazem.setItem(ULT_VERIF, String(Date.now())); } catch (e) {}
 
         const quantas = Object.keys((estadoInicial() || {}).cumpridas || {}).length;
         if (quantas) {
@@ -8603,6 +8721,36 @@ function makeRecrutamentoModule(opts) {
    *
    * Quando usar: como confirmação PONTUAL, quando os números locais disserem
    * algo improvável, e não como fonte de rotina. */
+  /* ENCHER A FILA DE UMA CIDADE QUE NÃO É A ACTIVA.
+   *
+   * A colecção `UnitOrder` só tem as ordens da cidade activa — para as outras
+   * vem vazia, e o módulo conta "fila 0" quando há ordens a decorrer. Foi
+   * assim que a 55.1 chegou a 191 transportes com o template a pedir 133: seis
+   * pedidos ao longo do dia, cada um a ignorar o que já estava encomendado.
+   *
+   * Abrir o quartel e o porto daquela cidade enche a colecção, tal como o
+   * Senado enche os dados de construção. Só se faz quando se está mesmo
+   * prestes a recrutar — dois pedidos por cidade seriam caros de rotina. */
+  const filaPedida = {};
+
+  async function pedirFilaDaCidade(townId) {
+    const chave = Number(townId);
+    if (filaPedida[chave] && (Date.now() - filaPedida[chave]) < 60000) return false;
+    filaPedida[chave] = Date.now();
+    try {
+      for (const edificio of ['building_barracks', 'building_docks']) {
+        const url = mUw.location.origin + '/game/' + edificio + '?town_id=' + chave
+          + '&action=index&h=' + mUw.Game.csrfToken
+          + '&json=' + encodeURIComponent(JSON.stringify({ town_id: chave, nl_init: true }))
+          + '&_=' + Date.now();
+        await mUw.fetch(url, {
+          headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
+        }).then((r) => r.text()).catch(() => null);
+      }
+      return true;
+    } catch (e) { seErroDeCodigo(e, 'Recrutamento'); return false; }
+  }
+
   async function tropasReaisDoServidor(townId, validadeMs) {
     /* Uma leitura por cidade e por passagem, não uma por unidade. Com 30
      * cidades e 8 unidades, sem isto seriam 480 pedidos por passagem. */
@@ -10566,7 +10714,21 @@ function makeRecrutamentoModule(opts) {
           const alvoFinal = Number(alvos[a.unitId]) || 0;
           if (alvoFinal > 0 && a.unitId !== NC_ID) {
             const agoraTenho = contarUnidadesPorCidadeDeOrigem()[town.id] || {};
-            const agoraFila = contarFilasPorCidade()[town.id] || {};
+            let agoraFila = contarFilasPorCidade()[town.id] || {};
+
+            /* A FILA VEM VAZIA PARA QUEM NÃO É A CIDADE ACTIVA.
+             *
+             * Se não houver nada e esta cidade não for a activa, não se sabe:
+             * pede-se ao jogo antes de mandar recrutar. É o momento certo para
+             * gastar os dois pedidos, porque é aqui que a decisão é tomada. */
+            if (!Object.keys(agoraFila).length
+              && Number(mUw.Game.townId) !== Number(town.id)) {
+              const pediu = await pedirFilaDaCidade(town.id);
+              if (pediu) {
+                await ctx.sleep(ctx.rand(400, 800));
+                agoraFila = contarFilasPorCidade()[town.id] || {};
+              }
+            }
 
             /* O que tenho + o que está na fila + o que acabei de pedir e o
              * jogo ainda não mostra. */
@@ -37607,6 +37769,437 @@ function makeTiqueModule(opts) {
   };
 }
 
+/* ============================================================================
+ *  REFORÇO AUTOMÁTICO — a main defende as suas cidades sob ataque
+ *
+ *  Detecta os ataques a caminho das cidades desta conta e manda-lhes tropa das
+ *  cidades dos grupos de defesa, escolhendo só as que CHEGAM A TEMPO.
+ *
+ *  AS REGRAS, tal como combinadas:
+ *
+ *    • só se manda de uma cidade se a tropa lá estiver pelo menos um minuto
+ *      antes do impacto — chegar depois é perder a tropa em viagem;
+ *    • com vários ataques ao mesmo tempo, reparte-se: cada cidade atacada tem
+ *      um objectivo de defesa e serve-se até lá, em vez de encher a primeira e
+ *      deixar as outras a zero;
+ *    • quando não há cidades que cheguem a tempo para todos, manda-se o que se
+ *      puder — defesa parcial é melhor do que nenhuma;
+ *    • depois do impacto, a tropa que sobreviveu é tratada: fica se houver
+ *      outro ataque à mesma cidade; volta e é reenviada se der tempo de chegar
+ *      a outra cidade atacada; e vem para casa quando não houver mais nada.
+ *
+ *  Desligado por omissão: mexe em tropa durante ataques.
+ * ========================================================================== */
+function makeReforcoModule(opts) {
+  opts = opts || {};
+  let mUw = null;
+
+  const armazem = (() => {
+    try {
+      const a = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroArmazem;
+      if (a) return a;
+    } catch (e) {}
+    return localStorage;
+  })();
+
+  const CFG_KEY = 'grepoReforco_cfg_v1';
+  const ENVIOS_KEY = 'grepoReforco_envios_v1';
+
+  const DEFAULTS = {
+    ativo: false,
+    /* Quanto queres em CADA cidade atacada. */
+    objetivo: { sword: 1000, archer: 1000, hoplite: 1000, bireme: 750 },
+    /* Grupos de onde sai a tropa. */
+    grupos: ['Defesa', 'Birras', 'Trirremes'],
+    /* Margem de segurança: chegar a menos disto do impacto é arriscado. */
+    margemSeg: 60,
+  };
+
+  function cfg() {
+    try { return Object.assign({}, DEFAULTS, JSON.parse(armazem.getItem(CFG_KEY) || '{}')); }
+    catch (e) { return Object.assign({}, DEFAULTS); }
+  }
+  function guardarCfg(c) { try { armazem.setItem(CFG_KEY, JSON.stringify(c)); } catch (e) {} }
+
+  function lerEnvios() {
+    try { return JSON.parse(armazem.getItem(ENVIOS_KEY) || '{}'); } catch (e) { return {}; }
+  }
+  function gravarEnvios(d) {
+    try { armazem.setItem(ENVIOS_KEY, JSON.stringify(d)); } catch (e) {}
+  }
+
+  function esc(x) {
+    return String(x == null ? '' : x)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  const agora = () => {
+    try { return Number(mUw.Timestamp.now()) || Math.floor(Date.now() / 1000); }
+    catch (e) { return Math.floor(Date.now() / 1000); }
+  };
+
+  /* ---------------------- os ataques a caminho --------------------------- */
+
+  /* As duas fontes, como no painel dos feitiços: nenhuma está completa
+   * sozinha. Os modelos têm o que a página carregou; a visão geral tem o que o
+   * servidor sabe agora. Sem repetidos, comparados pelo conteúdo. */
+  async function ataquesContraMim() {
+    const out = new Map();
+    const minhas = new Set(Object.keys(mUw.ITowns.towns || {}).map(Number));
+    const chaveDe = (o, d, c) => `${o}|${d}|${Math.round(Number(c || 0) / 60)}`;
+
+    try {
+      const mv = mUw.MM.getModels().MovementsUnits || {};
+      for (const k of Object.keys(mv)) {
+        const a = (mv[k] || {}).attributes || {};
+        if (!/attack/i.test(String(a.type || ''))) continue;
+        const alvo = Number(a.target_town_id);
+        if (!minhas.has(alvo)) continue;
+        const chega = Number(a.arrival_at) || 0;
+        out.set(chaveDe(a.home_town_id, alvo, chega), { alvo, chega });
+      }
+    } catch (e) { seErroDeCodigo(e, 'Reforco'); }
+
+    try {
+      const base = Object.keys(mUw.ITowns.towns || {})[0];
+      if (base) {
+        const url = mUw.location.origin + '/game/town_overviews?town_id=' + Number(base)
+          + '&action=command_overview&h=' + mUw.Game.csrfToken
+          + '&json=' + encodeURIComponent(JSON.stringify({ town_id: Number(base), nl_init: true }))
+          + '&_=' + Date.now();
+        const r = await mUw.fetch(url, {
+          headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
+        }).then((x) => x.json()).catch(() => null);
+
+        const d = (r && r.json) || {};
+        for (const x of (d.commands || (d.data && d.data.commands) || [])) {
+          if (!/attack/i.test(String(x.type || ''))) continue;
+          if (x.return === true || x.cmd_return === true) continue;
+          const alvo = Number(x.destination_town_id);
+          if (!minhas.has(alvo)) continue;
+          const chega = Number(x.arrival_at) || 0;
+          const k = chaveDe(x.origin_town_id, alvo, chega);
+          if (!out.has(k)) out.set(k, { alvo, chega });
+        }
+      }
+    } catch (e) { seErroDeCodigo(e, 'Reforco'); }
+
+    return [...out.values()].filter((a) => a.chega > agora()).sort((a, b) => a.chega - b.chega);
+  }
+
+  /* ---------------------- as cidades que podem ajudar -------------------- */
+
+  function cidadesDosGrupos(nomes, ctx) {
+    try {
+      const grupos = mUw.MM.getCollections().TownGroup[0].models.map((m) => m.attributes);
+      const ligacoes = mUw.MM.getCollections().TownGroupTown[0].models.map((m) => m.attributes);
+      const ids = new Set(grupos
+        .filter((g) => (nomes || []).some((n) => String(g.name || '').toLowerCase() === String(n).toLowerCase()))
+        .map((g) => Number(g.id)));
+      if (!ids.size) return [];
+      const doGrupo = new Set(ligacoes.filter((l) => ids.has(Number(l.town_group_id)))
+        .map((l) => Number(l.town_id)));
+      return (ctx.getMyTowns() || []).filter((t) => doGrupo.has(Number(t.id)));
+    } catch (e) { seErroDeCodigo(e, 'Reforco'); return []; }
+  }
+
+  function coordsDe(townId) {
+    try {
+      const t = mUw.ITowns.getTown(Number(townId));
+      return { x: Number(t.getIslandCoordinateX()), y: Number(t.getIslandCoordinateY()) };
+    } catch (e) { return null; }
+  }
+
+  /* Quanto demora esta tropa a ir de uma cidade para a outra.
+   *
+   * As duas cidades são minhas, portanto a fórmula do jogo aplica-se — a
+   * imprecisão é de segundos e a margem de um minuto cobre-a. */
+  function viagemEntre(origemId, destinoId, unidades) {
+    try {
+      const o = coordsDe(origemId);
+      const d = coordsDe(destinoId);
+      if (!o || !d) return null;
+      const dist = Math.sqrt((o.x - d.x) ** 2 + (o.y - d.y) ** 2);
+      const gd = mUw.GameData.units || {};
+      let vel = 0;
+      for (const u of Object.keys(unidades)) {
+        if (!unidades[u]) continue;
+        const v = Number((gd[u] || {}).speed) || 0;
+        if (v && (!vel || v < vel)) vel = v;
+      }
+      if (!vel) return null;
+      const K = Number((mUw.Game.game_speed ? 5258 / mUw.Game.game_speed : 5258)) || 5258;
+      return Math.round(15 + (K * dist) / vel);
+    } catch (e) { return null; }
+  }
+
+  async function enviarApoio(origemId, destinoId, carga) {
+    try {
+      const corpo = Object.assign({}, carga, {
+        target_id: Number(destinoId), town_id: Number(origemId), nl_init: true,
+      });
+      const url = mUw.location.origin + '/game/town_info?town_id=' + Number(origemId)
+        + '&action=send_units&h=' + mUw.Game.csrfToken;
+      const r = await mUw.fetch(url, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
+          'x-requested-with': 'XMLHttpRequest',
+        },
+        credentials: 'include',
+        body: 'json=' + encodeURIComponent(JSON.stringify(corpo)),
+      }).then((x) => x.json());
+      const j = r && r.json;
+      return { ok: !(j && j.error), msg: (j && (j.error || j.success)) || 'ok' };
+    } catch (e) { return { ok: false, msg: e.message }; }
+  }
+
+  /* ---------------------- passagem -------------------------------------- */
+
+  async function run(ctx) {
+    mUw = ctx.uw;
+    const log = ctx.log;
+    const rotina = ctx.logRotina || ctx.log;
+    const c = cfg();
+
+    try {
+      const doPainel = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroLigado;
+      if (doPainel) {
+        const v = doPainel('reforco');
+        if (v === true) c.ativo = true;
+        if (v === false) c.ativo = false;
+      }
+    } catch (e) {}
+    if (!c.ativo) { rotina('Reforço: está desligado.'); return; }
+
+    const ataques = await ataquesContraMim();
+    const envios = lerEnvios();
+
+    /* ---- 1. TRAZER DE VOLTA O QUE JÁ NÃO FAZ FALTA ----
+     *
+     * A tropa fica onde está se houver outro ataque à mesma cidade. Só vem
+     * quando o último ataque àquela cidade já bateu. */
+    const aindaAtacadas = new Set(ataques.map((a) => Number(a.alvo)));
+    for (const k of Object.keys(envios)) {
+      const e = envios[k] || {};
+      if (Number(e.impacto) > agora()) continue;          // ainda não bateu
+      if (aindaAtacadas.has(Number(e.destino))) {
+        rotina(`Reforço: a tropa fica em ${e.destino} — há outro ataque a caminho.`);
+        continue;
+      }
+      /* Já bateu e não há mais nada: o apoio volta pela via normal do módulo
+       * do apoio, que é quem sabe trazer. Aqui só se larga o registo. */
+      log(`↩️ Reforço: acabaram os ataques a ${e.destino} — a tropa pode voltar.`);
+      delete envios[k];
+    }
+    gravarEnvios(envios);
+
+    if (!ataques.length) { rotina('Reforço: nenhum ataque a caminho.'); return; }
+
+    /* ---- 2. O QUE FALTA EM CADA CIDADE ATACADA ----
+     *
+     * Conta-se o que já lá está, incluindo o que este módulo mandou e ainda
+     * vai a caminho. Sem isso, mandava-se duas vezes. */
+    const objetivo = c.objetivo || {};
+    const falta = {};
+    for (const a of ataques) {
+      const id = Number(a.alvo);
+      if (falta[id]) continue;
+      const tem = (() => {
+        try { return mUw.ITowns.getTown(id).unitsSupport
+          ? Object.assign({}, mUw.ITowns.getTown(id).units(), mUw.ITowns.getTown(id).unitsSupport())
+          : (mUw.ITowns.getTown(id).units() || {}); } catch (e) { return {}; }
+      })();
+      const aCaminho = {};
+      for (const k of Object.keys(envios)) {
+        const e = envios[k] || {};
+        if (Number(e.destino) !== id) continue;
+        for (const u of Object.keys(e.carga || {})) {
+          aCaminho[u] = (aCaminho[u] || 0) + Number(e.carga[u] || 0);
+        }
+      }
+      const f = {};
+      for (const u of Object.keys(objetivo)) {
+        const n = Number(objetivo[u]) - (Number(tem[u]) || 0) - (Number(aCaminho[u]) || 0);
+        if (n > 0) f[u] = n;
+      }
+      falta[id] = f;
+    }
+
+    /* ---- 3. SERVIR, POR ORDEM DE IMPACTO ----
+     *
+     * O ataque que bate primeiro é servido primeiro: a tropa que não chegasse
+     * a esse também não o defendia. */
+    const ajudantes = cidadesDosGrupos(c.grupos, ctx);
+    if (!ajudantes.length) {
+      rotina(`Reforço: não encontrei cidades nos grupos ${(c.grupos || []).join(', ')}.`);
+      return;
+    }
+
+    const jaUsada = new Set();
+    let mandados = 0;
+
+    for (const a of ataques) {
+      const id = Number(a.alvo);
+      const f = falta[id] || {};
+      if (!Object.keys(f).length) continue;
+
+      const nome = (() => { try { return mUw.ITowns.getTown(id).getName(); } catch (e) { return id; } })();
+      const segundos = a.chega - agora();
+
+      for (const origem of ajudantes) {
+        if (!Object.keys(f).length) break;
+        if (jaUsada.has(Number(origem.id))) continue;     // uma cidade serve um ataque por passagem
+        if (Number(origem.id) === id) continue;
+
+        const emCasa = (() => {
+          try { return mUw.ITowns.getTown(Number(origem.id)).units() || {}; } catch (e) { return {}; }
+        })();
+
+        /* O que esta cidade pode dar do que falta. */
+        const carga = {};
+        for (const u of Object.keys(f)) {
+          const n = Math.min(Number(f[u]) || 0, Number(emCasa[u]) || 0);
+          if (n > 0) carga[u] = n;
+        }
+        if (!Object.keys(carga).length) continue;
+
+        /* CHEGA A TEMPO?
+         *
+         * A viagem tem de caber no que falta para o impacto, com a margem de
+         * segurança. Chegar depois é perder a tropa em viagem — pior do que
+         * não mandar. */
+        const viagem = viagemEntre(origem.id, id, carga);
+        if (viagem == null) continue;
+        if (viagem + (Number(c.margemSeg) || 60) > segundos) {
+          rotina(`Reforço: ${origem.name} não chega a tempo de ${nome} `
+            + `(viagem ${Math.round(viagem / 60)} min, faltam ${Math.round(segundos / 60)} min).`);
+          continue;
+        }
+
+        const r = await enviarApoio(origem.id, id, carga);
+        if (!r.ok) {
+          rotina(`Reforço: ${origem.name} → ${nome} falhou (${r.msg}).`);
+          continue;
+        }
+
+        mandados++;
+        jaUsada.add(Number(origem.id));
+        for (const u of Object.keys(carga)) {
+          f[u] = (Number(f[u]) || 0) - carga[u];
+          if (f[u] <= 0) delete f[u];
+        }
+
+        envios[`${origem.id}->${id}`] = {
+          destino: id, origem: Number(origem.id), carga,
+          impacto: a.chega, quando: agora(),
+        };
+        gravarEnvios(envios);
+
+        log(`🛡️ Reforço: ${origem.name} → ${nome} — `
+          + Object.keys(carga).map((u) => `${carga[u]} ${u}`).join(', ')
+          + ` (chega ${Math.round((segundos - viagem) / 60)} min antes do ataque).`);
+        await ctx.sleep(ctx.rand(700, 1400));
+      }
+
+      if (Object.keys(f).length) {
+        rotina(`Reforço: ${nome} fica a faltar `
+          + Object.keys(f).map((u) => `${f[u]} ${u}`).join(', ')
+          + ' — não havia mais cidades que chegassem a tempo.');
+      }
+    }
+
+    if (!mandados) rotina(`Reforço: ${ataques.length} ataque(s) a caminho, nada a mandar.`);
+  }
+
+  /* ---------------------- painel ---------------------------------------- */
+
+  function painel(container, ctx) {
+    mUw = ctx.uw;
+    const c = cfg();
+    const o = c.objetivo || {};
+
+    container.innerHTML = `
+      <div class="mCaixa" style="margin-bottom:8px">
+        <div style="font-size:12px;opacity:.75">
+          Quando uma cidade desta conta é atacada, manda-lhe tropa das cidades
+          dos grupos abaixo — só das que chegam a tempo. Com vários ataques,
+          reparte pelo objectivo de cada uma em vez de encher a primeira.
+        </div>
+      </div>
+
+      <div style="margin-bottom:8px">
+        <div class="mEtiq" style="margin-bottom:3px">objectivo em cada cidade atacada</div>
+        <div style="font-size:12px">
+          E<input type="number" id="rf-sword" value="${Number(o.sword) || 0}" style="width:60px">
+          A<input type="number" id="rf-archer" value="${Number(o.archer) || 0}" style="width:60px">
+          H<input type="number" id="rf-hoplite" value="${Number(o.hoplite) || 0}" style="width:60px">
+          B<input type="number" id="rf-bireme" value="${Number(o.bireme) || 0}" style="width:60px">
+        </div>
+      </div>
+
+      <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;font-size:12px">
+        <span class="mEtiq">grupos</span>
+        <input id="rf-grupos" value="${esc((c.grupos || []).join(', '))}" style="flex:1">
+      </div>
+
+      <div style="display:flex;gap:6px;align-items:center;margin-bottom:8px;font-size:12px">
+        <span class="mEtiq">margem</span>
+        <input type="number" id="rf-margem" value="${Number(c.margemSeg) || 60}" style="width:60px">
+        <span style="opacity:.6">segundos antes do impacto, no mínimo</span>
+      </div>
+
+      <div id="rf-estado" style="font-size:12px;opacity:.7">a procurar ataques…</div>
+
+      <button id="rf-guardar" style="cursor:pointer;width:100%;margin-top:8px;
+        background:#3a6ea5;color:#fff;padding:5px;border:none;border-radius:4px">Guardar</button>`;
+
+    container.querySelector('#rf-guardar').onclick = () => {
+      guardarCfg(Object.assign({}, cfg(), {
+        objetivo: {
+          sword: Number(container.querySelector('#rf-sword').value) || 0,
+          archer: Number(container.querySelector('#rf-archer').value) || 0,
+          hoplite: Number(container.querySelector('#rf-hoplite').value) || 0,
+          bireme: Number(container.querySelector('#rf-bireme').value) || 0,
+        },
+        grupos: String(container.querySelector('#rf-grupos').value || '')
+          .split(',').map((x) => x.trim()).filter(Boolean),
+        margemSeg: Number(container.querySelector('#rf-margem').value) || 60,
+      }));
+      ctx.log('Reforço: definições guardadas.');
+    };
+
+    (async () => {
+      const alvo = container.querySelector('#rf-estado');
+      if (!alvo) return;
+      const ataques = await ataquesContraMim();
+      const ajudantes = cidadesDosGrupos(cfg().grupos, ctx);
+      const envios = lerEnvios();
+      alvo.innerHTML = `
+        <div>${ataques.length} ataque(s) a caminho · ${ajudantes.length} cidade(s) nos grupos</div>
+        ${ataques.slice(0, 6).map((a) => {
+          let nome = a.alvo;
+          try { nome = mUw.ITowns.getTown(Number(a.alvo)).getName(); } catch (e) {}
+          return `<div style="margin-top:2px">${esc(nome)} · bate em
+            ${Math.round((a.chega - agora()) / 60)} min</div>`;
+        }).join('')}
+        ${Object.keys(envios).length
+          ? `<div style="margin-top:4px;opacity:.7">${Object.keys(envios).length} reforço(s) enviado(s)</div>`
+          : ''}`;
+    })();
+  }
+
+  return {
+    id: 'reforco',
+    nome: 'Reforço sob ataque',
+    /* Curto: um ataque pode chegar a qualquer momento e a tropa precisa de
+     * tempo de viagem. */
+    intervaloMin: opts.intervaloMin || 2,
+    autoStart: false,
+    run, painel,
+  };
+}
+
   /* ===================== REGISTO DOS MÓDULOS ==============================
    * ⚠️ Preenche GIST_ID e GIST_TOKEN para partilhar as configurações entre as
    *    contas. Cada módulo escreve no seu próprio ficheiro dentro do Gist.
@@ -37650,6 +38243,7 @@ function makeTiqueModule(opts) {
    * alvo numa conta, as outras devem notar depressa para trazer as tropas de
    * volta. Com 5 min, uma remoção demorava a propagar-se. */
   registerModule(makeApoioModule({ intervaloMin: 2, gistId: GIST_ID, gistToken: GIST_TOKEN }));
+  registerModule(makeReforcoModule({ intervaloMin: 2 }));
   /* 3 min: é o tempo de espera entre ataques ao ponto da ilha. */
   registerModule(makeBandidosModule({ intervaloMin: 3 }));
   /* 12 horas: as sentinelas só se repõem quando morrem. */
