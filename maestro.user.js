@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.09.1630
+// @version      2026.09.09.1730
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1694,7 +1694,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.09.1630';
+  const MAESTRO_VERSAO = '2026.09.09.1730';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -22025,6 +22025,10 @@ function makeEsquivaModule(opts) {
   const marcarSemAdministrador = () => { semAdmAte = Date.now() + 30 * 60 * 1000; };
   const semAdministrador = () => Date.now() < semAdmAte;
 
+  /* Porque é que a última leitura veio vazia — para o registo dizer alguma
+   * coisa de útil em vez de "o servidor nunca confirma". */
+  let ultimaRazaoVazioEsquiva = '';
+
   async function comandosDoServidor(townId) {
     if (semAdministrador()) return [];
     try {
@@ -23656,6 +23660,22 @@ function makeEsquivaModule(opts) {
          * outra vez já a seguir. */
         const paraEsta = cmds.filter((cd) => Number(cd.target_town_id) === Number(tid));
         const k = String(tid);
+
+        /* PORQUE É QUE O SERVIDOR NÃO CONFIRMOU.
+         *
+         * Dizia apenas "nunca o confirma" e não se sabia se veio um erro, se a
+         * resposta veio sem comandos, ou se veio com comandos mas nenhum para
+         * esta cidade. São três causas com remédios diferentes — e custou uma
+         * esquiva falhada num farm, com dez perguntas em seis minutos e
+         * nenhuma explicação. */
+        if (!paraEsta.length) {
+          rotina(`Esquiva: ${tid} — o servidor devolveu ${cmds.length} comando(s) `
+            + (cmds.length
+              ? `mas nenhum para esta cidade (destinos: ${cmds.slice(0, 3)
+                  .map((cd) => cd.target_town_id).join(', ')})`
+              : `(${ultimaRazaoVazioEsquiva || 'sem razão registada'})`) + '.');
+        }
+
         if (!paraEsta.length) {
           const antes = desmentidas[k] || { falhas: 0 };
           desmentidas[k] = { falhas: (Number(antes.falhas) || 0) + 1, quando: agoraMs };
