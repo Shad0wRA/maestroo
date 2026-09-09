@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.10.0430
+// @version      2026.09.10.0530
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1694,7 +1694,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.10.0430';
+  const MAESTRO_VERSAO = '2026.09.10.0530';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -35352,10 +35352,35 @@ function makeFundacaoModule(opts) {
       const jaTenhoAqui = (() => {
         try {
           const alvoK = `${Number(ilha.x)}:${Number(ilha.y)}`;
+
+          /* 1) Já tenho uma cidade nesta ilha. */
           if ((ctx.getMyTowns() || []).some((x) => ilhaDe(x.id) === alvoK)) return true;
-          /* E as que esta conta acabou de fundar, que o jogo ainda não mostra. */
+
+          /* 2) Já mandei um colonizador para cá e o jogo ainda não mostra a
+           *    cidade. Vale seis horas — mais do que qualquer viagem. */
           const recentes = JSON.parse(armazem.getItem('grepoFundacao_recemFundadas_v1') || '{}');
-          return !!recentes[alvoK] && (Date.now() - Number(recentes[alvoK])) < 6 * 3600 * 1000;
+          if (recentes[alvoK] && (Date.now() - Number(recentes[alvoK])) < 6 * 3600 * 1000) return true;
+
+          /* 3) HÁ UM COLONIZADOR MEU A CAMINHO DESTA ILHA.
+           *
+           * O registo acima só conhece o que ESTE módulo enviou. Um
+           * colonizador mandado à mão, ou por outra via, não estaria lá — e
+           * a cidade acabaria por nascer ao lado de outra minha.
+           *
+           * Os movimentos do jogo trazem os colonizadores a viajar; basta ver
+           * para que ilha vão. */
+          const mvs = mUw.MM.getModels().MovementsUnits || {};
+          for (const k of Object.keys(mvs)) {
+            const mo = (mvs[k] || {}).attributes || {};
+            if (!/colon/i.test(String(mo.type || mo.command_name || ''))) continue;
+            const destino = Number(mo.target_town_id) || 0;
+            const ix = Number(mo.target_island_x != null ? mo.target_island_x : mo.island_x);
+            const iy = Number(mo.target_island_y != null ? mo.target_island_y : mo.island_y);
+            if (Number.isFinite(ix) && Number.isFinite(iy) && `${ix}:${iy}` === alvoK) return true;
+            if (destino && ilhaDe(destino) === alvoK) return true;
+          }
+
+          return false;
         } catch (e) { return false; }
       })();
 
@@ -38387,9 +38412,29 @@ function makeReforcoModule(opts) {
         </div>
       </div>
 
-      <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;font-size:12px">
-        <span class="mEtiq">grupos</span>
-        <input id="rf-grupos" value="${esc((c.grupos || []).join(', '))}" style="flex:1">
+      <div style="margin-bottom:8px">
+        <div class="mEtiq" style="margin-bottom:3px">grupos de onde sai a tropa</div>
+        <div style="opacity:.6;font-size:11px;margin-bottom:4px">
+          Escrever os nomes à mão era frágil — bastava um acento ou um espaço
+          para o grupo não ser encontrado. Aqui estão os que o jogo tem.
+        </div>
+        <div id="rf-grupos-lista" style="display:flex;flex-wrap:wrap;gap:4px 10px;font-size:12px">
+          ${(() => {
+            let todos = [];
+            try {
+              todos = mUw.MM.getCollections().TownGroup[0].models
+                .map((m) => m.attributes)
+                .filter((g) => Number(g.id) > 0);
+            } catch (e) {}
+            if (!todos.length) return '<span style="opacity:.6">não consegui ler os grupos.</span>';
+            const escolhidos = (c.grupos || []).map((x) => String(x).toLowerCase());
+            return todos.map((g) => `<label style="display:flex;align-items:center;gap:4px;cursor:pointer">
+                <input type="checkbox" class="rf-grupo" value="${esc(g.name)}"
+                  ${escolhidos.indexOf(String(g.name).toLowerCase()) >= 0 ? 'checked' : ''}>
+                <span>${esc(g.name)}</span>
+              </label>`).join('');
+          })()}
+        </div>
       </div>
 
       <div style="display:flex;gap:6px;align-items:center;margin-bottom:8px;font-size:12px">
@@ -38411,8 +38456,8 @@ function makeReforcoModule(opts) {
           hoplite: Number(container.querySelector('#rf-hoplite').value) || 0,
           bireme: Number(container.querySelector('#rf-bireme').value) || 0,
         },
-        grupos: String(container.querySelector('#rf-grupos').value || '')
-          .split(',').map((x) => x.trim()).filter(Boolean),
+        grupos: [...container.querySelectorAll('.rf-grupo')]
+          .filter((el) => el.checked).map((el) => el.value),
         margemSeg: Number(container.querySelector('#rf-margem').value) || 60,
       }));
       ctx.log('Reforço: definições guardadas.');
