@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.10.0730
+// @version      2026.09.10.0830
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1694,7 +1694,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.10.0730';
+  const MAESTRO_VERSAO = '2026.09.10.0830';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -2236,6 +2236,7 @@
      * outra. É a mesma falha que já apanhámos com a equipa dos colonizadores,
      * o registo do apoio e o histórico da frota — desta vez em maior escala.
      * ==================================================================== */
+    'grepoEncaixe_folga_v1',             // a folga que ESTA conta aprendeu
     'grepoConstru_ultimaVerificacao_v1', // quando ESTA conta reviu as cumpridas
     'grepoFundacao_recemFundadas_v1',    // ilhas onde ESTA conta acabou de fundar
     'grepoApoio_transpVolta_v1',         // transportes que ESTA conta já mandou vir
@@ -26931,6 +26932,32 @@ function makeEncaixeModule(opts) {
    * captcha, falta de Administrador, ou se não havia mesmo comandos. */
   let ultimaRazaoVazio = '';
 
+  /* LANÇAR UM FEITIÇO NUM COMANDO.
+   *
+   * O mesmo pedido que o módulo dos feitiços usa. Aqui serve para pôr o bónus
+   * no ataque que acabou de acertar — e só nesse. */
+  async function lancarFeiticoNoComando(powerId, comandoId, origemId) {
+    try {
+      const url = mUw.location.origin + '/game/frontend_bridge?town_id=' + Number(origemId)
+        + '&action=execute&h=' + mUw.Game.csrfToken;
+      const r = await mUw.fetch(url, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
+          'x-requested-with': 'XMLHttpRequest',
+        },
+        credentials: 'include',
+        body: 'json=' + encodeURIComponent(JSON.stringify({
+          model_url: 'CastedPowers', action_name: 'cast', captcha: null,
+          arguments: { power_id: powerId, id: Number(comandoId) },
+          town_id: Number(origemId), nl_init: true,
+        })),
+      }).then((x) => x.json());
+      const j = r && r.json;
+      return { ok: !(j && j.error), msg: (j && (j.error || j.success)) || 'ok' };
+    } catch (e) { return { ok: false, msg: e.message }; }
+  }
+
   async function comandosDoServidor(townId) {
     if (semAdministrador()) { ultimaRazaoVazio = 'sem Administrador (marcado há pouco)'; return []; }
     try {
@@ -27241,7 +27268,14 @@ function makeEncaixeModule(opts) {
       /* Tecto de 400 ms: com 900 os ciclos passavam de 350 para 1100 e a rajada
      * fazia seis tentativas em vez de trinta. Mais vale perder uma tentativa
      * por tropa em viagem do que perder metade delas à espera. */
-    try { folgaExtra = Math.min(400, Number(armazem.getItem('grepoEncaixe_folga_v1')) || 0); } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
+    /* A FOLGA É DE CADA PERFIL.
+     *
+     * A chave não tinha o perfil, portanto a main e as multis partilhavam a
+     * mesma folga — e uma rajada má numa conta encurtava as rajadas de todas
+     * as outras. */
+    try {
+      folgaExtra = Math.min(400, Number(armazem.getItem('grepoEncaixe_folga_v1')) || 0);
+    } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
       // Atenção ao 0: `x || 10` trocaria um limite de 0 s por 10 s, tornando
       // impossível pedir "parar assim que passar da hora". Mesmo erro que já
       // nos mordeu na margem de segundos.
@@ -27267,8 +27301,17 @@ function makeEncaixeModule(opts) {
          *
          * Cada envio que passa desconta 50 ms. Assim ela sobe quando é
          * precisa e volta a descer quando o problema passa. */
+        /* SOBE E DESCE AO MESMO RITMO.
+         *
+         * Subia 150 ms por cada recusa e descia 50 por cada envio bom: uma
+         * rajada má levava-a ao tecto e depois eram precisos oito envios bons
+         * para descer um degrau. Ficava presa nos 400, com ciclos de 1100 ms
+         * — treze tentativas onde cabiam vinte e oito.
+         *
+         * Agora desce 150, como sobe. Uma recusa isolada deixa de custar a
+         * rajada inteira. */
         if (r.ok && folgaExtra > 0) {
-          folgaExtra = Math.max(0, folgaExtra - 50);
+          folgaExtra = Math.max(0, folgaExtra - 150);
           try { armazem.setItem('grepoEncaixe_folga_v1', String(folgaExtra)); } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
         }
 
@@ -27426,6 +27469,30 @@ function makeEncaixeModule(opts) {
         if (aceite) {
           anotarRajada(`=== CONSEGUIDO à ${tentativa}ª tentativa · desvio ${desvio >= 0 ? '+' : ''}${desvio}s`);
           log(`✅ Encaixe conseguido à ${tentativa}ª tentativa: chega às ${horaJogo(cmd.arrival_at)} (${desvio >= 0 ? '+' : ''}${desvio}s).`);
+
+          /* ---- FEITIÇOS, SÓ AGORA ----
+           *
+           * O feitiço vai no comando que ACERTOU, nunca antes: as tentativas
+           * falhadas são canceladas, e lançar num comando que vai ser
+           * cancelado é deitar favor fora.
+           *
+           * É aqui, e não noutro sítio, porque é o único momento em que se tem
+           * o identificador do comando definitivo. */
+          try {
+            const escolhidos = [].concat(plano.feiticos || []);
+            if (escolhidos.length && cmd && cmd.command_id) {
+              for (const powerId of escolhidos) {
+                const rf = await lancarFeiticoNoComando(powerId, cmd.command_id, plano.origemId);
+                if (rf.ok) {
+                  log(`✨ Encaixe: ${powerId} lançado no ataque.`);
+                } else {
+                  log(`⚠️ Encaixe: não consegui lançar ${powerId} — ${rf.msg}`);
+                }
+                await new Promise((res) => setTimeout(res, 600));
+              }
+            }
+          } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
+
           return;
         }
 
@@ -27963,6 +28030,20 @@ function makeEncaixeModule(opts) {
             <div id="encj-tolerancia" style="opacity:.8">a ver...</div>
           <div id="encj-carga" style="margin-top:5px;padding-top:5px;border-top:1px solid #2c3e50;font-size:13px"></div>
           <div id="encj-combos" style="margin-top:5px;padding-top:5px;border-top:1px solid #2c3e50;font-size:13px;max-height:240px;overflow:auto"></div>
+
+          <!-- FEITIÇOS NO ATAQUE.
+               Marcados aqui, lançados só quando uma tentativa acertar — nunca
+               antes, porque as falhadas são canceladas e o favor perdia-se. -->
+          <div style="border-top:1px solid #2c3e50;margin-top:6px;padding-top:6px">
+            <div style="font-size:12px;letter-spacing:.5px;opacity:.65;margin-bottom:3px">
+              FEITIÇOS NO ATAQUE
+            </div>
+            <div style="opacity:.55;font-size:11px;margin-bottom:4px">
+              Vão no comando que acertar, depois de confirmado. Se faltar
+              favor, é pedido ao farm quando o plano é criado.
+            </div>
+            <div id="encj-feiticos" style="display:flex;flex-wrap:wrap;gap:8px"></div>
+          </div>
             <div style="font-size:12px;opacity:.5;margin-top:2px">
               Muda-se no painel do Maestro, em Encaixe. Se puseres um colonizador
               nas unidades, usa a tolerância dos colonizadores.
@@ -28762,6 +28843,8 @@ function makeEncaixeModule(opts) {
               atrasosSeguidosParaParar: conf.atrasosSeguidosParaParar,
               limiteAposEnvioSeg: conf.limiteAposEnvioSeg,
               comecarAntes: conf.comecarAntes,
+              /* Os feitiços marcados quando o plano foi criado. */
+              feiticos: [].concat(cfg().feiticosEncaixe || []),
               /* GUARDAR A DURAÇÃO MEDIDA.
                *
                * Estava `false`, e por isso o encaixe recalculava a viagem por
@@ -28791,6 +28874,46 @@ function makeEncaixeModule(opts) {
        * uma tentativa ao mesmo instante. */
       /* ASSÍNCRONA: as combinações são MEDIDAS na janela do jogo, uma a uma,
        * com meio segundo entre cada para ele recalcular. */
+      /* Os feitiços que se podem lançar num comando, com os ícones do jogo. */
+      const mostrarFeiticos = () => {
+        try {
+          const el = box.querySelector('#encj-feiticos');
+          if (!el) return;
+          const gd = mUw.GameData.powers || {};
+          const escolhidos = [].concat(cfg().feiticosEncaixe || []);
+          const ids = Object.keys(gd).filter((id) => {
+            const p2 = gd[id] || {};
+            if (p2.is_fake_power) return false;
+            return (p2.targets || []).some((t) => /command/i.test(String(t)));
+          });
+          if (!ids.length) { el.innerHTML = '<span style="opacity:.55;font-size:12px">sem feitiços disponíveis.</span>'; return; }
+
+          el.innerHTML = ids.map((id) => {
+            const p2 = gd[id] || {};
+            const sel = escolhidos.indexOf(id) >= 0;
+            return `<label title="${String(p2.name || id)}"
+              style="display:flex;align-items:center;gap:4px;cursor:pointer;opacity:${sel ? '1' : '.4'}">
+              <input type="checkbox" class="encj-feitico" value="${id}" ${sel ? 'checked' : ''}
+                style="display:none">
+              <span style="width:26px;height:26px;display:inline-block;
+                    background:url(${mUw.Game.img()}/game/powers/${id}.png) center/contain no-repeat;
+                    border:1px solid ${sel ? 'var(--mBrass)' : 'transparent'};border-radius:5px"></span>
+              <span style="font-size:11px">${String(p2.name || id)}</span>
+            </label>`;
+          }).join('');
+
+          el.querySelectorAll('.encj-feitico').forEach((inp) => {
+            inp.onchange = () => {
+              const cc = cfg();
+              cc.feiticosEncaixe = [...el.querySelectorAll('.encj-feitico')]
+                .filter((x) => x.checked).map((x) => x.value);
+              guardarCfg(cc);
+              mostrarFeiticos();
+            };
+          });
+        } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
+      };
+
       const mostrarCombos = async () => {
         if (medindoCombos) return;         // já está uma medição a correr
         medindoCombos = true;
@@ -28883,6 +29006,7 @@ function makeEncaixeModule(opts) {
 
       mostrarTolerancia();
       mostrarCarga();
+      mostrarFeiticos();
       mostrarCombos().catch(() => {});
 
       /* As combinações dependem da hora de chegada: recalcular quando ela
