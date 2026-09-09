@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.10.1330
+// @version      2026.09.10.1730
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1694,7 +1694,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.10.1330';
+  const MAESTRO_VERSAO = '2026.09.10.1730';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -1978,6 +1978,7 @@
     frota:        { icone: '📡', curto: 'Frota' },
     fecharilha:   { icone: '🔒', curto: 'Fechar ilha' },
     tique:        { icone: '🎡', curto: 'Tique' },
+    expansao:     { icone: '🏛️', curto: 'Expansão' },
     reforco:      { icone: '🛡️', curto: 'Reforço' },
   };
 
@@ -2011,7 +2012,9 @@
     },
     expansao: {
       nome: 'Expansão', icone: '🏛️',
-      membros: ['fundacao', 'fecharilha', 'colonos', 'fabricanc'],
+      /* A fundação e o fechar ilha já não são módulos à parte: vivem dentro
+       * do `expansao`, com separadores próprios. */
+      membros: ['expansao', 'colonos', 'fabricanc'],
     },
     apoio: {
       nome: 'Apoio', icone: '🛡️',
@@ -2240,6 +2243,7 @@
     'grepoAldeias_ordemIlhas_v1',        // a ordem das ilhas DESTA conta
     'grepoEncaixe_folga_v1',             // a folga que ESTA conta aprendeu
     'grepoConstru_ultimaVerificacao_v1', // quando ESTA conta reviu as cumpridas
+    'grepoFundacao_ilhasOcupadas_v1',    // ilhas cheias que ESTA conta encontrou
     'grepoFundacao_recemFundadas_v1',    // ilhas onde ESTA conta acabou de fundar
     'grepoApoio_transpVolta_v1',         // transportes que ESTA conta já mandou vir
     'grepoAldeias_captcha_v1',           // captcha visto NESTA conta
@@ -35739,45 +35743,39 @@ function makeFundacaoModule(opts) {
        *
        * Esta é a última barreira, imediatamente antes do envio: se já houver
        * uma cidade minha nesta ilha, não se funda e ponto. */
-      const jaTenhoAqui = (() => {
+      /* A REGRA É UMA SÓ, e vive no módulo Expansão.
+       *
+       * Estava escrita aqui e outra vez no fechar ilha, com redacções
+       * diferentes — e ao longo de um dia a mesma correcção teve de ser feita
+       * duas vezes. Agora é uma função só, chamada pelos dois caminhos. */
+      const veredicto = (() => {
         try {
-          const alvoK = `${Number(ilha.x)}:${Number(ilha.y)}`;
+          const f = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window)
+            .__maestroPodeFundarNaIlha;
+          if (f) return f(mUw, ctx, ilha.x, ilha.y);
+        } catch (e) {}
+        return { pode: true, porque: '' };
+      })();
 
-          /* 1) Já tenho uma cidade nesta ilha. */
-          if ((ctx.getMyTowns() || []).some((x) => ilhaDe(x.id) === alvoK)) return true;
-
-          /* 2) Já mandei um colonizador para cá e o jogo ainda não mostra a
-           *    cidade. Vale seis horas — mais do que qualquer viagem. */
-          const recentes = JSON.parse(armazem.getItem('grepoFundacao_recemFundadas_v1') || '{}');
-          if (recentes[alvoK] && (Date.now() - Number(recentes[alvoK])) < 6 * 3600 * 1000) return true;
-
-          /* 3) HÁ UM COLONIZADOR MEU A CAMINHO DESTA ILHA.
-           *
-           * O registo acima só conhece o que ESTE módulo enviou. Um
-           * colonizador mandado à mão, ou por outra via, não estaria lá — e
-           * a cidade acabaria por nascer ao lado de outra minha.
-           *
-           * Os movimentos do jogo trazem os colonizadores a viajar; basta ver
-           * para que ilha vão. */
-          const mvs = mUw.MM.getModels().MovementsUnits || {};
-          for (const k of Object.keys(mvs)) {
-            const mo = (mvs[k] || {}).attributes || {};
-            if (!/colon/i.test(String(mo.type || mo.command_name || ''))) continue;
-            const destino = Number(mo.target_town_id) || 0;
-            const ix = Number(mo.target_island_x != null ? mo.target_island_x : mo.island_x);
-            const iy = Number(mo.target_island_y != null ? mo.target_island_y : mo.island_y);
-            if (Number.isFinite(ix) && Number.isFinite(iy) && `${ix}:${iy}` === alvoK) return true;
-            if (destino && ilhaDe(destino) === alvoK) return true;
-          }
-
-          return false;
+      /* Ilhas onde os lugares livres estavam todos a ser fundados por outros:
+       * marcadas por duas horas, que é mais do que o tempo de fundação. */
+      const marcadaSemVaga = (() => {
+        try {
+          const oc = JSON.parse(armazem.getItem('grepoFundacao_ilhasOcupadas_v1') || '{}');
+          const q = Number(oc[`${Number(ilha.x)}:${Number(ilha.y)}`]) || 0;
+          return q && (Date.now() - q) < 2 * 3600 * 1000;
         } catch (e) { return false; }
       })();
 
+      const jaTenhoAqui = !veredicto.pode || marcadaSemVaga;
+
       if (jaTenhoAqui) {
-        log(`— ${chave}: já tenho uma cidade nesta ilha (verificação final); não fundo.`);
+        log(`— ${chave}: ${veredicto.porque || 'sem vaga real'}; não fundo.`);
         continue;
       }
+
+      /* Quantos lugares livres já estão a ser fundados por outros. */
+      let tomadosAFundar = 0;
 
       for (const numero of livres) {
         const r = await fundarCidade(t.id, { x: ilha.x, y: ilha.y, numero });
@@ -35805,6 +35803,42 @@ function makeFundacaoModule(opts) {
         }
 
         // erro que se repetiria em qualquer lugar: não vale a pena insistir
+        /* LUGAR JÁ A SER FUNDADO POR ALGUÉM — conta como tomado.
+         *
+         * O jogo responde "Este local já está a ser utilizado por outro
+         * jogador para fundar uma cidade". Não é falha nossa: é um lugar que
+         * já não existe para nós, e insistir nele é desperdício.
+         *
+         * Se TODOS os livres da ilha derem isto, a ilha não tem nada para nós
+         * e passa-se à seguinte. */
+        if (/j[áa] est[áa] a ser utilizado|already .*being used/i.test(String(r.msg))) {
+          tomadosAFundar++;
+          if (tomadosAFundar >= livres.length) {
+            log(`— ${chave}: os lugares livres estão todos a ser fundados; passo à seguinte.`);
+
+            /* E FICA MARCADA, PARA NÃO SER ESCOLHIDA OUTRA VEZ.
+             *
+             * Uma ilha assim parece ter vaga — o jogo mostra o lugar como
+             * livre — mas não tem: há um colonizador de outro jogador a
+             * fundar ali. Sem esta marca, ela voltava a ser a candidata mais
+             * próxima na passagem seguinte, e gastavam-se as tentativas todas
+             * outra vez.
+             *
+             * Duas horas chegam: é mais do que o tempo de fundação, e passado
+             * isso ou a cidade nasceu (e a ilha fica cheia de verdade) ou o
+             * lugar libertou-se. */
+            try {
+              const oc = JSON.parse(armazem.getItem('grepoFundacao_ilhasOcupadas_v1') || '{}');
+              oc[chave] = Date.now();
+              armazem.setItem('grepoFundacao_ilhasOcupadas_v1', JSON.stringify(oc));
+            } catch (e) { seErroDeCodigo(e, 'Fundacao'); }
+
+            break;
+          }
+          continue;
+        }
+
+
         if (paraTudo.test(String(r.msg))) {
           log(`⚠️ Fundação: ${r.msg}`);
           return;
@@ -37670,6 +37704,32 @@ function makeFecharIlhaModule(opts) {
           return;
         }
         const cidade = (plano.prontos[eu] || {}).cidade || tenhoColonizador();
+
+        /* A MESMA REGRA DA FUNDAÇÃO, chamada daqui também.
+         *
+         * Uma conta não põe duas cidades na mesma ilha — nem por esta via.
+         * Cada conta tem o SEU lugar no plano, portanto isto não colide com o
+         * fechar ilha em si: o que impede é eu ir para uma ilha onde já tenho
+         * cidade, ou onde já mandei um colonizador.
+         *
+         * Estava escrita só do lado da fundação. Agora é uma função só. */
+        const podeIr = (() => {
+          try {
+            const f = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window)
+              .__maestroPodeFundarNaIlha;
+            if (f) return f(mUw, ctx, plano.x, plano.y);
+          } catch (e) {}
+          return { pode: true, porque: '' };
+        })();
+
+        if (!podeIr.pode) {
+          log(`⛔ Fechar ilha ${plano.chave}: não envio — ${podeIr.porque}.`);
+          plano.abortado = plano.abortado || {};
+          plano.abortado[eu] = podeIr.porque;
+          await gravarPlano(plano);
+          return;
+        }
+
         if (!cidade) {
           log(`⚠️ Fechar ilha: era a minha vez e já não tenho colonizador.`);
         } else {
@@ -37746,12 +37806,33 @@ function makeFecharIlhaModule(opts) {
       const townsD = ctx.getMyTowns() || [];
       if (townsD.length) {
         const ilhaAgora = await estadoDaIlha(plano.x, plano.y, townsD[0].id);
-        if (!ilhaAgora.livres.length) {
+
+        /* UM LUGAR A SER FUNDADO JÁ NÃO ESTÁ LIVRE.
+         *
+         * Entre o colonizador chegar e a cidade nascer há o tempo de fundação.
+         * Nessa janela o jogo mostra o lugar como livre, mas recusa quem lá
+         * tente ir — "Este local já está a ser utilizado por outro jogador
+         * para fundar uma cidade".
+         *
+         * Com vinte contas a fundar ao mesmo tempo, a ilha ficava horas nesse
+         * estado e a fila esperava por cidades que já estavam garantidas.
+         *
+         * Contam-se como tomados os lugares que ESTA equipa já enviou: se
+         * todas as contas enviaram, a ilha está fechada mesmo que o jogo ainda
+         * não mostre as cidades. */
+        const enviadosTodos = Object.keys(plano.enviados || {}).length;
+        const lugaresDoPlano = Object.keys(plano.atribuicoes || {}).length;
+        const todasEnviaram = lugaresDoPlano > 0 && enviadosTodos >= lugaresDoPlano;
+
+        if (!ilhaAgora.livres.length || todasEnviaram) {
           plano.estado = 'feito';
           plano.fechadaEm = Math.floor(Date.now() / 1000);
           await gravarPlano(plano);
-          log(`✅ Fechar ilha ${plano.chave}: os ${LUGARES} lugares estão ocupados — ilha fechada. `
-            + 'A seguinte da fila arranca agora.');
+          log(`✅ Fechar ilha ${plano.chave}: `
+            + (ilhaAgora.livres.length
+              ? `as ${enviadosTodos} contas enviaram — os colonizadores estão a fundar`
+              : `os ${LUGARES} lugares estão ocupados`)
+            + '. Ilha fechada; a seguinte da fila arranca agora.');
           if (ctx.avisarDiscord) {
             ctx.avisarDiscord('ataque', {
               titulo: '✅ Ilha fechada',
@@ -38278,7 +38359,13 @@ function makeTiqueModule(opts) {
           /* Não é tropa: usa-se sempre, vale em qualquer cidade. */
           const r = await usarItem(item.id);
           if (r.ok) { usados++; log(`🎁 Tique: usei ${nomeDoItem(item)}.`); }
-          else rotina(`Tique: não consegui usar ${nomeDoItem(item)} — ${r.msg}`);
+          else {
+            rotina(`Tique: não consegui usar ${nomeDoItem(item)} — ${r.msg}`);
+            if (/verification|captcha/i.test(String(r.msg || ''))) {
+              log('⏸️ Tique: o jogo pediu verificação — paro aqui.');
+              return;
+            }
+          }
           await ctx.sleep(ctx.rand(600, 1200));
           continue;
         }
@@ -38311,6 +38398,10 @@ function makeTiqueModule(opts) {
           } else {
             log(`⚠️ Tique: não consegui descartar ${nomeDoItem(item)} — ${r.msg}. `
               + 'Fica no inventário e ocupa lugar.');
+            if (/verification|captcha/i.test(String(r.msg || ''))) {
+              log('⏸️ Tique: o jogo pediu verificação — paro aqui.');
+              return;
+            }
           }
           await ctx.sleep(ctx.rand(600, 1200));
           continue;
@@ -38327,6 +38418,15 @@ function makeTiqueModule(opts) {
             + (cidade.faltam ? ` (a que mais precisa — faltam ${cidade.faltam})` : '') + '.');
         } else {
           log(`⚠️ Tique: não consegui usar ${nomeDoItem(item)} em ${cidade.name} — ${r.msg}.`);
+          /* CAPTCHA: PARAR JÁ.
+           *
+           * Insistir com uma verificação de bot por resolver é a pior coisa a
+           * fazer — cada pedido a mais reforça a suspeita. Deixa-se o prémio
+           * para a passagem seguinte. */
+          if (/verification|captcha/i.test(String(r.msg || ''))) {
+            log('⏸️ Tique: o jogo pediu verificação — paro aqui.');
+            return;
+          }
         }
         await ctx.sleep(ctx.rand(600, 1200));
       }
@@ -38912,6 +39012,168 @@ function makeReforcoModule(opts) {
   };
 }
 
+/* ============================================================================
+ *  EXPANSÃO — pôr colonizadores em ilhas
+ *
+ *  Junta o que eram dois módulos: a auto-fundação (esta conta funda sozinha) e
+ *  o fechar ilha (as 21 contas fecham uma ilha inteira, uma cidade cada).
+ *
+ *  Faziam a MESMA coisa — pôr um colonizador num lugar de ilha — e diferiam só
+ *  na coordenação. Estarem separados significava duas cópias da leitura da
+ *  ilha, da vaga cultural e da regra de uma cidade por ilha; e ao longo de um
+ *  dia a mesma correcção teve de ser feita duas vezes, nem sempre igual.
+ *
+ *  A REGRA QUE OS UNE, agora escrita UMA vez e usada pelos dois caminhos:
+ *  nenhuma conta funda mais do que UMA cidade por ilha. Vale para a fundação
+ *  automática e para o fechar ilha — neste, cada conta tem o seu lugar, por
+ *  isso não há conflito: o que se proíbe é a MESMA conta pôr duas.
+ * ========================================================================== */
+function makeExpansaoModule(opts) {
+  opts = opts || {};
+
+  /* Os dois caminhos continuam a ser o que eram; o que muda é terem um dono
+   * só, um painel só e uma regra só. */
+  const fundacao = makeFundacaoModule(opts.fundacao || { intervaloMin: 30 });
+  const fecharIlha = makeFecharIlhaModule(opts.fecharIlha || { intervaloMin: 2 });
+
+  /* ---------------------------------------------------------------------- *
+   *  A REGRA PARTILHADA
+   *
+   *  Uma cidade por ilha, por conta. Três barreiras, por ordem de custo:
+   *
+   *    1. já tenho lá uma cidade;
+   *    2. mandei um colonizador para lá há pouco e o jogo ainda não mostra a
+   *       cidade (a viagem mais o tempo de fundação);
+   *    3. há um colonizador meu em viagem para essa ilha, tenha sido enviado
+   *       por que via for — incluindo à mão.
+   *
+   *  Estava escrita em dois sítios com redacções diferentes. Agora é esta, e
+   *  os dois caminhos chamam-na.
+   * ---------------------------------------------------------------------- */
+  function podeFundarNaIlha(uw, ctx, x, y) {
+    const chave = `${Number(x)}:${Number(y)}`;
+    const armazem = (() => {
+      try {
+        const a = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroArmazem;
+        if (a) return a;
+      } catch (e) {}
+      return localStorage;
+    })();
+
+    const ilhaDe = (townId) => {
+      try {
+        const t = uw.ITowns.getTown(Number(townId));
+        return `${t.getIslandCoordinateX()}:${t.getIslandCoordinateY()}`;
+      } catch (e) { return null; }
+    };
+
+    try {
+      // 1. já tenho cidade nesta ilha
+      if ((ctx.getMyTowns() || []).some((t) => ilhaDe(t.id) === chave)) {
+        return { pode: false, porque: 'já tenho uma cidade nesta ilha' };
+      }
+
+      // 2. mandei um colonizador para cá há menos de seis horas
+      const recentes = JSON.parse(armazem.getItem('grepoFundacao_recemFundadas_v1') || '{}');
+      const quando = Number(recentes[chave]) || 0;
+      if (quando && (Date.now() - quando) < 6 * 3600 * 1000) {
+        return { pode: false, porque: 'já mandei um colonizador para cá' };
+      }
+
+      // 3. tenho um colonizador em viagem para esta ilha
+      const mvs = uw.MM.getModels().MovementsUnits || {};
+      for (const k of Object.keys(mvs)) {
+        const mo = (mvs[k] || {}).attributes || {};
+        if (!/colon/i.test(String(mo.type || mo.command_name || ''))) continue;
+        const ix = Number(mo.target_island_x != null ? mo.target_island_x : mo.island_x);
+        const iy = Number(mo.target_island_y != null ? mo.target_island_y : mo.island_y);
+        if (Number.isFinite(ix) && Number.isFinite(iy) && `${ix}:${iy}` === chave) {
+          return { pode: false, porque: 'tenho um colonizador a caminho desta ilha' };
+        }
+        const destino = Number(mo.target_town_id) || 0;
+        if (destino && ilhaDe(destino) === chave) {
+          return { pode: false, porque: 'tenho um colonizador a caminho desta ilha' };
+        }
+      }
+    } catch (e) { return { pode: true, porque: '' }; }
+
+    return { pode: true, porque: '' };
+  }
+
+  /* Fica acessível aos dois caminhos e a quem mais precise dela. */
+  try {
+    (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window)
+      .__maestroPodeFundarNaIlha = podeFundarNaIlha;
+  } catch (e) {}
+
+  /* ---------------------------------------------------------------------- *
+   *  Uma passagem corre os dois caminhos, cada um com o seu ritmo.
+   *
+   *  O fechar ilha quer olhar de dois em dois minutos, porque coordena vinte
+   *  contas; a fundação de trinta em trinta, porque só age quando há
+   *  colonizador. O módulo corre ao ritmo do mais rápido e o outro salta
+   *  quando ainda não é a sua vez.
+   * ---------------------------------------------------------------------- */
+  let ultimaFundacao = 0;
+
+  async function run(ctx) {
+    /* O fechar ilha primeiro: quando há um plano em curso, ele tem prioridade
+     * sobre a fundação avulsa — é o que já estava definido nas prioridades dos
+     * colonizadores e continua a valer. */
+    try { await fecharIlha.run(ctx); } catch (e) { seErroDeCodigo(e, 'Expansao'); }
+
+    const agoraS = Math.floor(Date.now() / 1000);
+    const intervaloFund = (opts.fundacao && opts.fundacao.intervaloMin) || 30;
+    if (agoraS - ultimaFundacao >= intervaloFund * 60) {
+      ultimaFundacao = agoraS;
+      try { await fundacao.run(ctx); } catch (e) { seErroDeCodigo(e, 'Expansao'); }
+    }
+  }
+
+  /* ---------------------------------------------------------------------- *
+   *  Painel: os dois num só, em separadores.
+   * ---------------------------------------------------------------------- */
+  let abaAberta = 'fundar';
+
+  function painel(container, ctx) {
+    const abas = [
+      { id: 'fundar', nome: 'Fundar', icone: '🏛️', mod: fundacao },
+      { id: 'fechar', nome: 'Fechar ilha', icone: '🔒', mod: fecharIlha },
+    ];
+    const activa = abas.find((a) => a.id === abaAberta) || abas[0];
+
+    container.innerHTML = `
+      <div style="display:flex;gap:4px;margin-bottom:8px;
+                  border-bottom:1px solid var(--mLine);padding-bottom:5px">
+        ${abas.map((a) => `<button data-aba="${a.id}" style="font-size:12px;
+            border-color:${a.id === activa.id ? 'var(--mBrass)' : 'transparent'};
+            background:${a.id === activa.id ? 'var(--mSurf2)' : 'transparent'}">
+          ${a.icone} ${a.nome}</button>`).join('')}
+      </div>
+      <div class="mAjuda" style="margin-bottom:6px">
+        Uma cidade por ilha, por conta — vale nos dois. No fechar ilha, cada
+        conta tem o seu lugar; o que se proíbe é a mesma conta pôr duas.
+      </div>
+      <div id="exp-conteudo"></div>`;
+
+    container.querySelectorAll('[data-aba]').forEach((el) => {
+      el.onclick = () => { abaAberta = el.getAttribute('data-aba'); painel(container, ctx); };
+    });
+
+    const caixa = container.querySelector('#exp-conteudo');
+    try { if (caixa && activa.mod.painel) activa.mod.painel(caixa, ctx); }
+    catch (e) { seErroDeCodigo(e, 'Expansao'); }
+  }
+
+  return {
+    id: 'expansao',
+    nome: 'Expansão',
+    intervaloMin: opts.intervaloMin || 2,
+    autoStart: false,
+    run, painel,
+  };
+}
+
   /* ===================== REGISTO DOS MÓDULOS ==============================
    * ⚠️ Preenche GIST_ID e GIST_TOKEN para partilhar as configurações entre as
    *    contas. Cada módulo escreve no seu próprio ficheiro dentro do Gist.
@@ -38966,10 +39228,16 @@ function makeReforcoModule(opts) {
   registerModule(makeFabricaNCModule({ intervaloMin: 10 }));
   /* 5 min: a proteção tem de ser reposta no instante em que expira. */
   registerModule(makeFeiticosModule({ intervaloMin: 5 }));
-  registerModule(makeFundacaoModule({ intervaloMin: 30 }));
+  /* Fundação e fechar ilha passaram a viver dentro do módulo Expansão: uma
+   * regra de "uma cidade por ilha", um painel, uma entrada na barra. */
+  registerModule(makeExpansaoModule({
+    intervaloMin: 2,
+    fundacao: { intervaloMin: 30 },
+    fecharIlha: { intervaloMin: 2 },
+  }));
   registerModule(makeRelatoriosModule({ intervaloMin: 60 }));
   registerModule(makeFrotaModule({ intervaloMin: 5 }));
-  registerModule(makeFecharIlhaModule({ intervaloMin: 2 }));
+
   registerModule(makeTiqueModule({ intervaloMin: 60 }));
 
   // (sem módulos registados ainda — adiciona os teus acima desta linha)
