@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.10.1230
+// @version      2026.09.10.1330
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1694,7 +1694,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.10.1230';
+  const MAESTRO_VERSAO = '2026.09.10.1330';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -17650,30 +17650,41 @@ function makeAldeiasModule(opts) {
      *
      * E há um mínimo de 3 minutos entre voltas, para os outros módulos terem
      * espaço para correr. */
-    const VOLTA_MIN = 10 * 60;
+    /* ============ O RITMO VEM DO JOGO, NÃO DE UM NÚMERO MEU ============
+     *
+     * A recarga é de 5 minutos, ou 10 nas cidades que investigaram a Lealdade
+     * dos Aldeões — e isso estuda-se POR CIDADE, não por conta. Um número fixo
+     * está errado para metade delas: com 10 fixos, as cidades sem Lealdade
+     * perdem metade das recolhas; com 5, gastam-se pedidos para nada.
+     *
+     * Mas não é preciso adivinhar nem inferir: cada relação traz o
+     * `lootable_at`, que é a hora exacta em que aquela aldeia volta a dar.
+     * Basta olhar para a mais próxima e acordar nessa altura.
+     *
+     * Mantém-se o mínimo de 3 minutos entre voltas, para os outros módulos
+     * terem espaço. */
     const ESPACO_MIN = 3 * 60;
-    const K_INICIO = 'grepoAldeias_inicioVolta_v1';
 
-    const agoraS = Math.floor(Date.now() / 1000);
-    let inicioAnterior = 0;
-    try { inicioAnterior = Number(armazem.getItem(K_INICIO)) || 0; } catch (e) {}
+    const proximaRecarga = (() => {
+      const agoraJ = agoraJogo();
+      let minimo = null;
+      for (const m of colModels('FarmTownPlayerRelation')) {
+        const at = m.attributes || {};
+        if (at.relation_status !== 1) continue;
+        const q = Number(at.lootable_at) || 0;
+        if (q > agoraJ && (minimo == null || q < minimo)) minimo = q;
+      }
+      return minimo;
+    })();
 
-    if (inicioAnterior) {
-      const desdeInicio = agoraS - inicioAnterior;
-      const faltaVolta = VOLTA_MIN - desdeInicio;
-      if (faltaVolta > 0 && faltaVolta > ESPACO_MIN) {
-        (ctx.logRotina || log)(`Recolha: faltam ${Math.ceil(faltaVolta / 60)} min para as `
-          + 'aldeias recarregarem — espero.');
-        if (ctx.voltarEm) ctx.voltarEm(Math.max(ESPACO_MIN, faltaVolta));
-        return;
-      }
-      if (desdeInicio < ESPACO_MIN) {
-        if (ctx.voltarEm) ctx.voltarEm(ESPACO_MIN - desdeInicio);
-        return;
-      }
+    /* Nenhuma pronta e a mais próxima ainda longe? Dorme até lá. */
+    if (!relacoesProntas().length && proximaRecarga) {
+      const falta = proximaRecarga - agoraJogo();
+      (ctx.logRotina || log)(`Recolha: nada pronto — a próxima aldeia recarrega em `
+        + `${Math.ceil(falta / 60)} min.`);
+      if (ctx.voltarEm) ctx.voltarEm(Math.max(ESPACO_MIN, falta + 5));
+      return;
     }
-
-    try { armazem.setItem(K_INICIO, String(agoraS)); } catch (e) {}
 
     // 1. RECOLHA (todas as passagens)
     await fazerRecolha(ctx, towns);
@@ -17857,6 +17868,7 @@ function makeAldeiasModule(opts) {
     }
 
     let n = 0, recursos = 0, noLimite = 0, cedoDemais = 0;
+    const paraRepetir = [];
     for (const p of prontas) {
       const townId = cidadePorAldeia[p.farmTownId];
       if (!townId) continue; // aldeia sem cidade minha na ilha
@@ -17869,6 +17881,9 @@ function makeAldeiasModule(opts) {
         if (/m[áa]xima di[áa]ria|daily limit/i.test(String(r.msg || ''))) {
           noLimite++;
         } else if (/ainda n[ãa]o est[áa] pronto|not ready/i.test(String(r.msg || ''))) {
+          /* Guardada para a segunda ronda: pode ser só a fronteira da
+           * recarga, e cinco segundos depois já dá. */
+          if (paraRepetir.length < 40) paraRepetir.push(p);
           /* AINDA NÃO ESTÁ PRONTA não é erro — é o tempo a não ter passado.
            *
            * E se a primeira não está pronta, as outras da mesma ronda também
@@ -17889,6 +17904,29 @@ function makeAldeiasModule(opts) {
       await ctx.sleep(ctx.rand(400, 900));
     }
     if (n) log(`🌾 Recolhidas ${n} aldeia(s) (~${recursos} recursos).`);
+    /* SEGUNDA RONDA PARA AS QUE FALHARAM POR UM SEGUNDO.
+     *
+     * Uma aldeia que o servidor recusa por estar mesmo no limite da recarga
+     * fica pronta segundos depois. Desistir dela custa uma recolha inteira até
+     * à volta seguinte.
+     *
+     * Espera-se cinco segundos e tentam-se outra vez, uma só vez — chega para
+     * apanhar a fronteira sem transformar isto num ciclo de insistência. */
+    if (paraRepetir.length) {
+      await ctx.sleep(5000);
+      let recuperadas = 0;
+      for (const p2 of paraRepetir) {
+        const townId2 = cidadePorAldeia[p2.farmTownId];
+        if (!townId2) continue;
+        const r2 = await recolherAldeia(p2.relationId, p2.farmTownId, townId2);
+        if (r2.ok) { recuperadas++; n++; recursos += (p2.rende || 0); }
+        await ctx.sleep(ctx.rand(400, 900));
+      }
+      if (recuperadas) {
+        log(`🌾 Recolha: ${recuperadas} aldeia(s) recuperada(s) à segunda tentativa.`);
+      }
+    }
+
     if (noLimite) {
       const rot = ctx.logRotina || log;
       rot(`Recolha: ${noLimite} aldeia(s) já no limite diário.`);
