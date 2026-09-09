@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.10.0230
+// @version      2026.09.10.0330
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1694,7 +1694,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.10.0230';
+  const MAESTRO_VERSAO = '2026.09.10.0330';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -21187,6 +21187,12 @@ function makeDeusesModule(opts) {
           else if (avisoPublicado && avisoPublicado.falhou) nota = ` · ⚠️ aviso falhou (${avisoPublicado.falhou})`;
           else nota = ' · ⚠️ aviso não publicado';
         }
+            /* Avisar a esquiva: quando esta tropa voltar, não é um ataque. */
+            try {
+              const av = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window)
+                .__maestroAnotarAtaqueMeu;
+              if (av) av(alvo.id);
+            } catch (e) {}
         log(`⚔️ ${t.name} → ${alvo.nome} (${alvo.jogador}): ${quantos} enviados divinos`
           + (escudo ? ` + ${escudo} espadachins de escudo` : '')
           + ` — favor de ${NOMES[deus]} estava em ${favor}.${nota}`);
@@ -22339,6 +22345,54 @@ function makeEsquivaModule(opts) {
 
   /* Porque é que a última leitura veio vazia — para o registo dizer alguma
    * coisa de útil em vez de "o servidor nunca confirma". */
+  /* ============ OS MEUS ATAQUES, PARA RECONHECER O REGRESSO ============
+   *
+   * Quando um ataque MEU volta, o movimento aparece a chegar a uma cidade
+   * minha — e nos modelos do jogo não há campo nenhum que diga que é um
+   * regresso. Confirmado em jogo: três movimentos, todos regressos, com o
+   * `return` e o `cmd_return` indefinidos.
+   *
+   * Pior: no regresso os campos trocam de sentido. O que os modelos chamam
+   * "origem" é o ALVO que foi atacado, e o "destino" é a cidade minha de onde
+   * a tropa saiu. Por isso nem pelo nome se distingue.
+   *
+   * A esquiva chegava a fazer planos para desviar tropa por causa da sua
+   * própria tropa a voltar de um farm de favores.
+   *
+   * O Maestro sabe o que enviou. Guardando o alvo e a hora, reconhece o
+   * regresso sem perguntar a ninguém — e o que não estiver registado é
+   * confirmado no servidor, que esse marca os regressos. */
+  const MEUS_ENVIOS_KEY = 'grepoEsquiva_meusEnvios_v1';
+
+  function anotarEnvioMeu(alvoId, quando) {
+    try {
+      const d = JSON.parse(armazem.getItem(MEUS_ENVIOS_KEY) || '{}');
+      const k = String(alvoId);
+      d[k] = (d[k] || []).filter((t) => (Date.now() - t) < 24 * 3600 * 1000);
+      d[k].push(Number(quando) || Date.now());
+      armazem.setItem(MEUS_ENVIOS_KEY, JSON.stringify(d));
+    } catch (e) {}
+  }
+
+  /* No regresso, a "origem" do movimento é o alvo que ataquei. Se eu ataquei
+   * essa cidade nas últimas 24 horas, isto é tropa minha a voltar. */
+  /* Os outros módulos avisam daqui: o farm de favores, o encaixe e o fechar
+   * ilha sabem o que enviaram e para onde. */
+  try {
+    const w2 = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window);
+    w2.__maestroAnotarAtaqueMeu = (alvoId) => anotarEnvioMeu(alvoId, Date.now());
+  } catch (e) {}
+
+  function pareceRegresso(a) {
+    try {
+      const alvo = Number(a.home_town_id) || 0;
+      if (!alvo) return false;
+      const d = JSON.parse(armazem.getItem(MEUS_ENVIOS_KEY) || '{}');
+      return (d[String(alvo)] || []).some((t) => (Date.now() - t) < 24 * 3600 * 1000);
+    } catch (e) { return false; }
+  }
+
+
   let ultimaRazaoVazioEsquiva = '';
 
   async function comandosDoServidor(townId) {
@@ -22397,6 +22451,15 @@ function makeEsquivaModule(opts) {
             if (Number(a.target_town_id) !== Number(townId)) continue;
             if (!/attack/i.test(String(a.type || ''))) continue;
             if (!a.arrival_at) continue;
+
+            /* REGRESSOS NÃO SÃO ATAQUES.
+             *
+             * Os modelos não os marcam — o `return` vem indefinido — por isso
+             * usa-se o registo do que esta conta enviou. Sem isto, a esquiva
+             * fazia planos para desviar tropa por causa da sua própria tropa a
+             * voltar de um farm. */
+            if (a.return === true || a.cmd_return === true) continue;
+            if (pareceRegresso(a)) continue;
             out.push({
               command_id: Number(a.id || a.command_id) || 0,
               arrival_at: Number(a.arrival_at),
