@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.10.1030
+// @version      2026.09.10.1130
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1694,7 +1694,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.10.1030';
+  const MAESTRO_VERSAO = '2026.09.10.1130';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -26991,9 +26991,18 @@ function makeEncaixeModule(opts) {
           'x-requested-with': 'XMLHttpRequest',
         },
         credentials: 'include',
+        /* O MODELO É `Commands`, NÃO `CastedPowers`.
+         *
+         * Com o `CastedPowers` o jogo lê o `id` como sendo de uma CIDADE e
+         * responde "Esta cidade não existe" — foi o que aconteceu ao tentar
+         * lançar o Alvo da Caçadora num ataque.
+         *
+         * O `CastedPowers` serve para feitiços numa cidade, como o Chamamento
+         * do Oceano. Para um comando é o `Commands`, exactamente como o módulo
+         * dos feitiços já faz. */
         body: 'json=' + encodeURIComponent(JSON.stringify({
-          model_url: 'CastedPowers', action_name: 'cast', captcha: null,
-          arguments: { power_id: powerId, id: Number(comandoId) },
+          model_url: 'Commands', action_name: 'cast', captcha: null,
+          arguments: { id: Number(comandoId), power_id: String(powerId) },
           town_id: Number(origemId), nl_init: true,
         })),
       }).then((x) => x.json());
