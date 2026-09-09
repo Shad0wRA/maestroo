@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.10.0830
+// @version      2026.09.10.0930
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1694,7 +1694,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.10.0830';
+  const MAESTRO_VERSAO = '2026.09.10.0930';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -28031,19 +28031,9 @@ function makeEncaixeModule(opts) {
           <div id="encj-carga" style="margin-top:5px;padding-top:5px;border-top:1px solid #2c3e50;font-size:13px"></div>
           <div id="encj-combos" style="margin-top:5px;padding-top:5px;border-top:1px solid #2c3e50;font-size:13px;max-height:240px;overflow:auto"></div>
 
-          <!-- FEITIÇOS NO ATAQUE.
-               Marcados aqui, lançados só quando uma tentativa acertar — nunca
-               antes, porque as falhadas são canceladas e o favor perdia-se. -->
-          <div style="border-top:1px solid #2c3e50;margin-top:6px;padding-top:6px">
-            <div style="font-size:12px;letter-spacing:.5px;opacity:.65;margin-bottom:3px">
-              FEITIÇOS NO ATAQUE
-            </div>
-            <div style="opacity:.55;font-size:11px;margin-bottom:4px">
-              Vão no comando que acertar, depois de confirmado. Se faltar
-              favor, é pedido ao farm quando o plano é criado.
-            </div>
-            <div id="encj-feiticos" style="display:flex;flex-wrap:wrap;gap:8px"></div>
-          </div>
+          <!-- FEITIÇOS: escolhidos em CADA plano agendado, na lista abaixo.
+               Uma lista geral aqui era enganadora — marcava-se um feitiço e
+               ele não ia nos planos já agendados. Cada comando leva os seus. -->
             <div style="font-size:12px;opacity:.5;margin-top:2px">
               Muda-se no painel do Maestro, em Encaixe. Se puseres um colonizador
               nas unidades, usa a tolerância dos colonizadores.
@@ -28204,6 +28194,36 @@ function makeEncaixeModule(opts) {
             <div style="opacity:.85">chega <b>${hh(p.chegada)}</b></div>
             <div style="opacity:.9;font-size:12px">${tropas || '<span style="opacity:.5">sem unidades</span>'}</div>
 
+            <!-- FEITIÇOS DESTE COMANDO.
+                 Cada plano leva os seus: marcar um feitiço aqui não mexe nos
+                 outros. Vão só quando uma tentativa acertar — as falhadas são
+                 canceladas e o favor perdia-se. -->
+            <div style="display:flex;flex-wrap:wrap;gap:5px;align-items:center;margin-top:3px">
+              <span style="font-size:11px;opacity:.55">feitiços:</span>
+              ${(() => {
+                try {
+                  const gd = mUw.GameData.powers || {};
+                  const escolhidos = [].concat(p.feiticos || []);
+                  const ids = Object.keys(gd).filter((pid) => {
+                    const pw = gd[pid] || {};
+                    if (pw.is_fake_power) return false;
+                    return (pw.targets || []).some((t) => /command/i.test(String(t)));
+                  });
+                  if (!ids.length) return '<span style="opacity:.5;font-size:11px">nenhum disponível</span>';
+                  return ids.map((pid) => {
+                    const sel = escolhidos.indexOf(pid) >= 0;
+                    return `<span data-feit="${p.id}|${pid}" title="${String((gd[pid] || {}).name || pid).replace(/"/g, '')}"
+                      class="power_icon30x30 ${pid}"
+                      style="display:inline-block;width:24px;height:24px;cursor:pointer;
+                             transform:scale(.8);transform-origin:0 50%;
+                             opacity:${sel ? '1' : '.35'};
+                             outline:${sel ? '2px solid var(--mBrass)' : 'none'};
+                             border-radius:4px"></span>`;
+                  }).join('');
+                } catch (e) { return ''; }
+              })()}
+            </div>
+
             <div data-edicao="${p.id}" style="display:none;background:var(--mSurf);padding:5px 6px;border-radius:4px;margin-top:4px">
               <div style="font-size:12px;opacity:.7;margin-bottom:3px">
                 A hora é a de CHEGADA, no relógio do jogo.
@@ -28225,6 +28245,45 @@ function makeEncaixeModule(opts) {
          *
          * Mudar a hora de chegada ou o tipo sem ter de apagar e refazer. O
          * envio é recalculado a partir da viagem que já estava guardada. */
+        /* Clicar num feitiço liga ou desliga-o NAQUELE plano. */
+        cx.querySelectorAll('[data-feit]').forEach((el) => {
+          el.onclick = (ev) => {
+            ev.preventDefault();
+            const [planoId, powerId] = String(el.getAttribute('data-feit')).split('|');
+            const lista = lerPlanos();
+            const alvo = lista.find((x) => String(x.id) === String(planoId));
+            if (!alvo) return;
+            alvo.feiticos = [].concat(alvo.feiticos || []);
+            const i = alvo.feiticos.indexOf(powerId);
+            if (i >= 0) alvo.feiticos.splice(i, 1); else alvo.feiticos.push(powerId);
+            gravarPlanos(lista);
+
+            /* PEDIR O FAVOR JÁ, não na hora do envio.
+             *
+             * O plano pode sair daqui a horas. Avisar o farm agora dá-lhe tempo
+             * de ir buscar o favor; avisar na hora do envio não serve de nada,
+             * porque o feitiço é lançado segundos depois. */
+            try {
+              const gd = mUw.GameData.powers || {};
+              const chaveP = (() => {
+                const perf = (JSON.parse(localStorage.getItem('grepoMaestro_modulos_v1') || '{}') || {}).perfil;
+                return `grepoFavor_pedidos_v1__${perf || 'main'}`;
+              })();
+              const pend = JSON.parse(localStorage.getItem(chaveP) || '{}');
+              for (const pid of alvo.feiticos) {
+                const pw = gd[pid] || {};
+                const deus = String(pw.god || pw.deity || '');
+                const custo = Number(pw.favor) || 0;
+                if (!deus || !custo) continue;
+                pend[deus] = { quanto: Math.round(custo), quando: Math.floor(Date.now() / 1000) };
+              }
+              localStorage.setItem(chaveP, JSON.stringify(pend));
+            } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
+
+            mostrarAgendados();
+          };
+        });
+
         cx.querySelectorAll('[data-editar]').forEach((el) => {
           el.onclick = (ev) => {
             ev.preventDefault();
@@ -28895,9 +28954,10 @@ function makeEncaixeModule(opts) {
               style="display:flex;align-items:center;gap:4px;cursor:pointer;opacity:${sel ? '1' : '.4'}">
               <input type="checkbox" class="encj-feitico" value="${id}" ${sel ? 'checked' : ''}
                 style="display:none">
-              <span style="width:26px;height:26px;display:inline-block;
-                    background:url(${mUw.Game.img()}/game/powers/${id}.png) center/contain no-repeat;
-                    border:1px solid ${sel ? 'var(--mBrass)' : 'transparent'};border-radius:5px"></span>
+              <!-- O ícone vem da folha de estilo do jogo, como no módulo dos
+                   feitiços. O endereço que eu tinha montado à mão não existe. -->
+              <div class="power_icon30x30 ${id}" style="display:inline-block;width:30px;height:30px;
+                    border:1px solid ${sel ? 'var(--mBrass)' : 'transparent'};border-radius:5px"></div>
               <span style="font-size:11px">${String(p2.name || id)}</span>
             </label>`;
           }).join('');
