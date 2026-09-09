@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.10.0930
+// @version      2026.09.10.1030
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1694,7 +1694,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.10.0930';
+  const MAESTRO_VERSAO = '2026.09.10.1030';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -9656,12 +9656,23 @@ function makeRecrutamentoModule(opts) {
       // consumo actual e consumo quando o template estiver completo
       const alvos = niveisDoTemplate(nomeGrupo);
       let gastoAgora = 0, gastoFinal = 0;
+
+      /* QUE EDIFÍCIOS FALTAM, e quanta população cada um vai comer.
+       *
+       * Sem isto só se sabia o total — e guardava-se população para o
+       * template inteiro sem distinguir uma quinta, que destrava tudo, de um
+       * edifício que não destrava nada. */
+      const emFalta = {};
+
       const todos = new Set(Object.keys(bdAtual).concat(Object.keys(alvos)));
       for (const ed of todos) {
         const agora = bdAtual[ed] || 0;
         const fim = Math.max(agora, alvos[ed] || 0);   // nunca desce
-        gastoAgora += custoPopEdificio(ed, agora);
-        gastoFinal += custoPopEdificio(ed, fim);
+        const cAgora = custoPopEdificio(ed, agora);
+        const cFim = custoPopEdificio(ed, fim);
+        gastoAgora += cAgora;
+        gastoFinal += cFim;
+        if (fim > agora && cFim > cAgora) emFalta[ed] = cFim - cAgora;
       }
 
       /* População máxima quando o template estiver completo.
@@ -9688,7 +9699,7 @@ function makeRecrutamentoModule(opts) {
       const bonus = maxAgora - (POP_QUINTA[quintaAgora] || 0);
 
       return {
-        maxAgora, maxFinal, gastoAgora, gastoFinal,
+        maxAgora, maxFinal, gastoAgora, gastoFinal, emFalta,
         quintaAgora, quintaFim, bonus,
         livreAgora: maxAgora - gastoAgora,
         livreFinal: maxFinal - gastoFinal,
@@ -9936,7 +9947,7 @@ function makeRecrutamentoModule(opts) {
   /* Deus da cidade activa — é dele que sai o favor do enviado divino. */
   
 
-  function decidirRecrutamento(alvos, tenho, emFila, recursos, reservaPct, units, adiadas, favorLivre, desconto, armazemOk, descontoUnidade, armazemPorUnidade, popReservada, deusDestaCidade, townDestaDecisao, construcaoCumprida) {
+  function decidirRecrutamento(alvos, tenho, emFila, recursos, reservaPct, units, adiadas, favorLivre, desconto, armazemOk, descontoUnidade, armazemPorUnidade, popReservada, deusDestaCidade, townDestaDecisao, construcaoCumprida, popFaltaPorEdificio) {
     favorLivre = favorLivre || {};
     desconto = desconto || 0;
     if (armazemOk === undefined) armazemOk = true;
@@ -9956,18 +9967,48 @@ function makeRecrutamentoModule(opts) {
     /* Além do que falta construir, guarda-se sempre uma folga mínima: mesmo
      * com o template completo, uma cidade sem população livre não pode subir
      * nada nem reagir a mudanças no template. */
-    /* A FOLGA SÓ FAZ SENTIDO ENQUANTO HOUVER O QUE CONSTRUIR.
+    /* ============ A POPULAÇÃO REPARTIDA COM CRITÉRIO =====================
      *
-     * Ela existe para a cidade nunca ficar sem população livre e com todos os
-     * edifícios bloqueados. Mas numa cidade com o template de construção
-     * CUMPRIDO e tudo no máximo não há nada para subir — e a folga passa a
-     * impedir o recrutamento sem proteger coisa nenhuma.
+     * A reserva era cega: guardava-se TUDO o que faltava para acabar o
+     * template de construção, fosse o que fosse. O resultado vê-se nos
+     * registos — dezenas de cidades com "toda a população livre está
+     * reservada", 143 guardados e nada a subir, e o recrutamento parado.
      *
-     * Visto em jogo na 55.13: quinta 45, armazém 35, tudo no topo, 30 de
-     * população livre e a linha "população 30 − 30 reservados = 0 < 1". A
-     * cidade nunca recrutava uma única unidade e enchia o armazém. */
-    const FOLGA_MINIMA = construcaoCumprida ? 0 : 30;
-    const reservaPop = Math.max(FOLGA_MINIMA, Number(popReservada) || 0);
+     * O problema é que nem todos os edifícios valem o mesmo. Guardar
+     * população para a QUINTA compensa sempre: ela dá população de volta e
+     * destrava tudo o resto. Guardar para o armazém também, que deixa
+     * acumular mais. Guardar duzentos de população durante dois dias por um
+     * edifício que não destrava nada é desperdício puro.
+     *
+     * Agora reserva-se o que os edifícios que DESTRAVAM precisam, e o resto
+     * fica livre para tropa. Se a obra que falta não destrava nada, guarda-se
+     * só a folga mínima.
+     *
+     * A folga em si continua a existir enquanto houver obra: sem ela, o
+     * recrutamento gastava tudo e a cidade ficava com os edifícios
+     * bloqueados. */
+    const DESTRAVAM = ['farm', 'storage', 'main', 'academy', 'barracks', 'docks'];
+
+    const reservaPop = (() => {
+      const base = Number(popReservada) || 0;
+      const folga = construcaoCumprida ? 0 : 30;
+      if (!base) return folga;
+
+      /* Só se guarda o que os edifícios que DESTRAVAM vão comer. O resto do
+       * template espera por população que sobre. */
+      try {
+        const falta = (popFaltaPorEdificio && popFaltaPorEdificio()) || null;
+        if (falta) {
+          let guardar = 0;
+          for (const ed of Object.keys(falta)) {
+            if (DESTRAVAM.indexOf(ed) >= 0) guardar += Number(falta[ed]) || 0;
+          }
+          return Math.max(folga, guardar);
+        }
+      } catch (e) {}
+
+      return Math.max(folga, base);
+    })();
     popLivre = Math.max(0, popLivre - reservaPop);
 
     // ordem: primeiro as não-adiadas; as adiadas ficam para o fim
@@ -10598,7 +10639,10 @@ function makeRecrutamentoModule(opts) {
         },
         popParaConstruir, deusDaCidade(town.id), town.id,
         /* Template de construção cumprido? Só assim se dispensa a folga. */
-        (!!orcPop && popParaConstruir <= 0));
+        (!!orcPop && popParaConstruir <= 0),
+        /* Que edifícios faltam e quanto comem — para guardar só o que os que
+         * destravam precisam. */
+        () => (orcPop || {}).emFalta || null);
 
       /* Quantas acções saíram? Se for zero com unidades em falta, algo há a
        * explicar — e o diagnóstico abaixo trata disso. */
