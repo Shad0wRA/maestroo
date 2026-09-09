@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.10.1130
+// @version      2026.09.10.1230
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1694,7 +1694,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.10.1130';
+  const MAESTRO_VERSAO = '2026.09.10.1230';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -2236,6 +2236,8 @@
      * outra. É a mesma falha que já apanhámos com a equipa dos colonizadores,
      * o registo do apoio e o histórico da frota — desta vez em maior escala.
      * ==================================================================== */
+    'grepoAldeias_inicioVolta_v1',       // quando ESTA conta começou a volta
+    'grepoAldeias_ordemIlhas_v1',        // a ordem das ilhas DESTA conta
     'grepoEncaixe_folga_v1',             // a folga que ESTA conta aprendeu
     'grepoConstru_ultimaVerificacao_v1', // quando ESTA conta reviu as cumpridas
     'grepoFundacao_recemFundadas_v1',    // ilhas onde ESTA conta acabou de fundar
@@ -17635,6 +17637,44 @@ function makeAldeiasModule(opts) {
     // limpeza das notificações acumuladas (nunca a de verificação de bot)
     if (passagem % 6 === 0) limparNotificacoes(ctx);
 
+    /* ============ O RITMO SEGUE A RECARGA DAS ALDEIAS ==================
+     *
+     * A aldeia volta a dar de 10 em 10 minutos com a Lealdade dos Aldeões. O
+     * módulo corria a intervalo fixo e apanhava-as a meio da recarga — muitas
+     * tentativas para nada.
+     *
+     * Agora a volta arranca 10 minutos depois de ter COMEÇADO a anterior, não
+     * depois de acabar: se a volta demorou oito minutos, esperam-se dois; se
+     * demorou doze, arranca já. Assim a primeira ilha está pronta outra vez
+     * quando lhe chega a vez.
+     *
+     * E há um mínimo de 3 minutos entre voltas, para os outros módulos terem
+     * espaço para correr. */
+    const VOLTA_MIN = 10 * 60;
+    const ESPACO_MIN = 3 * 60;
+    const K_INICIO = 'grepoAldeias_inicioVolta_v1';
+
+    const agoraS = Math.floor(Date.now() / 1000);
+    let inicioAnterior = 0;
+    try { inicioAnterior = Number(armazem.getItem(K_INICIO)) || 0; } catch (e) {}
+
+    if (inicioAnterior) {
+      const desdeInicio = agoraS - inicioAnterior;
+      const faltaVolta = VOLTA_MIN - desdeInicio;
+      if (faltaVolta > 0 && faltaVolta > ESPACO_MIN) {
+        (ctx.logRotina || log)(`Recolha: faltam ${Math.ceil(faltaVolta / 60)} min para as `
+          + 'aldeias recarregarem — espero.');
+        if (ctx.voltarEm) ctx.voltarEm(Math.max(ESPACO_MIN, faltaVolta));
+        return;
+      }
+      if (desdeInicio < ESPACO_MIN) {
+        if (ctx.voltarEm) ctx.voltarEm(ESPACO_MIN - desdeInicio);
+        return;
+      }
+    }
+
+    try { armazem.setItem(K_INICIO, String(agoraS)); } catch (e) {}
+
     // 1. RECOLHA (todas as passagens)
     await fazerRecolha(ctx, towns);
 
@@ -17748,13 +17788,71 @@ function makeAldeiasModule(opts) {
   async function recolhaIndividual(ctx, towns, prontas) {
     const log = ctx.log;
     // mapa farm_town_id -> cidade da mesma ilha
+    /* UMA CIDADE POR ILHA, A QUE MAIS PRECISA.
+     *
+     * As seis aldeias de uma ilha são as MESMAS para todas as cidades que lá
+     * estejam. Se duas cidades minhas partilham a ilha, a segunda a pedir leva
+     * recusa — a aldeia já foi recolhida.
+     *
+     * Ficava `a primeira que aparecer`, e com várias cidades na mesma ilha
+     * isso são tentativas perdidas contadas como recolhas. Passa a ser a que
+     * tem MENOS recursos no armazém: os recursos vão para onde fazem falta. */
     const porIlha = aldeiasPorIlha();
     const cidadePorAldeia = {};
+
+    const recursosDe = (id) => {
+      try {
+        const r = mUw.ITowns.getTown(Number(id)).resources() || {};
+        return (Number(r.wood) || 0) + (Number(r.stone) || 0) + (Number(r.iron) || 0);
+      } catch (e) { return Number.MAX_SAFE_INTEGER; }
+    };
+
+    const porChaveIlha = {};
     for (const t of towns) {
       const isl = ilhaDaCidade(t.id);
       if (!isl) continue;
-      for (const f of (porIlha[isl.x + ':' + isl.y] || [])) {
-        if (cidadePorAldeia[f.id] == null) cidadePorAldeia[f.id] = t.id;
+      const k = isl.x + ':' + isl.y;
+      (porChaveIlha[k] = porChaveIlha[k] || []).push(t);
+    }
+
+    /* A ORDEM DAS ILHAS É FIXA E GUARDADA.
+     *
+     * Se fosse recalculada a cada volta, a ordem podia mudar quando uma cidade
+     * nova aparecesse — e a última ilha da volta anterior passaria a primeira
+     * da seguinte, em pleno arrefecimento. Era exactamente o que se quer
+     * evitar.
+     *
+     * As ilhas novas entram no FIM; as que desaparecem saem sem mexer nas
+     * outras. */
+    const K_ORDEM = 'grepoAldeias_ordemIlhas_v1';
+    const ordemIlhas = (() => {
+      let guardada = [];
+      try { guardada = JSON.parse(armazem.getItem(K_ORDEM) || '[]'); } catch (e) {}
+      if (!Array.isArray(guardada)) guardada = [];
+
+      const existentes = new Set(Object.keys(porChaveIlha));
+      const out = guardada.filter((k) => existentes.has(k));          // as que ainda existem
+      for (const k of Object.keys(porChaveIlha)) {
+        if (out.indexOf(k) < 0) out.push(k);                          // as novas, no fim
+      }
+      try { armazem.setItem(K_ORDEM, JSON.stringify(out)); } catch (e) {}
+      return out;
+    })();
+
+    for (const k of ordemIlhas) {
+      /* A que tem menos recursos recolhe por toda a ilha. */
+      const escolhida = porChaveIlha[k]
+        .slice()
+        .sort((x, y) => recursosDe(x.id) - recursosDe(y.id))[0];
+      if (!escolhida) continue;
+
+      if (porChaveIlha[k].length > 1) {
+        (ctx.logRotina || log)(`Recolha ${k}: ${porChaveIlha[k].length} cidades minhas nesta `
+          + `ilha — recolhe a ${escolhida.name}, que tem menos recursos.`);
+      }
+
+      for (const f of (porIlha[k] || [])) {
+        if (cidadePorAldeia[f.id] == null) cidadePorAldeia[f.id] = escolhida.id;
       }
     }
 
@@ -17795,7 +17893,10 @@ function makeAldeiasModule(opts) {
       const rot = ctx.logRotina || log;
       rot(`Recolha: ${noLimite} aldeia(s) já no limite diário.`);
     }
-    else log('Recolha: nada recolhido.');
+    /* O `else` estava pendurado no `if (noLimite)`: dizia "nada recolhido"
+     * sempre que nenhuma aldeia estivesse no limite diário, mesmo quando
+     * tinham sido recolhidas 126. As duas linhas contradiziam-se no registo. */
+    if (!n) (ctx.logRotina || log)('Recolha: nada recolhido nesta volta.');
   }
 
   /* ---------------------- PAINEL ---------------------------------------- */
