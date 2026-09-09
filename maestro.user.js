@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.10.0130
+// @version      2026.09.10.0230
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1694,7 +1694,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.10.0130';
+  const MAESTRO_VERSAO = '2026.09.10.0230';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -33340,8 +33340,27 @@ function makeApoioModule(opts) {
              * perigo começa, porque a partir daí já entra colonizador; a
              * ÚLTIMA é quando a ameaça acaba de vez. */
             const porCidade = {};
+            const euJogador = Number(mUw.Game.player_id) || 0;
+
             for (const x of cmds) {
               if (!/revolt/i.test(String(x.type || x.command_type || ''))) continue;
+
+              /* SÓ AS REVOLTAS CONTRA MIM.
+               *
+               * O filtro comparava a cidade de destino com a lista das minhas
+               * cidades — e essa lista não é de confiança para isto: apanhava
+               * cidades de outros jogadores e punha na lista de apoio revoltas
+               * que EU tinha lançado contra eles. As vinte multis chegaram a
+               * mandar tropa para cidades de um adversário.
+               *
+               * A verificação certa está nos próprios dados e não depende de
+               * listas: o dono da cidade de destino tem de ser eu, e a origem
+               * não pode ser minha. */
+              if (euJogador) {
+                if (Number(x.destination_town_player_id) !== euJogador) continue;
+                if (Number(x.origin_town_player_id) === euJogador) continue;
+              }
+
               const id = Number(x.destination_town_id);
               if (!minhasIds.has(id)) continue;
               const fim = Number(x.finished_at || x.arrival_at) || 0;
