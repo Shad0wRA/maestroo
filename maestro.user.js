@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.10.0330
+// @version      2026.09.10.0430
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1694,7 +1694,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.10.0330';
+  const MAESTRO_VERSAO = '2026.09.10.0430';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -34084,6 +34084,24 @@ function makeApoioModule(opts) {
             birremes. Num envio único tudo viaja à velocidade do mais lento — com um
             transporte grande, o apoio demora o dobro.
           </div>
+
+        <!-- QUAL DOS DOIS MODOS ESTÁ A MANDAR.
+             O pacote e o objectivo coexistem, mas só um actua: com objectivo
+             definido, o pacote e o limite de cidades deixam de contar. O
+             painel mostrava os dois sem dizer qual valia. -->
+        ${(() => {
+          const temObj = Object.keys(c.objetivoPadrao || {})
+            .some((u) => Number((c.objetivoPadrao || {})[u]) > 0);
+          return `<div style="border-left:2px solid ${temObj ? 'var(--mBrass)' : 'var(--mFaint)'};
+                    padding:5px 9px;margin-bottom:8px;font-size:12px;
+                    background:var(--mSurf2);border-radius:0 6px 6px 0">
+            ${temObj
+              ? '<b>A mandar: o objectivo.</b> As contas enviam até ele estar '
+                + 'cumprido — o pacote e o limite de cidades acima <b>não são usados</b>.'
+              : '<b>A mandar: o pacote.</b> Cada conta envia o pacote acima, e o '
+                + 'limite de cidades trava o total. Preenche o objectivo para trocar de modo.'}
+          </div>`;
+        })()}
 
         <div style="border:1px solid #2c3e50;border-radius:5px;padding:6px;margin-bottom:8px">
           <div class="mEtiq" style="margin-bottom:3px">objectivo de defesa por alvo</div>
