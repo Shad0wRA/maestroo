@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.10.1930
+// @version      2026.09.10.2030
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -727,12 +727,12 @@
       if (f && !f()) return null;
     } catch (e) {}
     try {
-      const t = Number(mUw.Game.townId);
-      const url = mUw.location.origin + '/game/town_overviews?town_id=' + t
-        + '&action=outer_units&h=' + mUw.Game.csrfToken
+      const t = Number(uw.Game.townId);
+      const url = uw.location.origin + '/game/town_overviews?town_id=' + t
+        + '&action=outer_units&h=' + uw.Game.csrfToken
         + '&json=' + encodeURIComponent(JSON.stringify({ town_id: t, nl_init: true }))
         + '&_=' + Date.now();
-      const r = await mUw.fetch(url, {
+      const r = await uw.fetch(url, {
         headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
       }).then((x) => x.json());
 
@@ -749,7 +749,7 @@
         const unidades = {};
         for (const k of Object.keys(l)) {
           const n = Number(l[k]);
-          if (n > 0 && (mUw.GameData.units || {})[k]) unidades[k] = n;
+          if (n > 0 && (uw.GameData.units || {})[k]) unidades[k] = n;
         }
         if (!Object.keys(unidades).length) continue;
 
@@ -1764,7 +1764,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.10.1930';
+  const MAESTRO_VERSAO = '2026.09.10.2030';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
