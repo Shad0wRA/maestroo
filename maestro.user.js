@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.10.1830
+// @version      2026.09.10.1930
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -706,7 +706,77 @@
 
   /* Refresca as cidades com a leitura mais velha, poucas de cada vez, para
    * não fazer 40 pedidos numa passagem. Devolve quantas leu. */
+  /* A VIA RÁPIDA: TUDO NUM PEDIDO.
+   *
+   * Com Administrador, o jogo dá numa chamada TODA a tropa que esta conta tem
+   * estacionada fora — de que cidade saiu, onde está, e as unidades. Substitui
+   * percorrer a Ágora cidade a cidade, que com quarenta cidades são quarenta
+   * pedidos e uma cache de trinta minutos sempre a envelhecer.
+   *
+   * Confirmado em jogo: `town_overviews?action=outer_units` devolve
+   * `data.outer_units`, cada linha com `home_town_id`, `current_town_id` e as
+   * unidades todas.
+   *
+   * Sem Administrador — o caso das multis — devolve null e o chamador segue
+   * pelo caminho antigo. */
+  async function apoioForaDeUmaVez() {
+    /* Sem Administrador não há vistas gerais — é o caso das multis. */
+    try {
+      const f = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window)
+        .__maestroTemAdministrador;
+      if (f && !f()) return null;
+    } catch (e) {}
+    try {
+      const t = Number(mUw.Game.townId);
+      const url = mUw.location.origin + '/game/town_overviews?town_id=' + t
+        + '&action=outer_units&h=' + mUw.Game.csrfToken
+        + '&json=' + encodeURIComponent(JSON.stringify({ town_id: t, nl_init: true }))
+        + '&_=' + Date.now();
+      const r = await mUw.fetch(url, {
+        headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
+      }).then((x) => x.json());
+
+      const linhas = (((r && r.json && r.json.data) || {}).outer_units) || [];
+      if (!linhas.length) return null;
+
+      /* Agrupar por cidade de origem, na forma que o resto do módulo espera. */
+      const porOrigem = {};
+      for (const l of linhas) {
+        const de = Number(l.home_town_id) || 0;
+        const alvoId = Number(l.current_town_id) || 0;
+        if (!de || !alvoId) continue;
+
+        const unidades = {};
+        for (const k of Object.keys(l)) {
+          const n = Number(l[k]);
+          if (n > 0 && (mUw.GameData.units || {})[k]) unidades[k] = n;
+        }
+        if (!Object.keys(unidades).length) continue;
+
+        (porOrigem[de] = porOrigem[de] || []).push({
+          unitsId: Number(l.id) || 0,
+          alvoId,
+          alvoNome: String(l.current_town_name || alvoId).trim(),
+          unidades,
+        });
+      }
+      return porOrigem;
+    } catch (e) { seErroDeCodigo(e, 'Apoio'); return null; }
+  }
+
   async function refrescarApoioFora(idsDasMinhasCidades, quantas) {
+    /* Tenta primeiro a via rápida: se der, fica tudo fresco de uma vez. */
+    const deUmaVez = await apoioForaDeUmaVez();
+    if (deUmaVez) {
+      const c2 = lerCacheApoioFora();
+      const agoraMs = Date.now();
+      for (const id of (idsDasMinhasCidades || []).map(Number).filter(Boolean)) {
+        c2[id] = { quando: agoraMs, blocos: deUmaVez[id] || [] };
+      }
+      gravarCacheApoioFora(c2);
+      return Object.keys(deUmaVez).length;
+    }
+
     const cache = lerCacheApoioFora();
     const agora = Date.now();
     const alvo = (idsDasMinhasCidades || [])
@@ -1694,7 +1764,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.10.1830';
+  const MAESTRO_VERSAO = '2026.09.10.1930';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
