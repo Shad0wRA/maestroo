@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.10.0530
+// @version      2026.09.10.0630
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1694,7 +1694,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.10.0530';
+  const MAESTRO_VERSAO = '2026.09.10.0630';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -27307,8 +27307,22 @@ function makeEncaixeModule(opts) {
          * falhou quando não se encontra o comando. Não altera os tempos. */
         const diag = { local: 0, servidor: 0, tentativas: 0 };
 
-        for (let tent = 0; tent < 2 && !cmd; tent++) {
-          await new Promise((res) => setTimeout(res, 80));
+        /* DAR TEMPO AO SERVIDOR.
+         *
+         * Eram duas tentativas com 80 ms entre elas — 160 ms no total. O
+         * servidor pode ainda não ter listado um comando criado há um décimo
+         * de segundo, e o resultado era o encaixe ficar sem o identificador,
+         * cancelar por segurança e nem o cancelamento conseguir.
+         *
+         * Agora são cinco tentativas com o intervalo a crescer: 100, 250, 500,
+         * 900, 1400 ms — quase três segundos e meio ao todo. O ataque já
+         * partiu, portanto esperar aqui não estraga o encaixe; e sem o
+         * identificador não há cancelamento nem feitiço possíveis.
+         *
+         * Pára assim que encontrar, portanto no caso normal continua rápido. */
+        const ESPERAS = [100, 250, 500, 900, 1400];
+        for (let tent = 0; tent < ESPERAS.length && !cmd; tent++) {
+          await new Promise((res) => setTimeout(res, ESPERAS[tent]));
           diag.tentativas++;
 
           cmd = comandoMaisRecente(plano.origemId, plano.alvoId, conhecidos);
