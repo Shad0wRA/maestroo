@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.10.0630
+// @version      2026.09.10.0730
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1694,7 +1694,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.10.0630';
+  const MAESTRO_VERSAO = '2026.09.10.0730';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -37783,10 +37783,20 @@ function makeTiqueModule(opts) {
    *
    * Procura-se pelo template de recrutamento: se a cidade pede aquela unidade
    * e ainda não a tem toda, o impulso rende. */
+  /* A CIDADE QUE MAIS PRECISA DESTA UNIDADE.
+   *
+   * Escolhia a primeira que servisse. Se três cidades treinam harpias, o
+   * impulso ia para a primeira da lista mesmo que outra tivesse muito mais em
+   * falta — e um impulso de treino rende na proporção do que há para produzir.
+   *
+   * Agora ordena-se pela falta: a que tem maior diferença entre o template e o
+   * que tem em casa fica com o impulso. */
   function cidadeQueTreina(unidade, ctx) {
     try {
-      const perfil = (JSON.parse(localStorage.getItem('grepoMaestro_modulos_v1') || '{}') || {}).perfil;
       const exp = JSON.parse(armazem.getItem('grepoRecruta_expandido_v1') || '{}');
+      let melhor = null;
+      let maiorFalta = 0;
+
       for (const t of (ctx.getMyTowns() || [])) {
         const alvos = exp[t.id] || exp[String(t.id)];
         if (!alvos || !alvos[unidade]) continue;
@@ -37794,10 +37804,12 @@ function makeTiqueModule(opts) {
           try { return Number((mUw.ITowns.getTown(Number(t.id)).units() || {})[unidade]) || 0; }
           catch (e) { return 0; }
         })();
-        if (tem < Number(alvos[unidade])) return t;
+        const falta = Number(alvos[unidade]) - tem;
+        if (falta > maiorFalta) { maiorFalta = falta; melhor = t; }
       }
-    } catch (e) { seErroDeCodigo(e, 'Tique'); }
-    return null;
+      if (melhor) melhor.faltam = maiorFalta;
+      return melhor;
+    } catch (e) { seErroDeCodigo(e, 'Tique'); return null; }
   }
 
   /* ESCOLHER ENTRE DOIS PRÉMIOS DE MARCO.
@@ -37907,11 +37919,22 @@ function makeTiqueModule(opts) {
          * estar na cidade certa antes de o usar. */
         const cidade = cidadeQueTreina(unidade, ctx);
         if (!cidade) {
+          /* NENHUMA CIDADE SERVE: FORA.
+           *
+           * Com oito lugares no inventário, guardar o que não se usa acaba por
+           * travar o evento — cheio, rodar perde o prémio. Visto em jogo:
+           * cinco impulsos de tropa guardados numa main com as cidades todas
+           * cumpridas, e o inventário a 5 de 8.
+           *
+           * Se o descarte falhar, diz-se porquê em vez de ficar em silêncio. */
           const r = await deitarFora(item.id);
           if (r.ok) {
             deitados++;
-            rotina(`Tique: nenhuma cidade treina ${nomeDoItem(item)} — descartei `
-              + '(o inventário só leva ' + ev.limite + ').');
+            rotina(`Tique: nenhuma cidade precisa de ${nomeDoItem(item)} — descartei `
+              + `(inventário ${ev.itens.length}/${ev.limite}).`);
+          } else {
+            log(`⚠️ Tique: não consegui descartar ${nomeDoItem(item)} — ${r.msg}. `
+              + 'Fica no inventário e ocupa lugar.');
           }
           await ctx.sleep(ctx.rand(600, 1200));
           continue;
@@ -37922,8 +37945,13 @@ function makeTiqueModule(opts) {
         await ctx.sleep(ctx.rand(500, 1000));
 
         const r = await usarItem(item.id);
-        if (r.ok) { usados++; log(`🎁 Tique: ${nomeDoItem(item)} usado em ${cidade.name}.`); }
-        else rotina(`Tique: não consegui usar ${nomeDoItem(item)} — ${r.msg}`);
+        if (r.ok) {
+          usados++;
+          log(`🎁 Tique: ${nomeDoItem(item)} usado em ${cidade.name}`
+            + (cidade.faltam ? ` (a que mais precisa — faltam ${cidade.faltam})` : '') + '.');
+        } else {
+          log(`⚠️ Tique: não consegui usar ${nomeDoItem(item)} em ${cidade.name} — ${r.msg}.`);
+        }
         await ctx.sleep(ctx.rand(600, 1200));
       }
 
