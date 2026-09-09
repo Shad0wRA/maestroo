@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.10.1730
+// @version      2026.09.10.1830
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1694,7 +1694,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.10.1730';
+  const MAESTRO_VERSAO = '2026.09.10.1830';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -16834,7 +16834,15 @@ function makeAldeiasModule(opts) {
   }
 
   // O Capitão dá a recolha em massa. O PremiumFeatures guarda o timestamp de fim.
+  /* O módulo das aldeias já lia o Capitão do sítio certo — é o mesmo que o
+   * núcleo passou a expor para todos. Usa-se o do núcleo, para haver uma
+   * leitura só e não duas que possam divergir. */
   function temCapitao() {
+    try {
+      const f = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window)
+        .__maestroTemCapitao;
+      if (f) return f();
+    } catch (e) {}
     try {
       const pf = mUw.MM.getModels().PremiumFeatures;
       const k = Object.keys(pf)[0];
@@ -18124,7 +18132,16 @@ function makeAldeiasModule(opts) {
 function makeAlertasModule(opts) {
   let semAdmAte = 0;
   const marcarSemAdministrador = () => { semAdmAte = Date.now() + 30 * 60 * 1000; };
-  const semAdministrador = () => Date.now() < semAdmAte;
+  /* Sabe-se à partida pelo modelo `PremiumFeatures`; a marca de 30 minutos
+   * fica como rede para quando o modelo ainda não está carregado. */
+  const semAdministrador = () => {
+    try {
+      const f = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window)
+        .__maestroTemAdministrador;
+      if (f) return !f();
+    } catch (e) {}
+    return Date.now() < semAdmAte;
+  };
 
   opts = opts || {};
 
@@ -20961,7 +20978,16 @@ function makeDeusesModule(opts) {
    * Expira ao fim de 30 min e volta a tentar. */
   let semAdmAte = 0;
   const marcarSemAdministrador = () => { semAdmAte = Date.now() + 30 * 60 * 1000; };
-  const semAdministrador = () => Date.now() < semAdmAte;
+  /* Sabe-se à partida pelo modelo `PremiumFeatures`; a marca de 30 minutos
+   * fica como rede para quando o modelo ainda não está carregado. */
+  const semAdministrador = () => {
+    try {
+      const f = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window)
+        .__maestroTemAdministrador;
+      if (f) return !f();
+    } catch (e) {}
+    return Date.now() < semAdmAte;
+  };
 
   // NOTA: o command_overview exige ADMINISTRADOR. Sem ele responde
   // "Necessita do administrador para aceder às visões gerais". Detecta-se uma
@@ -22529,7 +22555,16 @@ function makeEsquivaModule(opts) {
    * Expira ao fim de 30 min e volta a tentar. */
   let semAdmAte = 0;
   const marcarSemAdministrador = () => { semAdmAte = Date.now() + 30 * 60 * 1000; };
-  const semAdministrador = () => Date.now() < semAdmAte;
+  /* Sabe-se à partida pelo modelo `PremiumFeatures`; a marca de 30 minutos
+   * fica como rede para quando o modelo ainda não está carregado. */
+  const semAdministrador = () => {
+    try {
+      const f = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window)
+        .__maestroTemAdministrador;
+      if (f) return !f();
+    } catch (e) {}
+    return Date.now() < semAdmAte;
+  };
 
   /* Porque é que a última leitura veio vazia — para o registo dizer alguma
    * coisa de útil em vez de "o servidor nunca confirma". */
@@ -27109,7 +27144,16 @@ function makeEncaixeModule(opts) {
    * Expira ao fim de 30 min e volta a tentar. */
   let semAdmAte = 0;
   const marcarSemAdministrador = () => { semAdmAte = Date.now() + 30 * 60 * 1000; };
-  const semAdministrador = () => Date.now() < semAdmAte;
+  /* Sabe-se à partida pelo modelo `PremiumFeatures`; a marca de 30 minutos
+   * fica como rede para quando o modelo ainda não está carregado. */
+  const semAdministrador = () => {
+    try {
+      const f = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window)
+        .__maestroTemAdministrador;
+      if (f) return !f();
+    } catch (e) {}
+    return Date.now() < semAdmAte;
+  };
 
   // NOTA: o command_overview exige ADMINISTRADOR. Sem ele responde
   // "Necessita do administrador para aceder às visões gerais". Detecta-se uma
