@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.11.0230
+// @version      2026.09.11.0430
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1799,7 +1799,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.11.0230';
+  const MAESTRO_VERSAO = '2026.09.11.0430';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -6992,8 +6992,10 @@ function makeConstrucaoModule(opts) {
       rotina(`⏳ ${aEsperar.length} cidade(s) à espera de recursos.`);
     }
     if (semPop.length) {
+      /* Informação, não avaria: a cidade não sobe até TU libertares
+       * população. Não é coisa para o sininho. */
       // uma linha só, e sem repetir a explicação a cada cidade
-      log(`⛔ População esgotada em ${semPop.length} cidade(s): ${semPop.slice(0, 6).join(', ')}`
+      (ctx.logRotina || log)(`População esgotada em ${semPop.length} cidade(s): ${semPop.slice(0, 6).join(', ')}`
         + (semPop.length > 6 ? ` e mais ${semPop.length - 6}` : '')
         + ' — nada sobe até libertares população.');
     }
@@ -11336,6 +11338,22 @@ function makeRecrutamentoModule(opts) {
             try { emCasa = Number((mUw.ITowns.getTown(town.id).units() || {})[u]) || 0; }
             catch (e2) {}
             const fora = Math.max(0, (Number(tem[u]) || 0) - emCasa);
+
+            /* O QUE INTERESSA É O QUE ESTÁ EM CASA MAIS A FILA.
+             *
+             * A tropa que está FORA volta um dia — e quando volta, o total
+             * sobe de repente sem ninguém ter recrutado nada. Visto em jogo:
+             * "passou de 133 para 183" numa cidade de farm, cinquenta de uma
+             * vez, com 100 fora. Não foi produção, foi um regresso.
+             *
+             * Avisar disso é ruído: o excesso real é o que está em casa mais o
+             * que ainda vem da fila. */
+            const emCasaMaisFila = emCasa + (Number(naFila[u]) || 0);
+            if (emCasaMaisFila <= alvo) {
+              (ctx.logRotina || log)(`${town.name}: ${nomeU} subiu para ${total}, mas `
+                + `${fora} estão fora — em casa tem ${emCasa} e o alvo é ${alvo}.`);
+              continue;
+            }
 
             log(`⚠️ ${town.name}: ${nomeU} passou de ${antes} para ${total} `
               + `(${emCasa} em casa, ${fora} fora, ${Number(naFila[u]) || 0} na fila) `
@@ -16751,9 +16769,22 @@ function makeFeiticosModule(opts) {
               const jaEscolhidos = [].concat((cfg().alvos || {})[v.cid] || []);
               const chega = v.chega
                 ? new Date(v.chega * 1000).toLocaleTimeString().slice(0, 5) : '?';
+              /* O ÍCONE TEM DE ACENDER AO CLICAR.
+               *
+               * A caixa de marcar está escondida e o ícone ficava sempre com a
+               * mesma opacidade: clicavas e NADA mudava no ecrã. Sem saber se
+               * tinha pegado, ninguém carrega em Guardar com confiança.
+               *
+               * Agora o ícone acende e ganha um contorno assim que é marcado —
+               * e apaga quando é desmarcado. */
               const icones = opcoesR.map((id) => `
                 <label title="${esc(nomeDoFeitico(id))} · ${custoDoFeitico(id)} de favor"
-                  style="display:inline-block;cursor:pointer;opacity:${jaEscolhidos.indexOf(id) >= 0 ? '1' : '.35'}">
+                  class="fei-etiq"
+                  style="display:inline-block;cursor:pointer;border-radius:5px;
+                         transition:opacity .12s, box-shadow .12s;
+                         opacity:${jaEscolhidos.indexOf(id) >= 0 ? '1' : '.35'};
+                         box-shadow:${jaEscolhidos.indexOf(id) >= 0
+                           ? '0 0 0 2px var(--mBrass, #4dd4e8)' : 'none'}">
                   <input type="checkbox" class="fei-alvo" data-cmd="${v.cid}" value="${id}"
                     ${jaEscolhidos.indexOf(id) >= 0 ? 'checked' : ''} style="display:none">
                   ${iconeDoFeitico(id)}
@@ -16772,6 +16803,16 @@ function makeFeiticosModule(opts) {
             ? `<div style="opacity:.5;font-size:11px;margin-top:2px">mais ${vindos.length - LIMITE} `
               + 'ataque(s) mais longe — aparecem à medida que se aproximam.</div>'
             : '');
+
+        /* O retorno visual, ligado depois de o conteúdo existir. */
+        alvo.querySelectorAll('.fei-alvo').forEach((el) => {
+          el.onchange = () => {
+            const lab = el.closest('.fei-etiq');
+            if (!lab) return;
+            lab.style.opacity = el.checked ? '1' : '.35';
+            lab.style.boxShadow = el.checked ? '0 0 0 2px var(--mBrass, #4dd4e8)' : 'none';
+          };
+        });
       } catch (e) {
         alvo.innerHTML = '<div style="opacity:.55;font-size:12px">não consegui ler os ataques.</div>';
       }
@@ -24159,7 +24200,12 @@ function makeEsquivaModule(opts) {
       log(`🌾 ${nome}: modo farm — milícia NUNCA activada (mataria os enviados divinos).`);
     } else if (c.milicia && !plano.daMain) {
       const m = await ativarMilicia(plano.townId);
-      log(m.ok ? `🛡️ ${nome}: milícia ativada.` : `⚠️ ${nome}: milícia falhou (${m.msg}).`);
+      /* "Já recrutou a milícia" é a cidade já estar protegida: o objectivo
+       * está cumprido e não há falha nenhuma. */
+      if (m.ok) log(`🛡️ ${nome}: milícia ativada.`);
+      else if (/j[áa] recrutou a mil[íi]cia|already .*militia/i.test(String(m.msg || ''))) {
+        (ctx.logRotina || log)(`${nome}: a milícia já lá estava.`);
+      } else log(`⚠️ ${nome}: milícia falhou (${m.msg}).`);
     } else if (c.milicia && plano.daMain) {
       log(`🌾 ${nome}: ataque da main — milícia NÃO activada (os enviados têm de sobreviver).`);
     }
@@ -31102,7 +31148,9 @@ function makeMissoesModule(opts) {
               log(`⏳ ${nome} (${cidade.name}): restam ${det} — milícia já activa, `
                 + 'espero que expire para chamar outra vaga.');
             } else {
-              log(`⚠️ ${nome}: milícia falhou (${r.msg}).`);
+              if (/j[áa] recrutou a mil[íi]cia|already .*militia/i.test(String(r.msg || ''))) {
+                (ctx.logRotina || log)(`${nome}: a milícia já lá estava.`);
+              } else log(`⚠️ ${nome}: milícia falhou (${r.msg}).`);
             }
             continue;
           }
@@ -39077,7 +39125,14 @@ function makeReforcoModule(opts) {
         .filter((g) => (nomes || []).some((n) => String(g.name || '').toLowerCase() === String(n).toLowerCase()))
         .map((g) => Number(g.id)));
       if (!ids.size) return [];
-      const doGrupo = new Set(ligacoes.filter((l) => ids.has(Number(l.town_group_id)))
+      /* O CAMPO CHAMA-SE `group_id`, NÃO `town_group_id`.
+       *
+       * Com o nome errado a lista vinha sempre vazia e o reforço dizia "não
+       * encontrei cidades nos grupos" em todas as passagens, com os grupos a
+       * existirem e com os nomes certos. O módulo dos deuses já usava o nome
+       * certo — mais uma vez, o código bom estava ao lado. */
+      const doGrupo = new Set(ligacoes
+        .filter((l) => ids.has(Number(l.group_id != null ? l.group_id : l.town_group_id)))
         .map((l) => Number(l.town_id)));
       return (ctx.getMyTowns() || []).filter((t) => doGrupo.has(Number(t.id)));
     } catch (e) { seErroDeCodigo(e, 'Reforco'); return []; }
