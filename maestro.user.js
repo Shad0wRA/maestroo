@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.11.2359
+// @version      2026.09.12.0000
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1868,7 +1868,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.11.2359';
+  const MAESTRO_VERSAO = '2026.09.12.0000';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -35057,12 +35057,15 @@ function makeApoioModule(opts) {
            * está errado, não que o momento seja mau. Repetir de dois em dois
            * minutos enche o registo e não resolve.
            *
-           * PENDENTE: a espia mostrou que o jogo usa outro pedido —
-           *   POST /game/building_place?town_id=<onde ESTÁ a tropa>&action=send_back
-           *   json={"support_id":382947,"town_id":4370,"nl_init":true}
-           * — com `support_id` e a cidade de DESTINO. Falta confirmar se o
-           * `unitsId` que guardo é o mesmo número que o `support_id`; sem isso
-           * não se corrige à séria. */
+           * PENDENTE — o que a espia de 11/09 confirmou:
+           *   - o número do `place_units_<id>` da Ágora (o caminho das multis)
+           *     É o `support_id` e o id do modelo `Units`;
+           *   - o regresso TOTAL parte da ORIGEM, separador Fora:
+           *       POST /game/building_place?town_id=<ORIGEM>&action=send_back
+           *       json={"support_id":417043,"town_id":<ORIGEM>,"nl_init":true}
+           * Por confirmar: se o `id` do `outer_units` (o caminho com
+           * Administrador) é o mesmo número, e o formato do regresso PARCIAL
+           * (retirar só parte, no separador Fora) — é esse que está errado aqui. */
           try {
             const K = 'grepoApoio_retiradaFalhou_v1';
             const reg = JSON.parse(armazem.getItem(K) || '{}');
@@ -39757,11 +39760,58 @@ function makeReforcoModule(opts) {
     } catch (e) { return { ok: false, msg: e.message }; }
   }
 
-  /* TRAZER O APOIO DE VOLTA — a mesma acção do jogo. */
-  async function trazerDeVolta(destinoId, origemId) {
+  const nomeDe = (id) => {
+    try { return mUw.ITowns.getTown(Number(id)).getName(); } catch (e) { return '#' + id; }
+  };
+
+  /* OS BLOCOS DE APOIO DA ORIGEM NO DESTINO, lidos dos modelos `Units`.
+   *
+   * Confirmado com a espia (11/09): o `support_id` que o jogo usa para mandar
+   * de volta É o id do modelo `Units` do bloco. O 417043 era o modelo de
+   * 114 → 35, e é o mesmo número do `place_units_417043` na Ágora.
+   *
+   * Devolve a lista (normalmente um só bloco), ou `null` se os modelos não
+   * estiverem carregados — "não sei" não se confunde com "já lá não está". */
+  function blocosEm(origemId, destinoId) {
     try {
-      const url = mUw.location.origin + '/game/town_info?town_id=' + Number(destinoId)
-        + '&action=send_back_units&h=' + mUw.Game.csrfToken;
+      const mods = mUw.MM.getModels().Units;
+      if (!mods || !Object.keys(mods).length) return null;
+      const out = [];
+      for (const k of Object.keys(mods)) {
+        const a = mods[k].attributes || {};
+        if (Number(a.home_town_id) !== Number(origemId)) continue;
+        if (Number(a.current_town_id) !== Number(destinoId)) continue;
+        const unidades = {};
+        for (const u of Object.keys(a)) {
+          if (!(mUw.GameData.units || {})[u]) continue;
+          const n = Number(a[u]) || 0;
+          if (n > 0) unidades[u] = n;
+        }
+        if (!Object.keys(unidades).length) continue;
+        out.push({ id: Number(a.id) || Number(k) || 0, unidades });
+      }
+      return out;
+    } catch (e) { seErroDeCodigo(e, 'Reforco'); return null; }
+  }
+
+  /* TRAZER O APOIO DE VOLTA — O PEDIDO DO JOGO, APANHADO COM A ESPIA (11/09).
+   *
+   * Na Ágora da cidade de ORIGEM, separador Fora, "mandar de volta":
+   *
+   *   POST /game/building_place?town_id=<origem>&action=send_back
+   *   json={"support_id":417043,"town_id":<origem>,"nl_init":true}
+   *
+   * Parte da ORIGEM, que é sempre minha. É o mesmo pedido que o `mandarDeVolta`
+   * do apoio já usava.
+   *
+   * O que estava aqui — `town_info?action=send_back_units` — nunca foi
+   * capturado: foi adivinhado, e nunca trouxe nada.
+   *
+   * Traz o bloco TODO. */
+  async function trazerDeVolta(origemId, supportId) {
+    try {
+      const url = mUw.location.origin + '/game/building_place?town_id=' + Number(origemId)
+        + '&action=send_back&h=' + mUw.Game.csrfToken;
       const r = await mUw.fetch(url, {
         method: 'POST',
         headers: {
@@ -39770,7 +39820,7 @@ function makeReforcoModule(opts) {
         },
         credentials: 'include',
         body: 'json=' + encodeURIComponent(JSON.stringify({
-          town_id: Number(destinoId), origin_town_id: Number(origemId), nl_init: true,
+          support_id: Number(supportId), town_id: Number(origemId), nl_init: true,
         })),
       });
       /* Pelo leitor comum: avisa o núcleo no 429. */
@@ -39778,7 +39828,17 @@ function makeReforcoModule(opts) {
         .__maestroLerResposta;
       const d = lr ? await lr(r) : { json: {} };
       const j = d.json || {};
-      return { ok: !j.error, msg: j.error || j.success || 'ok', travou: !!d.travou };
+
+      /* SÓ É SUCESSO SE O JOGO O DISSER.
+       *
+       * Bastava não vir `error` — e uma resposta sem nada dava "tropa a
+       * caminho de casa" sem ter acontecido coisa nenhuma. A resposta
+       * verdadeira traz `all_units` e `success`; sem nenhum dos dois, não conta. */
+      const ok = !j.error && !!(j.success || j.all_units);
+      return {
+        ok, msg: j.error || j.success || (ok ? 'ok' : 'o jogo não confirmou'),
+        travou: !!d.travou,
+      };
     } catch (e) { return { ok: false, msg: e.message }; }
   }
 
@@ -39842,14 +39902,79 @@ function makeReforcoModule(opts) {
        * traria. Mas esse só traz o que ELE enviou — o que o reforço mandou
        * ficava lá para sempre, e as cidades acumulavam defesa em alvos que já
        * não estavam sob ameaça. */
-      const rv = await trazerDeVolta(Number(e.destino), Number(e.origem));
-      if (rv.travou) {
-        rotina(`Reforço: ${rv.msg} — trago a tropa na próxima passagem.`);
-        return;
+
+      /* FALHOU HÁ POUCO? ESPERA-SE.
+       *
+       * O registo era apagado quer a retirada resultasse quer falhasse: uma
+       * tentativa e o envio ficava esquecido para sempre, com a falha só na
+       * rotina, que não aparece no ecrã. Agora o registo fica até a tropa
+       * voltar, e uma falha repete de dez em dez minutos — de dois em dois
+       * era insistir. */
+      if (Number(e.proxima) > agora()) continue;
+
+      const blocos = blocosEm(e.origem, e.destino);
+      if (blocos == null) {
+        rotina(`Reforço: não consegui ler a tropa de ${nomeDe(e.origem)} em `
+          + `${nomeDe(e.destino)} — tento na próxima passagem.`);
+        continue;
       }
-      if (rv.ok) log(`↩️ Reforço: acabaram os ataques a ${e.destino} — tropa a caminho de casa.`);
-      else rotina(`Reforço: não consegui trazer a tropa de ${e.destino} (${rv.msg}).`);
-      delete envios[k];
+      if (!blocos.length) {
+        log(`Reforço: a tropa de ${nomeDe(e.origem)} já não está em ${nomeDe(e.destino)} `
+          + '(morreu no ataque ou foi retirada) — nada a trazer.');
+        delete envios[k];
+        gravarEnvios(envios);
+        continue;
+      }
+
+      /* SÓ SE O BLOCO FOR TODO DO REFORÇO.
+       *
+       * O `send_back` traz o bloco inteiro. Se a origem tiver ali mais do que
+       * o reforço mandou — colonizadores da rotação numa base, tropa do apoio
+       * numa revolta, um apoio posto à mão — trazer tudo desfazia isso.
+       *
+       * Compara-se a SOMA de todos os blocos com o que o reforço mandou: vale
+       * quer o jogo junte os envios num bloco só, quer não. As baixas só fazem
+       * descer os números, portanto um bloco só do reforço nunca passa. */
+      const soma = {};
+      for (const b of blocos) {
+        for (const u of Object.keys(b.unidades)) soma[u] = (soma[u] || 0) + b.unidades[u];
+      }
+      const aMais = Object.keys(soma)
+        .filter((u) => soma[u] > (Number((e.carga || {})[u]) || 0));
+      if (aMais.length) {
+        log(`⚠️ Reforço: ${nomeDe(e.origem)} tem em ${nomeDe(e.destino)} mais do que o reforço `
+          + `mandou (${aMais.map((u) => `${soma[u]} ${u}`).join(', ')}) — não trago o bloco `
+          + 'todo para não levar tropa de outro envio. Retira à mão o que for do reforço.');
+        delete envios[k];
+        gravarEnvios(envios);
+        continue;
+      }
+
+      let falhou = null;
+      for (const b of blocos) {
+        const rv = await trazerDeVolta(e.origem, b.id);
+        if (rv.travou) {
+          gravarEnvios(envios);
+          rotina(`Reforço: ${rv.msg} — trago a tropa na próxima passagem.`);
+          return;
+        }
+        if (!rv.ok) { falhou = rv.msg; break; }
+        await ctx.sleep(ctx.rand(700, 1300));
+      }
+
+      if (falhou == null) {
+        log(`↩️ Reforço: acabaram os ataques a ${nomeDe(e.destino)} — a tropa de `
+          + `${nomeDe(e.origem)} vai a caminho de casa.`);
+        delete envios[k];
+      } else {
+        e.falhas = (Number(e.falhas) || 0) + 1;
+        e.proxima = agora() + 10 * 60;
+        envios[k] = e;
+        /* No ecrã à primeira; as repetições vão para a rotina. */
+        (e.falhas === 1 ? log : rotina)(`⚠️ Reforço: não consegui trazer a tropa de `
+          + `${nomeDe(e.origem)} em ${nomeDe(e.destino)} (${falhou}) — tento de 10 em 10 min.`);
+      }
+      gravarEnvios(envios);
     }
     gravarEnvios(envios);
 
@@ -39998,9 +40123,21 @@ function makeReforcoModule(opts) {
           if (f[u] <= 0) delete f[u];
         }
 
-        envios[`${origem.id}->${id}`] = {
-          destino: id, origem: Number(origem.id), carga,
-          impacto: a.chega, quando: agora(),
+        /* A MESMA ORIGEM PARA O MESMO DESTINO SOMA, NÃO SUBSTITUI.
+         *
+         * Com dois ataques à mesma cidade, a mesma origem pode mandar duas
+         * vezes. O segundo envio apagava o registo do primeiro — e é pelo
+         * registo que a retirada sabe o que é do reforço e quando pode trazer. */
+        const chaveEnv = `${origem.id}->${id}`;
+        const antes = envios[chaveEnv] || null;
+        const somada = Object.assign({}, (antes && antes.carga) || {});
+        for (const u of Object.keys(carga)) {
+          somada[u] = (Number(somada[u]) || 0) + (Number(carga[u]) || 0);
+        }
+        envios[chaveEnv] = {
+          destino: id, origem: Number(origem.id), carga: somada,
+          impacto: Math.max(Number(a.chega) || 0, Number(antes && antes.impacto) || 0),
+          quando: agora(),
         };
         gravarEnvios(envios);
 
