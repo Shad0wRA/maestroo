@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.10.2130
+// @version      2026.09.10.2230
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1342,6 +1342,41 @@
    * ==================================================================== */
   const errosJaVistos = new Set();
 
+  /* ============ AVISO DE VERIFICAÇÃO DE BOT, PARA QUALQUER MÓDULO ======
+   *
+   * Só o módulo das aldeias avisava. Os outros — o Tique, a esquiva, o
+   * recrutamento — detectavam a verificação, escreviam no registo e ficavam-se
+   * por aí. E é a esquiva a que mais custa: com uma verificação por resolver,
+   * ela deixa de ver os ataques e perde desvios sem ninguém dar por nada.
+   *
+   * Aqui é um sítio só que qualquer módulo chama. Avisa no máximo de meia em
+   * meia hora por conta, para uma verificação não gerar vinte mensagens. */
+  const CAPTCHA_AVISO_KEY = 'grepoMaestro_captchaAvisado_v1';
+
+  async function avisarCaptcha(onde) {
+    try {
+      let ultimo = 0;
+      try { ultimo = Number(localStorage.getItem(CAPTCHA_AVISO_KEY)) || 0; } catch (e) {}
+      if (Date.now() - ultimo < 30 * 60 * 1000) return;
+      try { localStorage.setItem(CAPTCHA_AVISO_KEY, String(Date.now())); } catch (e) {}
+
+      const f = uw.__maestroAvisarDiscord;
+      if (!f) return;
+      await f('captcha', {
+        titulo: '🛑 Verificação de bot',
+        campos: [
+          { nome: '👤 Conta', valor: String((uw.Game && uw.Game.player_name) || '?') },
+          { nome: '🌍 Mundo', valor: String((uw.Game && uw.Game.world_id) || '?') },
+          { nome: '📍 Onde', valor: String(onde || '?') },
+        ],
+        descricao: 'Resolve no jogo — enquanto não resolveres, esta conta perde '
+          + 'esquivas e envios sem avisar mais.',
+      });
+    } catch (e) {}
+  }
+
+  try { uw.__maestroAvisarCaptcha = avisarCaptcha; } catch (e) {}
+
   function seErroDeCodigo(e, onde) {
     try {
       const msg = String((e && e.message) || e || '');
@@ -1764,7 +1799,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.10.2130';
+  const MAESTRO_VERSAO = '2026.09.10.2230';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -24337,6 +24372,17 @@ function makeEsquivaModule(opts) {
          * esquiva falhada num farm, com dez perguntas em seis minutos e
          * nenhuma explicação. */
         if (!paraEsta.length) {
+            /* Uma resposta vazia do servidor é, muitas vezes, uma verificação
+             * de bot por resolver — e a conta perde desvios em silêncio. */
+            try {
+              if (!cmds.length) {
+                const av = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window)
+                  .__maestroAvisarCaptcha;
+                if (av) av('esquiva — o servidor não devolve comandos');
+              }
+            } catch (e) {}
+
+
           rotina(`Esquiva: ${tid} — o servidor devolveu ${cmds.length} comando(s) `
             + (cmds.length
               ? `mas nenhum para esta cidade (destinos: ${cmds.slice(0, 3)
@@ -38511,6 +38557,11 @@ function makeTiqueModule(opts) {
             rotina(`Tique: não consegui usar ${nomeDoItem(item)} — ${r.msg}`);
             if (/verification|captcha/i.test(String(r.msg || ''))) {
               log('⏸️ Tique: o jogo pediu verificação — paro aqui.');
+              try {
+                const av = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window)
+                  .__maestroAvisarCaptcha;
+                if (av) await av('Fortuna de Tique');
+              } catch (e) {}
               return;
             }
           }
@@ -38548,6 +38599,11 @@ function makeTiqueModule(opts) {
               + 'Fica no inventário e ocupa lugar.');
             if (/verification|captcha/i.test(String(r.msg || ''))) {
               log('⏸️ Tique: o jogo pediu verificação — paro aqui.');
+              try {
+                const av = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window)
+                  .__maestroAvisarCaptcha;
+                if (av) await av('Fortuna de Tique');
+              } catch (e) {}
               return;
             }
           }
@@ -38573,6 +38629,11 @@ function makeTiqueModule(opts) {
            * para a passagem seguinte. */
           if (/verification|captcha/i.test(String(r.msg || ''))) {
             log('⏸️ Tique: o jogo pediu verificação — paro aqui.');
+            try {
+              const av = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window)
+                .__maestroAvisarCaptcha;
+              if (av) await av('Fortuna de Tique');
+            } catch (e) {}
             return;
           }
         }
