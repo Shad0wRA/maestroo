@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.10.2330
+// @version      2026.09.11.0030
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1799,7 +1799,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.10.2330';
+  const MAESTRO_VERSAO = '2026.09.11.0030';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -33982,16 +33982,20 @@ function makeApoioModule(opts) {
               if (!minhasIds.has(id)) continue;
               const fim = Number(x.finished_at || x.arrival_at) || 0;
               const e2 = porCidade[id] = porCidade[id] || {
-                id, nome: String(x.destination_town_name || id), quem: [], primeira: 0, ultima: 0,
+                id, nome: String(x.destination_town_name || id), quem: [],
+                primeira: 0, ultima: 0, comandos: [],
               };
               e2.quem.push(String(x.origin_player_name || '?'));
+              /* O id do COMANDO distingue esta revolta de outra que venha
+               * depois na mesma cidade. */
+              if (x.id) e2.comandos.push(String(x.id));
               if (fim && (!e2.primeira || fim < e2.primeira)) e2.primeira = fim;
               if (fim > e2.ultima) e2.ultima = fim;
             }
             const revoltas = Object.keys(porCidade).map((k) => porCidade[k]);
 
             const jaLa = new Set((lista.alvos || lista.targets || []).map(Number));
-            const novos = revoltas.filter((r) => !jaLa.has(r.id));
+            let novos = revoltas.filter((r) => !jaLa.has(r.id));
 
             /* SAIR DA LISTA quando a ameaça acabar de vez.
              *
@@ -34014,6 +34018,35 @@ function makeApoioModule(opts) {
               auto[r.id] = { primeira: r.primeira, ultima: r.ultima, quem: r.quem };
             }
 
+            /* O QUE TU TIRASTE À MÃO NÃO VOLTA SOZINHO.
+             *
+             * Tiraste os apoios de uma cidade e a detecção repô-los na
+             * passagem seguinte — a decisão era tua e ele desfê-la.
+             *
+             * Guarda-se o identificador do COMANDO da revolta, não o da
+             * cidade: assim, se o adversário lançar uma revolta NOVA na mesma
+             * cidade, essa é outra e volta a entrar. O que não volta é aquela
+             * mesma. */
+            const RETIRADOS_KEY = 'grepoApoio_revoltasRetiradas_v1';
+            let retiradosPorMim = {};
+            try { retiradosPorMim = JSON.parse(armazem.getItem(RETIRADOS_KEY) || '{}'); } catch (e) {}
+
+            /* Limpar as que já terminaram, para o registo não crescer sempre. */
+            for (const k of Object.keys(retiradosPorMim)) {
+              if (Number(retiradosPorMim[k]) < AGORA) delete retiradosPorMim[k];
+            }
+
+            novos = novos.filter((r) => {
+              const cmds = [].concat(r.comandos || []);
+              const todosTirados = cmds.length
+                && cmds.every((cid) => retiradosPorMim[String(cid)]);
+              if (todosTirados) {
+                (ctx.logRotina || log)(`Apoio: ${r.nome} tem revolta, mas tiraste-a à mão `
+                  + '— não a reponho. Uma revolta nova volta a entrar.');
+              }
+              return !todosTirados;
+            });
+
             if (novos.length || aRetirar.length) {
               const ficam = [].concat([...jaLa], novos.map((r) => r.id))
                 .filter((id) => aRetirar.indexOf(Number(id)) < 0);
@@ -34024,6 +34057,15 @@ function makeApoioModule(opts) {
               const exc = Object.assign({}, lista.maxPorAlvo || {});
               for (const id of aRetirar) delete exc[id];
               for (const r of revoltas) exc[r.id] = 10;
+
+              /* Guardar os comandos de cada revolta na lista partilhada: é o
+               * que permite distinguir esta revolta de outra que venha depois
+               * na mesma cidade. */
+              for (const r of revoltas) {
+                auto[String(r.id)] = Object.assign({}, auto[String(r.id)] || {}, {
+                  primeira: r.primeira, ultima: r.ultima, comandos: r.comandos || [],
+                });
+              }
 
               const copia = Object.assign({}, lista, {
                 alvos: ficam,
@@ -34040,13 +34082,20 @@ function makeApoioModule(opts) {
                   const quantas = r.quem.length;
                   log(`🚨 ${r.nome} em REVOLTA por ${r.quem.join(', ')} — entrou na lista de `
                     + 'apoio (10 cidades por conta)'
-                    + (faltam ? `; a primeira R1 acaba daqui a ${faltam} min` : '')
+                    + (faltam ? `; esta fase acaba daqui a ${faltam} min` : '')
                     + (quantas > 1 ? ` · ${quantas} revoltas nesta cidade` : '') + '.');
                   if (ctx.avisarDiscord) {
                     ctx.avisarDiscord('ataque', {
                       titulo: '🚨 Cidade em revolta',
                       descricao: `**${r.nome}** está em revolta por **${r.quem.join(', ')}**.`
-                        + (faltam ? ` A primeira R1 acaba daqui a ${faltam} min.` : '')
+                        /* NÃO SE AFIRMA QUE É A R1.
+                     *
+                     * O jogo dá o mesmo formato para as duas fases, e sete
+                     * horas entre o início e o fim tanto podem ser uma R1 como
+                     * uma R2. Dizer "a primeira R1 acaba" numa revolta que já
+                     * ia na R2 dá a entender que há catorze horas quando
+                     * podem faltar duas. */
+                    + (faltam ? ` Esta fase acaba daqui a ${faltam} min.` : '')
                         + (quantas > 1 ? ` São ${quantas} revoltas na mesma cidade.` : '')
                         + '\nEntrou na lista de apoio — as multis começam a mandar já.',
                     });
@@ -34889,6 +34938,24 @@ function makeApoioModule(opts) {
 
         b.disabled = true; b.textContent = '...';
         paraRemover.add(id);
+
+        /* MARCAR A REVOLTA COMO RETIRADA POR TI.
+         *
+         * Sem isto, a detecção repunha a cidade na passagem seguinte e a tua
+         * decisão desfazia-se sozinha.
+         *
+         * Guarda-se o id do COMANDO da revolta, com a hora em que ela acaba —
+         * assim uma revolta NOVA na mesma cidade volta a entrar, que é o que
+         * queres: o que não volta é aquela mesma. */
+        try {
+          const K = 'grepoApoio_revoltasRetiradas_v1';
+          const reg = JSON.parse(armazem.getItem(K) || '{}');
+          const auto = (lista.revoltasAuto || {})[String(id)];
+          const cmds = [].concat((auto && auto.comandos) || []);
+          const ate = Number(auto && (auto.ultima || auto.primeira)) || 0;
+          for (const cid of cmds) reg[String(cid)] = ate || (Math.floor(Date.now() / 1000) + 14 * 3600);
+          armazem.setItem(K, JSON.stringify(reg));
+        } catch (e) { seErroDeCodigo(e, 'Apoio'); }
 
         /* As tropas voltam já — isto é com o jogo e não gasta escritas. */
         try {
