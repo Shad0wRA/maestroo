@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.11.1030
+// @version      2026.09.11.1130
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1342,6 +1342,75 @@
    * ==================================================================== */
   const errosJaVistos = new Set();
 
+  /* ============ AS ASSINATURAS DO JOGO ==================================
+   *
+   *   curator   → Administrador · vistas gerais (`town_overviews`)
+   *   captain   → Capitão · recolha de várias aldeias num pedido
+   *   commander → Comandante · trader → Comerciante · priest → Sacerdote
+   *
+   * O Maestro descobria que lhe faltava uma DEPOIS de tentar e levar o erro —
+   * gastava o pedido e marcava-se por trinta minutos. Com isto sabe à partida.
+   *
+   * As datas EXPIRAM, por isso lê-se sempre do modelo e compara-se com a hora
+   * do servidor: uma conta que tem Capitão hoje pode não ter amanhã.
+   *
+   * Regra: tentar a via rápida quando a assinatura está activa, cair na lenta
+   * quando não está. */
+  function temAssinatura(qual) {
+    try {
+      const col = uw.MM.getModels().PremiumFeatures || {};
+      const k = Object.keys(col)[0];
+      const a2 = (col[k] || {}).attributes || {};
+      const ate = Number(a2[qual]) || 0;
+      if (!ate) return false;
+      const agora = (uw.Timestamp && uw.Timestamp.now && uw.Timestamp.now())
+        || Math.floor(Date.now() / 1000);
+      return ate > agora;
+    } catch (e) { return false; }
+  }
+
+  const temAdministrador = () => temAssinatura('curator');
+  const temCapitao = () => temAssinatura('captain');
+
+  try {
+    uw.__maestroTemAssinatura = temAssinatura;
+    uw.__maestroTemAdministrador = temAdministrador;
+    uw.__maestroTemCapitao = temCapitao;
+  } catch (e) {}
+
+  /* ============ O LEITOR COMUM DAS RESPOSTAS ==========================
+   *
+   * Vinte e dois módulos passam por um `lerResposta` próprio que trata do 429
+   * — avisa o núcleo, que pára tudo por uns minutos — e das respostas
+   * ilegíveis.
+   *
+   * Os três módulos escritos por último (fechar ilha, Tique, reforço) faziam
+   * `fetch` directo e liam à mão. Quando levavam um corte, mais ninguém sabia:
+   * os outros continuavam a trabalhar contra um servidor que já recusava.
+   *
+   * Este é o leitor único para quem não tem o seu. */
+  async function lerRespostaComum(resposta) {
+    try {
+      if (resposta && Number(resposta.status) === 429) {
+        try { if (uw.__maestroTravar) uw.__maestroTravar(2); } catch (e) {}
+        return { json: { error: 'o servidor está a recusar pedidos' }, travou: true };
+      }
+      const txt = await resposta.text();
+      if (!txt || !txt.trim()) {
+        return { json: { error: `o servidor não respondeu (HTTP ${resposta.status})` } };
+      }
+      if (/^\s*</.test(txt)) {
+        return { json: { error: 'o servidor devolveu uma página de erro' }, travou: true };
+      }
+      try { return JSON.parse(txt); }
+      catch (e) { return { json: { error: `resposta ilegível: ${txt.slice(0, 60)}` } }; }
+    } catch (e) {
+      return { json: { error: 'não consegui ler a resposta: ' + e.message } };
+    }
+  }
+
+  try { uw.__maestroLerResposta = lerRespostaComum; } catch (e) {}
+
   /* ============ AVISO DE VERIFICAÇÃO DE BOT, PARA QUALQUER MÓDULO ======
    *
    * Só o módulo das aldeias avisava. Os outros — o Tique, a esquiva, o
@@ -1799,7 +1868,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.11.1030';
+  const MAESTRO_VERSAO = '2026.09.11.1130';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -37892,9 +37961,14 @@ function makeFecharIlhaModule(opts) {
         + '&json=' + encodeURIComponent(JSON.stringify({
             chunks: [{ x: cx, y: cy, timestamp: 0 }], town_id: Number(townIdBase), nl_init: true }));
 
-      const r = await mUw.fetch(url, {
+      /* Pelo leitor comum: no 429 avisa o núcleo, que pára tudo — em vez de
+       * este módulo continuar a bater sozinho. */
+      const lr = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window)
+        .__maestroLerResposta;
+      const rr = await mUw.fetch(url, {
         headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
-      }).then((x) => x.json());
+      });
+      const r = lr ? await lr(rr) : await rr.json();
 
       const d = (r && r.json && r.json.data) || {};
       const bloco = d[0] || d['0'];
@@ -37975,9 +38049,14 @@ function makeFecharIlhaModule(opts) {
           },
           town_id: Number(townId), nl_init: true,
         })),
-      }).then((x2) => x2.json());
-      const j = r && r.json;
-      return { ok: !(j && j.error), msg: (j && (j.error || j.success)) || 'ok' };
+      });
+
+      /* Pelo leitor comum: o 429 avisa o núcleo. */
+      const lr = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window)
+        .__maestroLerResposta;
+      const d = lr ? await lr(r) : await r.json();
+      const j = (d && d.json) || {};
+      return { ok: !j.error, msg: j.error || j.success || 'ok', travou: !!(d && d.travou) };
     } catch (e) { return { ok: false, msg: e.message }; }
   }
 
@@ -38557,9 +38636,12 @@ function makeTiqueModule(opts) {
           }))
         + '&_=' + Date.now();
 
-      const r = await mUw.fetch(url, {
+      const rr = await mUw.fetch(url, {
         headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
-      }).then((x) => x.json());
+      });
+      const lr = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window)
+        .__maestroLerResposta;
+      const r = lr ? await lr(rr) : await rr.json();
 
       const d = (r && r.json) || {};
       const modelos = d.models || {};
@@ -38631,9 +38713,15 @@ function makeTiqueModule(opts) {
           model_url: modelUrl, action_name: accao, captcha: null,
           arguments: argumentos || {}, town_id: t, nl_init: true,
         })),
-      }).then((x) => x.json());
-      const j = r && r.json;
-      return { ok: !(j && j.error), msg: (j && (j.error || j.success)) || 'ok' };
+      });
+
+      /* Pelo leitor comum: o 429 avisa o núcleo, e uma página de erro deixa de
+       * aparecer como "Unexpected token '<'". */
+      const lr = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window)
+        .__maestroLerResposta;
+      const d = lr ? await lr(r) : { json: {} };
+      const j = d.json || {};
+      return { ok: !j.error, msg: j.error || j.success || 'ok', travou: !!d.travou };
     } catch (e) { return { ok: false, msg: e.message }; }
   }
 
@@ -39102,9 +39190,13 @@ function makeReforcoModule(opts) {
           + '&action=command_overview&h=' + mUw.Game.csrfToken
           + '&json=' + encodeURIComponent(JSON.stringify({ town_id: Number(base), nl_init: true }))
           + '&_=' + Date.now();
-        const r = await mUw.fetch(url, {
+        /* Pelo leitor comum: o 429 avisa o núcleo. */
+        const lr = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window)
+          .__maestroLerResposta;
+        const rr = await mUw.fetch(url, {
           headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
-        }).then((x) => x.json()).catch(() => null);
+        }).catch(() => null);
+        const r = rr ? (lr ? await lr(rr) : await rr.json().catch(() => null)) : null;
 
         const d = (r && r.json) || {};
         for (const x of (d.commands || (d.data && d.data.commands) || [])) {
@@ -39187,9 +39279,28 @@ function makeReforcoModule(opts) {
           }))
         + '&_=' + Date.now();
 
+      /* PELO LEITOR COMUM: assim o 429 avisa o núcleo e os outros módulos
+       * também param, em vez de continuarem a bater num servidor que já
+       * recusa. */
+      const lr = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window)
+        .__maestroLerResposta;
       const r = await mUw.fetch(url, {
         headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
       });
+
+      if (lr) {
+        const d = await lr(r);
+        if (d.travou) { travouAqui = true; return null; }
+        const j2 = d.json || {};
+        let seg = Number(j2.way_duration || j2.duration) || 0;
+        if (!seg && j2.html) {
+          const m2 = String(j2.html).match(/way_duration[^>]*>\s*~?\s*(\d+):(\d+):(\d+)/);
+          if (m2) seg = (+m2[1]) * 3600 + (+m2[2]) * 60 + (+m2[3]);
+        }
+        if (!seg) return null;
+        viagensSabidas[chave] = seg;
+        return seg;
+      }
 
       /* O SERVIDOR CORTOU: A PASSAGEM PÁRA AQUI.
        *
@@ -39253,14 +39364,12 @@ function makeReforcoModule(opts) {
        * Com 429 ("demasiados pedidos") vem HTML, e tentar lê-lo como dados dá
        * "Unexpected token '<'" — uma mensagem que não diz nada a quem lê o
        * registo. Distingue-se aqui, e o chamador sabe que tem de parar. */
-      if (r.status === 429) return { ok: false, msg: 'o servidor está a recusar pedidos', travou: true };
-
-      const txt = await r.text();
-      if (/^\s*</.test(txt)) return { ok: false, msg: 'o servidor devolveu uma página de erro', travou: true };
-
-      let j = null;
-      try { j = JSON.parse(txt).json; } catch (e2) { return { ok: false, msg: 'resposta ilegível', travou: true }; }
-      return { ok: !(j && j.error), msg: (j && (j.error || j.success)) || 'ok' };
+      /* Pelo leitor comum: avisa o núcleo no 429. */
+      const lr = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window)
+        .__maestroLerResposta;
+      const d = lr ? await lr(r) : { json: {} };
+      const j = d.json || {};
+      return { ok: !j.error, msg: j.error || j.success || 'ok', travou: !!d.travou };
     } catch (e) { return { ok: false, msg: e.message }; }
   }
 
@@ -39280,12 +39389,12 @@ function makeReforcoModule(opts) {
           town_id: Number(destinoId), origin_town_id: Number(origemId), nl_init: true,
         })),
       });
-      if (r.status === 429) return { ok: false, msg: 'o servidor está a recusar pedidos', travou: true };
-      const txt = await r.text();
-      if (/^\s*</.test(txt)) return { ok: false, msg: 'página de erro do servidor', travou: true };
-      let j = null;
-      try { j = JSON.parse(txt).json; } catch (e2) { return { ok: false, msg: 'resposta ilegível' }; }
-      return { ok: !(j && j.error), msg: (j && (j.error || j.success)) || 'ok' };
+      /* Pelo leitor comum: avisa o núcleo no 429. */
+      const lr = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window)
+        .__maestroLerResposta;
+      const d = lr ? await lr(r) : { json: {} };
+      const j = d.json || {};
+      return { ok: !j.error, msg: j.error || j.success || 'ok', travou: !!d.travou };
     } catch (e) { return { ok: false, msg: e.message }; }
   }
 
