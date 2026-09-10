@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.10.2030
+// @version      2026.09.10.2130
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1764,7 +1764,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.10.2030';
+  const MAESTRO_VERSAO = '2026.09.10.2130';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -34205,6 +34205,8 @@ function makeApoioModule(opts) {
      * conta. */
     let defesaNoAlvo = {};
     let contasVivas = 1;
+    /* A leitura da frota funcionou? Se não, NÃO se calcula fatia nenhuma. */
+    let frotaLida = false;
     try {
       const f = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroFb;
       if (f && f.url && f.url()) {
@@ -34235,6 +34237,7 @@ function makeApoioModule(opts) {
           }
         }
         contasVivas = Math.max(1, contasVivas - 1);
+        frotaLida = contasVivas > 1;
       }
     } catch (e) { seErroDeCodigo(e, 'Apoio'); }
 
@@ -34358,7 +34361,7 @@ function makeApoioModule(opts) {
 
       /* Com objectivo, quem manda parar é o objectivo — não o número de
        * cidades. Um alvo em revolta precisa do que precisa. */
-      const servindoObjetivo = Object.keys(faltaNoAlvo(alvo)).length > 0;
+      const servindoObjetivo = frotaLida && Object.keys(faltaNoAlvo(alvo)).length > 0;
 
       for (const t of candidatas) {
         if (!servindoObjetivo && Object.keys(reg).filter((k) => {
@@ -34388,12 +34391,43 @@ function makeApoioModule(opts) {
          * e não mandar, a parte dela redistribui-se pelas outras na passagem
          * seguinte, em vez de ficar um buraco. */
         const falta = faltaNoAlvo(alvo);
-        const temObjetivo = Object.keys(falta).length > 0;
+        /* Sem dados de confiança sobre o que já lá está, o objectivo não
+         * corre: volta-se ao pacote, que é previsível. */
+        const temObjetivo = frotaLida && Object.keys(falta).length > 0;
         const desejado = {};
 
         if (temObjetivo) {
+          /* ===== O OBJECTIVO É O TOTAL DAS CONTAS, NÃO O DE CADA UMA =======
+           *
+           * 4500 espadachins numa revolta é o que se quer LÁ, somando as
+           * vinte contas — cerca de 225 cada. Se a divisão falhar, cada uma
+           * manda os 4500 e o alvo recebe dezenas de milhares.
+           *
+           * Aconteceu: 31 mil espadachins numa revolta. A leitura da frota
+           * vinha vazia, `contasVivas` ficava em 1, e a "fatia" era o
+           * objectivo inteiro.
+           *
+           * Três travões, por ordem:
+           *
+           *   1. sem leitura da frota, não há fatia — volta-se ao pacote,
+           *      porque calcular sem saber o que lá está é inventar;
+           *   2. a divisão nunca é por menos do que as contas conhecidas do
+           *      perfil, mesmo que poucas tenham dado sinal;
+           *   3. um tecto por conta: nunca mais do que cinco pacotes de uma
+           *      vez, aconteça o que acontecer ao cálculo.
+           */
+          const contasDoPerfil = (() => {
+            try {
+              const g = JSON.parse(armazem.getItem('grepoFrota_contas_v1') || '[]');
+              return Array.isArray(g) ? g.length : 0;
+            } catch (e) { return 0; }
+          })();
+          const divisor = Math.max(contasVivas, contasDoPerfil, 2);
+
           for (const u of Object.keys(falta)) {
-            desejado[u] = Math.max(1, Math.ceil(falta[u] / contasVivas));
+            const fatia = Math.max(1, Math.ceil(falta[u] / divisor));
+            const tecto = Math.max(1, (Number(pacote[u]) || 0) * 5);
+            desejado[u] = Math.min(fatia, tecto);
           }
         } else {
           for (const u of Object.keys(pacote)) desejado[u] = Number(pacote[u]) || 0;
