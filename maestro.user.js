@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.11.2030
+// @version      2026.09.11.2130
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1868,7 +1868,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.11.2030';
+  const MAESTRO_VERSAO = '2026.09.11.2130';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -9272,8 +9272,7 @@ function makeRecrutamentoModule(opts) {
   function ordensDaCidade(townId, unitId) {
     const out = [];
     try {
-      const col = mUw.MM.getCollections().UnitOrder;
-      for (const m of ((col && col[0] && col[0].models) || [])) {
+      for (const m of todasAsOrdens()) {
         const a = m.attributes || {};
         if (Number(a.town_id) !== Number(townId)) continue;
         if (unitId && a.unit_type !== unitId) continue;
@@ -9289,12 +9288,40 @@ function makeRecrutamentoModule(opts) {
     return out;
   }
 
+  /* AS ORDENS DE TROPA DE TODAS AS CIDADES.
+   *
+   * A colecção `UnitOrder` só tem a cidade ACTIVA; os modelos têm todas.
+   * Confirmado com a espia no mesmo instante: 8 ordens na colecção, 38 nos
+   * modelos. Quem usar a colecção fica cego para as outras cidades — e foi
+   * assim que uma cidade com 18 navios em produção apareceu com "fila 0". */
+  function todasAsOrdens() {
+    try {
+      const mo = mUw.MM.getModels().UnitOrder || {};
+      const arr = Object.keys(mo).map((k) => mo[k]).filter(Boolean);
+      if (arr.length) return arr;
+    } catch (e) {}
+    try {
+      const col = mUw.MM.getCollections().UnitOrder;
+      return (col && col[0] && col[0].models) || [];
+    } catch (e) { return []; }
+  }
+
   function contarFilasPorCidade() {
     const out = {};
     try {
-      const col = mUw.MM.getCollections().UnitOrder;
-      const models = (col && col[0] && col[0].models) || [];
-      for (const m of models) {
+      /* OS MODELOS TÊM TODAS AS CIDADES; A COLECÇÃO SÓ TEM A ACTIVA.
+       *
+       * Confirmado com a espia, no mesmo instante:
+       *   colecção UnitOrder → 8 ordens  (só da cidade activa, 7972)
+       *   modelos  UnitOrder → 38 ordens (de todas: 35, 7972, …)
+       *
+       * O recrutamento percorre as cidades todas, e para cada uma que NÃO era
+       * a activa a fila vinha vazia. Daí o "fila 0" numa cidade com 18 navios
+       * em produção — e o pedido de mais nove por cima.
+       *
+       * Os modelos trazem os mesmos campos: `town_id`, `unit_type`,
+       * `units_left` e `count`. */
+      for (const m of todasAsOrdens()) {
         const a = m.attributes || {};
         const tid = Number(a.town_id);
         const acc = out[tid] = out[tid] || {};
@@ -11217,8 +11244,7 @@ function makeRecrutamentoModule(opts) {
       const filasAgora = contarFilasPorCidade();
       const temAgora = contarUnidadesPorCidadeDeOrigem();
 
-      const col = mUw.MM.getCollections().UnitOrder;
-      const ordens = ((col && col[0] && col[0].models) || []).map((m) => m.attributes || {});
+      const ordens = todasAsOrdens().map((m) => m.attributes || {});
 
       for (const town of towns) {
         const tplNome = mapa[town.id];
@@ -12489,8 +12515,16 @@ function makeHeroisModule(opts) {
          * do que nunca mover o herói. */
         let naFila = 0;
         try {
-          const col = mUw.MM.getCollections().UnitOrder;
-          const models = (col && col[0] && col[0].models) || [];
+          /* Os modelos têm todas as cidades; a colecção só a activa. */
+          const models = (() => {
+            try {
+              const mo = mUw.MM.getModels().UnitOrder || {};
+              const arr = Object.keys(mo).map((k) => mo[k]).filter(Boolean);
+              if (arr.length) return arr;
+            } catch (e) {}
+            const col = mUw.MM.getCollections().UnitOrder;
+            return (col && col[0] && col[0].models) || [];
+          })();
           const daCidade = models.filter((m) => Number((m.attributes || {}).town_id) === Number(id));
           if (daCidade.length || Number(mUw.Game.townId) === Number(id)) {
             naFila = daCidade.filter((m) => (m.attributes || {}).unit_type === 'colonize_ship').length;
@@ -12935,8 +12969,18 @@ function makeHeroisModule(opts) {
        * que não se sabem. Quem usa isto tem de contar com o zero poder
        * significar "desconhecido", e não "nada a produzir". Deixa-se o que
        * se sabe e nada mais; inventar seria pior. */
-      const uo = (mUw.MM.getCollections().UnitOrder || [])[0];
-      for (const m of ((uo && uo.models) || [])) {
+      /* Os modelos têm todas as cidades; a colecção só a activa. */
+      const ordensTodas = (() => {
+        try {
+          const mo = mUw.MM.getModels().UnitOrder || {};
+          const arr = Object.keys(mo).map((k) => mo[k]).filter(Boolean);
+          if (arr.length) return arr;
+        } catch (e) {}
+        const uo = (mUw.MM.getCollections().UnitOrder || [])[0];
+        return (uo && uo.models) || [];
+      })();
+
+      for (const m of ordensTodas) {
         const a = m.attributes || {};
         const acc = filasPorCidade[a.town_id] = filasPorCidade[a.town_id] || {};
         acc[a.unit_type] = (acc[a.unit_type] || 0) + (a.units_left != null ? a.units_left : a.count || 0);
