@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.11.0130
+// @version      2026.09.11.0230
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1799,7 +1799,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.11.0130';
+  const MAESTRO_VERSAO = '2026.09.11.0230';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -20618,6 +20618,52 @@ function makeDeusesModule(opts) {
 
     const cont = afroditePorGrupo(towns, escolhidos);
     const semNenhuma = [...escolhidos].filter((g) => (cont[g] || 0) === 0);
+
+    /* ===== AFRODITE FORA DOS GRUPOS: SAI ================================
+     *
+     * Uma cidade com Afrodite que não pertence a NENHUM dos grupos escolhidos
+     * está a ocupar um lugar onde ela não serve — as sereias que lá se fizerem
+     * não entram nas combinações do encaixe — e a faltar onde servia.
+     *
+     * A parte de baixo desta função só tratava do caso "um grupo tem duas e
+     * outro nenhuma". Esta trata do caso de não estar em grupo nenhum.
+     *
+     * Trocar de deus perde o favor acumulado dessa cidade, e isso é aceite: o
+     * farm de favores repõe. */
+    const foraDosGrupos = towns.filter((t) => {
+      if (deusDa(t.id) !== AFRODITE) return false;
+      if (((c.cidadesFarm || {})[t.id] || {}).tipo === 'fixo') return false;
+      return !gruposDaCidade(t.id).some((g) => escolhidos.has(g));
+    });
+
+    if (foraDosGrupos.length) {
+      const t = foraDosGrupos[0];
+      const nome = (() => { try { return mUw.ITowns.getTown(t.id).getName(); } catch (e) { return t.id; } })();
+      ctx.log(`↔️ ${nome}: tem Afrodite mas não está em nenhum dos grupos dela `
+        + `(${[...escolhidos].join(', ')}) — tiro-lhe a Afrodite.`);
+
+      /* O deus que estiver mais em falta face aos pesos. */
+      const jaTem2 = {};
+      for (const d of DEUSES) jaTem2[d] = 0;
+      for (const x of towns) { const d = deusDa(x.id); if (d && jaTem2[d] != null) jaTem2[d]++; }
+      const pesos2 = c.pesos || {};
+      const total2 = DEUSES.reduce((acc, d) => acc + (Number(pesos2[d]) || 0), 0);
+      let novo = null; let maiorFalta2 = -Infinity;
+      for (const d of DEUSES) {
+        if (d === AFRODITE) continue;
+        const quer = total2
+          ? Math.round(towns.length * ((Number(pesos2[d]) || 0) / total2))
+          : Math.round(towns.length / DEUSES.length);
+        const falta2 = quer - jaTem2[d];
+        if (falta2 > maiorFalta2) { maiorFalta2 = falta2; novo = d; }
+      }
+      if (novo) {
+        const r = await mudarDeus(t.id, novo);
+        if (r && r.ok) return true;
+        ctx.log(`— ${nome}: não consegui mudar o deus (${(r && r.msg) || 'sem razão'}).`);
+      }
+    }
+
     if (!semNenhuma.length) return false;
 
     const aMais = [...escolhidos].filter((g) => (cont[g] || 0) > 1);
