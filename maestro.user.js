@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.11.0630
+// @version      2026.09.11.0730
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1799,7 +1799,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.11.0630';
+  const MAESTRO_VERSAO = '2026.09.11.0730';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -39149,23 +39149,55 @@ function makeReforcoModule(opts) {
    *
    * As duas cidades são minhas, portanto a fórmula do jogo aplica-se — a
    * imprecisão é de segundos e a margem de um minuto cobre-a. */
-  function viagemEntre(origemId, destinoId, unidades) {
+  /* O TEMPO DE VIAGEM VEM DO JOGO, NÃO DE UMA FÓRMULA MINHA.
+   *
+   * Eu calculava-o pela distância entre ilhas e pela velocidade da unidade
+   * mais lenta, com um factor de velocidade do mundo que ADIVINHEI. O
+   * resultado foi tropa a chegar catorze minutos depois do ataque — pior do
+   * que não mandar, porque morre em viagem.
+   *
+   * O jogo dá o número certo: a janela de apoio de uma cidade para outra traz
+   * o `way_duration` em segundos. É o mesmo princípio que passámos a usar no
+   * encaixe — perguntar em vez de calcular.
+   *
+   * Um pedido por par de cidades, e o resultado fica guardado: a distância
+   * entre duas cidades não muda. */
+  const viagensSabidas = {};
+
+  async function viagemEntre(origemId, destinoId, unidades) {
+    const chave = `${origemId}->${destinoId}`;
+    if (viagensSabidas[chave]) return viagensSabidas[chave];
+
     try {
-      const o = coordsDe(origemId);
-      const d = coordsDe(destinoId);
-      if (!o || !d) return null;
-      const dist = Math.sqrt((o.x - d.x) ** 2 + (o.y - d.y) ** 2);
-      const gd = mUw.GameData.units || {};
-      let vel = 0;
-      for (const u of Object.keys(unidades)) {
-        if (!unidades[u]) continue;
-        const v = Number((gd[u] || {}).speed) || 0;
-        if (v && (!vel || v < vel)) vel = v;
+      const url = mUw.location.origin + '/game/town_info?town_id=' + Number(origemId)
+        + '&action=support&h=' + mUw.Game.csrfToken
+        + '&json=' + encodeURIComponent(JSON.stringify({
+            id: Number(destinoId), town_id: Number(origemId), nl_init: true,
+          }))
+        + '&_=' + Date.now();
+
+      const r = await mUw.fetch(url, {
+        headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
+      });
+      if (r.status === 429) return null;
+
+      const txt = await r.text();
+      if (/^\s*</.test(txt)) return null;
+
+      let j = null;
+      try { j = JSON.parse(txt).json; } catch (e2) { return null; }
+
+      /* O tempo pode vir num campo directo ou dentro do HTML da janela. */
+      let segundos = Number((j && (j.way_duration || j.duration))) || 0;
+      if (!segundos && j && j.html) {
+        const m = String(j.html).match(/way_duration[^>]*>\s*~?\s*(\d+):(\d+):(\d+)/);
+        if (m) segundos = (+m[1]) * 3600 + (+m[2]) * 60 + (+m[3]);
       }
-      if (!vel) return null;
-      const K = Number((mUw.Game.game_speed ? 5258 / mUw.Game.game_speed : 5258)) || 5258;
-      return Math.round(15 + (K * dist) / vel);
-    } catch (e) { return null; }
+      if (!segundos) return null;
+
+      viagensSabidas[chave] = segundos;
+      return segundos;
+    } catch (e) { seErroDeCodigo(e, 'Reforco'); return null; }
   }
 
   async function enviarApoio(origemId, destinoId, carga) {
@@ -39339,8 +39371,12 @@ function makeReforcoModule(opts) {
          * A viagem tem de caber no que falta para o impacto, com a margem de
          * segurança. Chegar depois é perder a tropa em viagem — pior do que
          * não mandar. */
-        const viagem = viagemEntre(origem.id, id, carga);
-        if (viagem == null) continue;
+        const viagem = await viagemEntre(origem.id, id, carga);
+        if (viagem == null) {
+          rotina(`Reforço: não consegui saber quanto demora de ${origem.name} a ${nome} `
+            + '— não mando às cegas.');
+          continue;
+        }
         if (viagem + (Number(c.margemSeg) || 60) > segundos) {
           rotina(`Reforço: ${origem.name} não chega a tempo de ${nome} `
             + `(viagem ${Math.round(viagem / 60)} min, faltam ${Math.round(segundos / 60)} min).`);
