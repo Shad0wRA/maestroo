@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.0100
+// @version      2026.09.12.0200
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1868,7 +1868,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.0100';
+  const MAESTRO_VERSAO = '2026.09.12.0200';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -32826,13 +32826,19 @@ function makeApoioModule(opts) {
      * número de cidades. */
     objetivoRevolta: { sword: 4500, archer: 4500, hoplite: 4500, bireme: 2750 },
     objetivoPadrao: {},
-    /* Quanto dura a R2 depois de a R1 acabar.
+    /* Folga depois de a última revolta de uma cidade sair da visão geral.
      *
-     * O comando da revolta só traz o fim da R1, por isso a cidade fica na
-     * lista mais este tempo depois da última R1 acabar. No pt126 são 7 horas,
-     * como a R1 — está nas definições do mundo. Muda-o se jogares noutro com
-     * tempo de conquista diferente. */
-    horasDeR2: 7,
+     * Confirmado em jogo (11/09): a visão geral mostra as DUAS fases — a R1 a
+     * azul e, quando ela acaba, a R2 ("revolta em curso"), cujo fim é o fim da
+     * revolta. Quando uma cidade deixa de ter qualquer revolta lá, acabou.
+     *
+     * Antes esperava-se mais 7 horas (`horasDeR2`), na ideia de que só a R1
+     * aparecia — a tropa ficava sete horas a mais em cidades já sem perigo.
+     *
+     * A folga só cobre a passagem da R1 para a R2 e o ritmo da detecção (de
+     * 5 em 5 minutos): três voltas, para uma troca de fase nunca ser tomada
+     * por fim da revolta. */
+    minutosFolgaFimRevolta: 15,
     /* O transporte grande anda a 24 e o rápido a 45 — com ele na carga, o
      * apoio demora o dobro. Por omissão evita-se. */
     evitarTransporteGrande: true,
@@ -34476,14 +34482,15 @@ function makeApoioModule(opts) {
 
             /* SAIR DA LISTA quando a ameaça acabar de vez.
              *
-             * A cidade fica desde a primeira R1 até à última R2. O jogo não
-             * diz quanto dura a R2 — o comando só traz o fim da R1 — por isso
-             * espera-se `horasDeR2` depois da última.
+             * A cidade fica enquanto tiver alguma revolta na visão geral. A R2
+             * aparece lá, e o fim dela é o fim da revolta (confirmado em jogo,
+             * 11/09) — por isso sai logo que a última desaparece, com uma folga
+             * curta para a passagem da R1 para a R2.
              *
              * Só saem as que ENTRARAM sozinhas: um alvo que puseste à mão
              * fica onde está. */
             const auto = Object.assign({}, lista.revoltasAuto || {});
-            const graca = (Number(c.horasDeR2) || 12) * 3600;
+            const graca = Math.max(5, Number(c.minutosFolgaFimRevolta) || 15) * 60;
             const aRetirar = [];
             for (const id of Object.keys(auto)) {
               if (porCidade[id]) continue;                        // ainda em revolta
