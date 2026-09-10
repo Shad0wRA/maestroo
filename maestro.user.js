@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.11.0830
+// @version      2026.09.11.0930
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1799,7 +1799,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.11.0830';
+  const MAESTRO_VERSAO = '2026.09.11.0930';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -2344,6 +2344,7 @@
      * outra. É a mesma falha que já apanhámos com a equipa dos colonizadores,
      * o registo do apoio e o histórico da frota — desta vez em maior escala.
      * ==================================================================== */
+    'grepoReforco_tratados_v1',          // ataques que ESTA conta já resolveu
     'grepoAldeias_inicioVolta_v1',       // quando ESTA conta começou a volta
     'grepoAldeias_ordemIlhas_v1',        // a ordem das ilhas DESTA conta
     'grepoEncaixe_folga_v1',             // a folga que ESTA conta aprendeu
@@ -39250,6 +39251,32 @@ function makeReforcoModule(opts) {
     } catch (e) { return { ok: false, msg: e.message }; }
   }
 
+  /* TRAZER O APOIO DE VOLTA — a mesma acção do jogo. */
+  async function trazerDeVolta(destinoId, origemId) {
+    try {
+      const url = mUw.location.origin + '/game/town_info?town_id=' + Number(destinoId)
+        + '&action=send_back_units&h=' + mUw.Game.csrfToken;
+      const r = await mUw.fetch(url, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
+          'x-requested-with': 'XMLHttpRequest',
+        },
+        credentials: 'include',
+        body: 'json=' + encodeURIComponent(JSON.stringify({
+          town_id: Number(destinoId), origin_town_id: Number(origemId), nl_init: true,
+        })),
+      });
+      if (r.status === 429) return { ok: false, msg: 'o servidor está a recusar pedidos', travou: true };
+      const txt = await r.text();
+      if (/^\s*</.test(txt)) return { ok: false, msg: 'página de erro do servidor', travou: true };
+      let j = null;
+      try { j = JSON.parse(txt).json; } catch (e2) { return { ok: false, msg: 'resposta ilegível' }; }
+      return { ok: !(j && j.error), msg: (j && (j.error || j.success)) || 'ok' };
+    } catch (e) { return { ok: false, msg: e.message }; }
+  }
+
+
   /* ---------------------- passagem -------------------------------------- */
 
   async function run(ctx) {
@@ -39271,6 +39298,26 @@ function makeReforcoModule(opts) {
     const ataques = await ataquesContraMim();
     const envios = lerEnvios();
 
+    /* ATAQUES JÁ RESOLVIDOS NÃO SE VOLTAM A AVALIAR.
+     *
+     * O módulo corre de dois em dois minutos. Reavaliar um ataque cujo
+     * objectivo já está cumprido — ou para o qual nenhuma cidade chega a
+     * tempo — é trabalho repetido, e cada volta gasta um pedido por par de
+     * cidades para saber a viagem.
+     *
+     * Guarda-se a chave do ataque (destino e hora do impacto), portanto um
+     * ataque NOVO à mesma cidade é outra chave e volta a ser considerado. */
+    const TRATADOS_KEY = 'grepoReforco_tratados_v1';
+    let tratados = {};
+    try { tratados = JSON.parse(armazem.getItem(TRATADOS_KEY) || '{}'); } catch (e) {}
+
+    /* Limpar os que já bateram: deixam de interessar. */
+    for (const k of Object.keys(tratados)) {
+      if (Number(tratados[k]) < agora()) delete tratados[k];
+    }
+
+    const chaveAtaque = (a2) => `${a2.alvo}|${Math.round(Number(a2.chega || 0) / 60)}`;
+
     /* ---- 1. TRAZER DE VOLTA O QUE JÁ NÃO FAZ FALTA ----
      *
      * A tropa fica onde está se houver outro ataque à mesma cidade. Só vem
@@ -39283,9 +39330,19 @@ function makeReforcoModule(opts) {
         rotina(`Reforço: a tropa fica em ${e.destino} — há outro ataque a caminho.`);
         continue;
       }
-      /* Já bateu e não há mais nada: o apoio volta pela via normal do módulo
-       * do apoio, que é quem sabe trazer. Aqui só se larga o registo. */
-      log(`↩️ Reforço: acabaram os ataques a ${e.destino} — a tropa pode voltar.`);
+      /* TRAZER A TROPA DE VOLTA.
+       *
+       * Antes só se largava o registo, na conta de que o módulo do apoio a
+       * traria. Mas esse só traz o que ELE enviou — o que o reforço mandou
+       * ficava lá para sempre, e as cidades acumulavam defesa em alvos que já
+       * não estavam sob ameaça. */
+      const rv = await trazerDeVolta(Number(e.destino), Number(e.origem));
+      if (rv.travou) {
+        rotina(`Reforço: ${rv.msg} — trago a tropa na próxima passagem.`);
+        return;
+      }
+      if (rv.ok) log(`↩️ Reforço: acabaram os ataques a ${e.destino} — tropa a caminho de casa.`);
+      else rotina(`Reforço: não consegui trazer a tropa de ${e.destino} (${rv.msg}).`);
       delete envios[k];
     }
     gravarEnvios(envios);
@@ -39345,8 +39402,17 @@ function makeReforcoModule(opts) {
 
     for (const a of ataques) {
       const id = Number(a.alvo);
+
+      /* Já tratado numa passagem anterior? Não se mexe mais. */
+      if (tratados[chaveAtaque(a)]) continue;
+
       const f = falta[id] || {};
-      if (!Object.keys(f).length) continue;
+      if (!Object.keys(f).length) {
+        /* Objectivo cumprido: fica resolvido até ao impacto. */
+        tratados[chaveAtaque(a)] = a.chega;
+        try { armazem.setItem(TRATADOS_KEY, JSON.stringify(tratados)); } catch (e) {}
+        continue;
+      }
 
       const nome = (() => { try { return mUw.ITowns.getTown(id).getName(); } catch (e) { return id; } })();
       const segundos = a.chega - agora();
@@ -39439,6 +39505,16 @@ function makeReforcoModule(opts) {
         rotina(`Reforço: ${nome} fica a faltar `
           + Object.keys(f).map((u) => `${f[u]} ${u}`).join(', ')
           + ' — não havia mais cidades que chegassem a tempo.');
+
+        /* Nenhuma chega a tempo: não vale a pena voltar a tentar de dois em
+         * dois minutos — as viagens só ficam mais curtas do lado errado. */
+        if (!mandados) {
+          tratados[chaveAtaque(a)] = a.chega;
+          try { armazem.setItem(TRATADOS_KEY, JSON.stringify(tratados)); } catch (e) {}
+        }
+      } else {
+        tratados[chaveAtaque(a)] = a.chega;
+        try { armazem.setItem(TRATADOS_KEY, JSON.stringify(tratados)); } catch (e) {}
       }
     }
 
