@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.11.0930
+// @version      2026.09.11.1030
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1799,7 +1799,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.11.0930';
+  const MAESTRO_VERSAO = '2026.09.11.1030';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -39171,6 +39171,10 @@ function makeReforcoModule(opts) {
    * entre duas cidades não muda. */
   const viagensSabidas = {};
 
+  /* Levantada quando o servidor recusa: a passagem pára e tenta daqui a dois
+   * minutos, em vez de insistir. */
+  let travouAqui = false;
+
   async function viagemEntre(origemId, destinoId, unidades) {
     const chave = `${origemId}->${destinoId}`;
     if (viagensSabidas[chave]) return viagensSabidas[chave];
@@ -39186,7 +39190,16 @@ function makeReforcoModule(opts) {
       const r = await mUw.fetch(url, {
         headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
       });
-      if (r.status === 429) return null;
+
+      /* O SERVIDOR CORTOU: A PASSAGEM PÁRA AQUI.
+       *
+       * Pus o travão dos 429 nos envios e esqueci-me de o pôr AQUI — e este é
+       * o pedido que se faz mais vezes: um por par de cidades. Sem travão, ele
+       * pergunta dezenas de viagens seguidas, o servidor corta, e a passagem
+       * inteira não envia nada.
+       *
+       * Devolver `travou` faz o chamador parar em vez de continuar a bater. */
+      if (r.status === 429) { travouAqui = true; return null; }
 
       const txt = await r.text();
       if (/^\s*</.test(txt)) return null;
@@ -39294,6 +39307,8 @@ function makeReforcoModule(opts) {
       }
     } catch (e) {}
     if (!c.ativo) { rotina('Reforço: está desligado.'); return; }
+
+    travouAqui = false;
 
     const ataques = await ataquesContraMim();
     const envios = lerEnvios();
@@ -39436,6 +39451,11 @@ function makeReforcoModule(opts) {
           const n = Math.min(Number(f[u]) || 0, Number(emCasa[u]) || 0);
           if (n > 0) carga[u] = n;
         }
+        /* SÓ SE PERGUNTA A VIAGEM A QUEM TEM TROPA A DAR.
+         *
+         * Estava a perguntar a todas as cidades do grupo, incluindo as que não
+         * tinham nada do que falta — dezenas de pedidos que nunca dariam um
+         * envio. É a maior parte do desperdício. */
         if (!Object.keys(carga).length) continue;
 
         /* CHEGA A TEMPO?
@@ -39444,11 +39464,22 @@ function makeReforcoModule(opts) {
          * segurança. Chegar depois é perder a tropa em viagem — pior do que
          * não mandar. */
         const viagem = await viagemEntre(origem.id, id, carga);
+
+        if (travouAqui) {
+          log('⏸️ Reforço: o servidor está a recusar pedidos — paro e tento na '
+            + 'próxima passagem.');
+          return;
+        }
+
         if (viagem == null) {
           rotina(`Reforço: não consegui saber quanto demora de ${origem.name} a ${nome} `
             + '— não mando às cegas.');
           continue;
         }
+
+        /* Espaçar: este pedido faz-se uma vez por par de cidades, e são
+         * muitos. Sem pausa, o servidor corta ao fim de poucos. */
+        await ctx.sleep(ctx.rand(500, 1100));
         if (viagem + (Number(c.margemSeg) || 60) > segundos) {
           rotina(`Reforço: ${origem.name} não chega a tempo de ${nome} `
             + `(viagem ${Math.round(viagem / 60)} min, faltam ${Math.round(segundos / 60)} min).`);
