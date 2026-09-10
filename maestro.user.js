@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.11.2330
+// @version      2026.09.11.2359
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1868,7 +1868,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.11.2330';
+  const MAESTRO_VERSAO = '2026.09.11.2359';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -2415,6 +2415,7 @@
      * ==================================================================== */
     'grepoReforco_tratados_v1',          // ataques que ESTA conta já resolveu
     'grepoReforco_envios_v1',            // reforços que ESTA conta mandou
+    'grepoApoio_retiradaFalhou_v1',      // retiradas que falharam nesta conta
     'grepoApoio_revoltasRetiradas_v1',   // revoltas que TU tiraste nesta conta
     'grepoMaestro_captchaAvisado_v1',    // quando ESTA conta avisou do captcha
     'grepoAldeias_inicioVolta_v1',       // quando ESTA conta começou a volta
@@ -34988,6 +34989,13 @@ function makeApoioModule(opts) {
         const obj = objetivoDe(alvo);
         if (!Object.keys(obj).length) continue;
 
+        /* Falhou há menos de uma hora? Não se tenta outra vez. */
+        try {
+          const reg = JSON.parse(armazem.getItem('grepoApoio_retiradaFalhou_v1') || '{}');
+          const q = Number(reg[String(alvo)]) || 0;
+          if (q && (Date.now() - q) < 3600 * 1000) continue;
+        } catch (e) {}
+
         const total = defesaNoAlvo[String(alvo)] || {};
         const meu = (() => {
           try {
@@ -35042,6 +35050,25 @@ function makeApoioModule(opts) {
             + `queria ${Object.keys(obj).map((u) => obj[u]).join('/')}).`);
         } else {
           rotina(`Apoio: não consegui retirar a tropa a mais de ${inf.nome} — ${rv.msg}`);
+
+          /* NÃO INSISTIR NUM PEDIDO QUE NÃO MUDA SOZINHO.
+           *
+           * "Estas unidades não lhe pertencem" significa que o identificador
+           * está errado, não que o momento seja mau. Repetir de dois em dois
+           * minutos enche o registo e não resolve.
+           *
+           * PENDENTE: a espia mostrou que o jogo usa outro pedido —
+           *   POST /game/building_place?town_id=<onde ESTÁ a tropa>&action=send_back
+           *   json={"support_id":382947,"town_id":4370,"nl_init":true}
+           * — com `support_id` e a cidade de DESTINO. Falta confirmar se o
+           * `unitsId` que guardo é o mesmo número que o `support_id`; sem isso
+           * não se corrige à séria. */
+          try {
+            const K = 'grepoApoio_retiradaFalhou_v1';
+            const reg = JSON.parse(armazem.getItem(K) || '{}');
+            reg[String(alvo)] = Date.now();
+            armazem.setItem(K, JSON.stringify(reg));
+          } catch (e) {}
         }
         await ctx.sleep(ctx.rand(900, 1600));
       }
