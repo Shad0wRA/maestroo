@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.11.0430
+// @version      2026.09.11.0530
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1799,7 +1799,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.11.0430';
+  const MAESTRO_VERSAO = '2026.09.11.0530';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -39183,8 +39183,20 @@ function makeReforcoModule(opts) {
         },
         credentials: 'include',
         body: 'json=' + encodeURIComponent(JSON.stringify(corpo)),
-      }).then((x) => x.json());
-      const j = r && r.json;
+      });
+
+      /* O SERVIDOR PODE RESPONDER COM UMA PÁGINA, NÃO COM DADOS.
+       *
+       * Com 429 ("demasiados pedidos") vem HTML, e tentar lê-lo como dados dá
+       * "Unexpected token '<'" — uma mensagem que não diz nada a quem lê o
+       * registo. Distingue-se aqui, e o chamador sabe que tem de parar. */
+      if (r.status === 429) return { ok: false, msg: 'o servidor está a recusar pedidos', travou: true };
+
+      const txt = await r.text();
+      if (/^\s*</.test(txt)) return { ok: false, msg: 'o servidor devolveu uma página de erro', travou: true };
+
+      let j = null;
+      try { j = JSON.parse(txt).json; } catch (e2) { return { ok: false, msg: 'resposta ilegível', travou: true }; }
       return { ok: !(j && j.error), msg: (j && (j.error || j.success)) || 'ok' };
     } catch (e) { return { ok: false, msg: e.message }; }
   }
@@ -39274,6 +39286,14 @@ function makeReforcoModule(opts) {
     const jaUsada = new Set();
     let mandados = 0;
 
+    /* QUANTAS CIDADES POR PASSAGEM.
+     *
+     * Vinte cidades a mandar para o mesmo alvo de uma vez é uma rajada que o
+     * servidor corta — e é também tropa a mais para uma cidade só. Seis por
+     * passagem, de dois em dois minutos, enche o objectivo em poucos minutos
+     * sem parecer uma máquina. */
+    const MAX_POR_PASSAGEM = 6;
+
     for (const a of ataques) {
       const id = Number(a.alvo);
       const f = falta[id] || {};
@@ -39283,6 +39303,10 @@ function makeReforcoModule(opts) {
       const segundos = a.chega - agora();
 
       for (const origem of ajudantes) {
+        if (mandados >= MAX_POR_PASSAGEM) {
+          rotina(`Reforço: mandei ${mandados} nesta passagem — continuo na próxima.`);
+          return;
+        }
         if (!Object.keys(f).length) break;
         if (jaUsada.has(Number(origem.id))) continue;     // uma cidade serve um ataque por passagem
         if (Number(origem.id) === id) continue;
@@ -39313,8 +39337,26 @@ function makeReforcoModule(opts) {
         }
 
         const r = await enviarApoio(origem.id, id, carga);
+
+        /* PARAR AO PRIMEIRO SINAL DE RECUSA.
+         *
+         * Escrevi este módulo sem travão: percorria as cidades todas e
+         * enviava em rajada. Com vinte cidades para o mesmo alvo, o servidor
+         * corta ao fim de poucas e recusa TUDO o que vem a seguir — o
+         * resultado foi dezenas de 429 e nenhum envio a passar.
+         *
+         * Depois do primeiro corte não vale a pena insistir: espera-se pela
+         * passagem seguinte, que é daqui a dois minutos. */
+        if (r.travou) {
+          log(`⏸️ Reforço: ${r.msg} — paro e tento na próxima passagem.`);
+          return;
+        }
+
         if (!r.ok) {
           rotina(`Reforço: ${origem.name} → ${nome} falhou (${r.msg}).`);
+          /* Uma pausa mesmo quando falha: as falhas também contam para o
+           * ritmo com que o servidor nos vê. */
+          await ctx.sleep(ctx.rand(900, 1600));
           continue;
         }
 
@@ -39334,7 +39376,10 @@ function makeReforcoModule(opts) {
         log(`🛡️ Reforço: ${origem.name} → ${nome} — `
           + Object.keys(carga).map((u) => `${carga[u]} ${u}`).join(', ')
           + ` (chega ${Math.round((segundos - viagem) / 60)} min antes do ataque).`);
-        await ctx.sleep(ctx.rand(700, 1400));
+
+        /* Espaçar como os outros módulos fazem. Um envio a cada segundo e
+         * meio é suficiente para o servidor não cortar. */
+        await ctx.sleep(ctx.rand(1200, 2200));
       }
 
       if (Object.keys(f).length) {
