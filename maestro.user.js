@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.10.2230
+// @version      2026.09.10.2330
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1799,7 +1799,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.10.2230';
+  const MAESTRO_VERSAO = '2026.09.10.2330';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -36179,6 +36179,24 @@ function makeFundacaoModule(opts) {
               bf.textContent = '🔒 Fechar esta ilha com todas as contas';
               bf.title = `Ilha ${chave}`
                 + (livres != null ? ` · ${livres} lugar(es) livre(s)` : '');
+
+              /* Já está na fila? Então o botão nasce já a dizê-lo. */
+              try {
+                const fila = mUw.__maestroFilaFecharIlha && mUw.__maestroFilaFecharIlha();
+                if (fila && Array.isArray(fila.planos)) {
+                  const emCurso = fila.planos.filter((x) => x
+                    && x.estado !== 'feito' && x.estado !== 'abortado');
+                  const pos = emCurso.findIndex((x) => x.chave === chave);
+                  if (pos >= 0) {
+                    bf.disabled = true;
+                    bf.style.opacity = '.75';
+                    bf.style.color = 'var(--mLive, #3ddc97)';
+                    bf.textContent = pos === 0
+                      ? '🔒 guardada para fechar — a arrancar'
+                      : `🔒 guardada para fechar — ${pos + 1}ª da fila`;
+                  }
+                }
+              } catch (e) {}
               bf.onclick = async (ev) => {
                 ev.preventDefault(); ev.stopPropagation();
                 bf.disabled = true;
@@ -36190,8 +36208,22 @@ function makeFundacaoModule(opts) {
                   if (ctx && ctx.log) ctx.log(`Fechar ilha: ${(r && r.msg) || 'não consegui'}.`);
                   return;
                 }
+                /* CONFIRMAÇÃO À VISTA.
+                 *
+                 * O botão voltava ao texto original e ficava a parecer que
+                 * nada acontecera. Agora diz que a ilha ficou guardada, em que
+                 * posição da fila, e fica desactivado — para não ser marcada
+                 * duas vezes por engano.
+                 *
+                 * Informativo apenas: tirar da fila faz-se no painel, para não
+                 * se cancelar um plano a meio com um clique distraído. */
                 const n = Object.keys(r.plano.atribuicoes).length;
-                bf.textContent = `🔒 plano criado — ${n} conta(s)`;
+                bf.disabled = true;
+                bf.style.opacity = '.75';
+                bf.style.color = 'var(--mLive, #3ddc97)';
+                bf.textContent = (r.posicao && r.posicao > 1)
+                  ? `🔒 guardada para fechar — ${n} conta(s) · ${r.posicao}ª da fila`
+                  : `🔒 guardada para fechar — ${n} conta(s) · a arrancar`;
                 if (ctx && ctx.log) {
                   ctx.log(`Fechar ilha ${chave}: plano criado para ${n} conta(s)`
                     + (r.plano.deFora ? ` (${r.plano.deFora} sem lugar)` : '')
@@ -38223,6 +38255,10 @@ function makeFecharIlhaModule(opts) {
    * Não recebe `ctx`: apanha as cidades e o mundo do próprio jogo, para poder
    * ser chamado de fora sem depender de uma passagem. */
   try {
+    /* A fila, para a janela da ilha poder dizer se aquela ilha já está
+     * guardada e em que posição. */
+    janela().__maestroFilaFecharIlha = () => filaEmMemoria;
+
     janela().__maestroFecharIlha = async (x, y) => {
       try {
         mUw = janela();
