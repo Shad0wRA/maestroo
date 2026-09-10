@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.11.2230
+// @version      2026.09.11.2330
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1868,7 +1868,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.11.2230';
+  const MAESTRO_VERSAO = '2026.09.11.2330';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -39432,15 +39432,19 @@ function makeReforcoModule(opts) {
     const chaveDe = (o, d, c) => `${o}|${d}|${Math.round(Number(c || 0) / 60)}`;
 
     try {
-      const mv = mUw.MM.getModels().MovementsUnits || {};
-      for (const k of Object.keys(mv)) {
-        const a = (mv[k] || {}).attributes || {};
-        if (!/attack/i.test(String(a.type || ''))) continue;
-        const alvo = Number(a.target_town_id);
-        if (!minhas.has(alvo)) continue;
-        const chega = Number(a.arrival_at) || 0;
-        out.set(chaveDe(a.home_town_id, alvo, chega), { alvo, chega });
-      }
+      /* OS MODELOS NÃO SERVEM PARA ISTO — REMOVIDOS.
+       *
+       * Confirmado com a espia: nos `MovementsUnits`, um ataque traz
+       *   return: undefined · cmd_return: undefined
+       *   origin_town_id: undefined · destination_town_id: undefined
+       *
+       * Não dá para distinguir um ataque a CHEGAR de um a VOLTAR, nem sequer
+       * saber de onde vem. O reforço andou a mandar tropa para cidades cujos
+       * "ataques" eram os meus próprios a regressar.
+       *
+       * A visão geral do servidor tem tudo: `return`, `cmd_return`,
+       * `origin_town_id` e `destination_town_id`. É a única fonte fiável, e
+       * passa a ser a única usada. */
     } catch (e) { seErroDeCodigo(e, 'Reforco'); }
 
     try {
