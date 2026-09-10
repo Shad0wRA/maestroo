@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.11.1530
+// @version      2026.09.11.1630
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1868,7 +1868,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.11.1530';
+  const MAESTRO_VERSAO = '2026.09.11.1630';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -2414,6 +2414,9 @@
      * o registo do apoio e o histórico da frota — desta vez em maior escala.
      * ==================================================================== */
     'grepoReforco_tratados_v1',          // ataques que ESTA conta já resolveu
+    'grepoReforco_envios_v1',            // reforços que ESTA conta mandou
+    'grepoApoio_revoltasRetiradas_v1',   // revoltas que TU tiraste nesta conta
+    'grepoMaestro_captchaAvisado_v1',    // quando ESTA conta avisou do captcha
     'grepoAldeias_inicioVolta_v1',       // quando ESTA conta começou a volta
     'grepoAldeias_ordemIlhas_v1',        // a ordem das ilhas DESTA conta
     'grepoEncaixe_folga_v1',             // a folga que ESTA conta aprendeu
