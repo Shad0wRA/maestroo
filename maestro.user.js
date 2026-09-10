@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.11.0730
+// @version      2026.09.11.0830
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1799,7 +1799,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.11.0730';
+  const MAESTRO_VERSAO = '2026.09.11.0830';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -18042,24 +18042,30 @@ function makeAldeiasModule(opts) {
           /* Guardada para a segunda ronda: pode ser só a fronteira da
            * recarga, e cinco segundos depois já dá. */
           if (paraRepetir.length < 40) paraRepetir.push(p);
-          /* AINDA NÃO ESTÁ PRONTA não é erro — é o tempo a não ter passado.
+          /* NÃO DESISTIR DA VOLTA POR CAUSA DE TRÊS RECUSAS.
            *
-           * E se a primeira não está pronta, as outras da mesma ronda também
-           * não costumam estar: a recolha em massa falha, ele vai uma a uma e
-           * levava com trinta recusas iguais, todas no sininho.
+           * Este travão foi posto para evitar trinta recusas em cadeia no
+           * registo — e criou um problema muito maior: com 126 aldeias e as
+           * recargas escalonadas, bastavam três em arrefecimento seguidas
+           * para a volta parar, com dezenas de prontas por recolher a seguir.
            *
-           * Conta-se e desiste-se à terceira seguida. */
+           * Numa conta sem Capitão, que vai aldeia a aldeia, isso custava a
+           * maior parte da recolha do dia: 13 mil recolhidos de 15 mil
+           * possíveis, ao meio-dia.
+           *
+           * A lista já vem filtrada pelo `lootable_at`, portanto uma recusa é
+           * excepção — quase sempre a fronteira da recarga, e para essas há a
+           * segunda ronda no fim. Conta-se para o registo e segue-se. */
           cedoDemais++;
-          if (cedoDemais >= 3) {
-            (ctx.logRotina || log)(`Recolha: as aldeias ainda não estão prontas `
-              + '— deixo para a próxima passagem.');
-            break;
-          }
         } else {
           log(`⚠️ Aldeia ${p.farmTownId}: ${r.msg}`);
         }
       }
       await ctx.sleep(ctx.rand(400, 900));
+    }
+    if (cedoDemais) {
+      (ctx.logRotina || log)(`Recolha: ${cedoDemais} aldeia(s) ainda não estavam prontas `
+        + '— ficam para a volta seguinte.');
     }
     if (n) log(`🌾 Recolhidas ${n} aldeia(s) (~${recursos} recursos).`);
     /* SEGUNDA RONDA PARA AS QUE FALHARAM POR UM SEGUNDO.
