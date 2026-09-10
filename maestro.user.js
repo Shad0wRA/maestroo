@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.11.1930
+// @version      2026.09.11.2030
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1868,7 +1868,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.11.1930';
+  const MAESTRO_VERSAO = '2026.09.11.2030';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -24573,15 +24573,16 @@ function makeEsquivaModule(opts) {
          * esquiva falhada num farm, com dez perguntas em seis minutos e
          * nenhuma explicação. */
         if (!paraEsta.length) {
-            /* Uma resposta vazia do servidor é, muitas vezes, uma verificação
-             * de bot por resolver — e a conta perde desvios em silêncio. */
-            try {
-              if (!cmds.length) {
-                const av = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window)
-                  .__maestroAvisarCaptcha;
-                if (av) av('esquiva — o servidor não devolve comandos');
-              }
-            } catch (e) {}
+            /* NÃO SE AVISA DE CAPTCHA AQUI.
+             *
+             * Liguei o aviso a esta condição por engano: zero comandos é o
+             * resultado NORMAL quando a cidade não tem ataques a caminho, que
+             * é o caso quase sempre. O Discord encheu-se de alarmes falsos — e
+             * um aviso que grita sem razão é pior do que não existir, porque
+             * no dia em que houver mesmo uma verificação ninguém lhe liga.
+             *
+             * O sinal fiável é a resposta do jogo dizer
+             * `backend_requested_verification`, e é esse que o Tique usa. */
 
 
           rotina(`Esquiva: ${tid} — o servidor devolveu ${cmds.length} comando(s) `
