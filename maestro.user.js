@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.11.1330
+// @version      2026.09.11.1430
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1868,7 +1868,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.11.1330';
+  const MAESTRO_VERSAO = '2026.09.11.1430';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -27424,12 +27424,31 @@ function makeEncaixeModule(opts) {
      * A resposta do envio traz o comando nas notificações — é a fonte mais
      * fiável que há, porque é o próprio servidor a confirmar o que criou. */
     try {
+      /* O IDENTIFICADOR ESTÁ NO TOPO DA RESPOSTA, não dentro das notificações.
+       *
+       * Confirmado com a espia:
+       *   {"json":{"success":"O ataque foi enviado com êxito.","id":3297,...}}
+       *
+       * Eu procurava-o dentro do `param_str` das notificações, com padrões
+       * como `"Commands":{...id...}` — e ali não está. Por isso falhava, e o
+       * módulo caía no caminho lento: perguntar ao servidor a lista de
+       * comandos, cinco tentativas com esperas, que às vezes também falhava.
+       *
+       * Daí o "não consegui ler a chegada" e o "não encontrei o comando para
+       * cancelar" — com tropa a sair sem confirmação. */
+      if (r && r.json && r.json.id) r.__commandId = Number(r.json.id);
+
+      /* A HORA DE CHEGADA vem nas notificações, e com ela não é preciso
+       * perguntar nada ao servidor: dá para calcular o desvio no instante. */
       const notas = ((r && r.json && r.json.notifications) || []);
       for (const n of notas) {
         const txt = String(n.param_str || '');
-        const m = txt.match(/"Commands?"\s*:\s*\{[^}]*"id"\s*:\s*(\d+)/)
-               || txt.match(/"id"\s*:\s*(\d+)[^}]*"arrival_at"/);
-        if (m) { r.__commandId = Number(m[1]); break; }
+        if (!r.__commandId) {
+          const mi = txt.match(/"Commands?"\s*:\s*\{[^}]*"id"\s*:\s*(\d+)/);
+          if (mi) r.__commandId = Number(mi[1]);
+        }
+        const ma = txt.match(/"arrival_at"\s*:\s*(\d+)/);
+        if (ma) { r.__arrivalAt = Number(ma[1]); break; }
       }
     } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
 
@@ -27922,6 +27941,27 @@ function makeEncaixeModule(opts) {
          * identificador não há cancelamento nem feitiço possíveis.
          *
          * Pára assim que encontrar, portanto no caso normal continua rápido. */
+        /* ===== A RESPOSTA DO ENVIO JÁ TRAZ TUDO ==========================
+         *
+         * O servidor devolve, no próprio instante do envio, o identificador do
+         * comando e a hora de chegada:
+         *
+         *   {"json":{"success":"O ataque foi enviado…","id":3297,
+         *            "notifications":[{"param_str":"…arrival_at:1789048169…"}]}}
+         *
+         * Com os dois, não é preciso perguntar nada a seguir. Isso resolve de
+         * uma vez o "não consegui ler a chegada", o cancelamento que falhava, e
+         * o feitiço sem comando — e poupa até cinco pedidos por tentativa, que
+         * com vinte tentativas por rajada era boa parte do que fazia o servidor
+         * recusar.
+         *
+         * O caminho antigo fica como recurso, para o caso de uma resposta vir
+         * sem estes campos. */
+        if (r && r.__commandId && r.__arrivalAt) {
+          cmd = { command_id: r.__commandId, arrival_at: r.__arrivalAt };
+          diag.local++;
+        }
+
         const ESPERAS = [100, 250, 500, 900, 1400];
         for (let tent = 0; tent < ESPERAS.length && !cmd; tent++) {
           await new Promise((res) => setTimeout(res, ESPERAS[tent]));
@@ -39391,7 +39431,27 @@ function makeReforcoModule(opts) {
         .__maestroLerResposta;
       const d = lr ? await lr(r) : { json: {} };
       const j = d.json || {};
-      return { ok: !j.error, msg: j.error || j.success || 'ok', travou: !!d.travou };
+
+      /* A RESPOSTA DIZ A QUE HORAS CHEGA — não é preciso acreditar na fórmula.
+       *
+       * O tempo de viagem é calculado, e uma fórmula mal calibrada já pôs
+       * tropa a chegar catorze minutos DEPOIS do ataque: pior do que não
+       * mandar, porque morre em viagem.
+       *
+       * O servidor devolve o `arrival_at` no próprio envio. Com ele sabe-se se
+       * a estimativa estava certa, e avisa-se quando não estava. */
+      let chegaMesmo = 0;
+      try {
+        for (const n of (j.notifications || [])) {
+          const ma = String(n.param_str || '').match(/"arrival_at"\s*:\s*(\d+)/);
+          if (ma) { chegaMesmo = Number(ma[1]); break; }
+        }
+      } catch (e) {}
+
+      return {
+        ok: !j.error, msg: j.error || j.success || 'ok',
+        travou: !!d.travou, chegaMesmo,
+      };
     } catch (e) { return { ok: false, msg: e.message }; }
   }
 
@@ -39627,6 +39687,17 @@ function makeReforcoModule(opts) {
            * ritmo com que o servidor nos vê. */
           await ctx.sleep(ctx.rand(900, 1600));
           continue;
+        }
+
+        /* A ESTIMATIVA ESTAVA CERTA?
+         *
+         * Se o servidor disser que chega DEPOIS do impacto, a fórmula errou e
+         * aquela tropa vai morrer em viagem. Não dá para desfazer o envio, mas
+         * dá para avisar — e é assim que se percebe que a fórmula precisa de
+         * afinação, em vez de se descobrir dias depois pelos relatórios. */
+        if (r.chegaMesmo && r.chegaMesmo > a.chega) {
+          log(`⚠️ Reforço: ${origem.name} → ${nome} chega ${Math.round((r.chegaMesmo - a.chega) / 60)} `
+            + 'min DEPOIS do ataque — a estimativa da viagem está curta.');
         }
 
         mandados++;
