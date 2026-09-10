@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.11.1430
+// @version      2026.09.11.1530
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1868,7 +1868,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.11.1430';
+  const MAESTRO_VERSAO = '2026.09.11.1530';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -34469,6 +34469,21 @@ function makeApoioModule(opts) {
           log(`🚤 ${inf.nome}: ${sobram} transporte(s) a mais voltaram para casa.`);
         } else {
           rotina(`Apoio: não consegui trazer os transportes de ${alvoT} — ${rv.msg}`);
+
+          /* UMA RECUSA DESTAS NÃO MUDA SOZINHA — NÃO INSISTIR.
+           *
+           * "A capacidade dos transportadores que ficaram para trás é
+           * insuficiente" significa que a tropa que lá fica não caberia nos
+           * transportes restantes. Isso só muda quando a tropa sair, e não vai
+           * sair por se pedir outra vez.
+           *
+           * Visto em jogo: o mesmo pedido a repetir-se de dois em dois minutos
+           * durante mais de uma hora, sempre com a mesma resposta.
+           *
+           * Marca-se como pedido para não voltar antes da próxima leitura da
+           * Ágora, que é quando os números mudam de verdade. */
+          jaPedidos[String(alvoT)] = Date.now();
+          try { armazem.setItem('grepoApoio_transpVolta_v1', JSON.stringify(jaPedidos)); } catch (e) {}
         }
         await ctx.sleep(ctx.rand(700, 1400));
       }
@@ -34879,6 +34894,85 @@ function makeApoioModule(opts) {
             log(`⚠️ ${t.name} → ${alvo}: ${r.msg}`);
           }
         }
+      }
+    }
+
+    /* ===== TROPA A MAIS NUM ALVO VOLTA PARA CASA ========================
+     *
+     * O objectivo diz quanto se quer no alvo. Havia como parar de mandar
+     * quando ele estava cumprido, mas não havia como RETIRAR o que sobrava —
+     * e o excesso ficava lá para sempre.
+     *
+     * Visto em jogo: 12804 espadachins num alvo com objectivo de 3000, vindos
+     * de antes das correcções. Tropa parada é tropa que não defende nada e não
+     * está em casa a servir.
+     *
+     * Cada conta retira só a SUA parte do excesso, proporcional ao que tem lá:
+     * se as vinte retirassem tudo o que veem a mais, o alvo ficava vazio.
+     *
+     * Só corre com o objectivo definido e com a soma da frota lida — sem saber
+     * o total, retirar é tão cego como mandar. */
+    if (frotaLida) {
+      for (const alvo of alvos) {
+        const obj = objetivoDe(alvo);
+        if (!Object.keys(obj).length) continue;
+
+        const total = defesaNoAlvo[String(alvo)] || {};
+        const meu = (() => {
+          try {
+            const f2 = (mUw.__maestroApoioFora && mUw.__maestroApoioFora.porAlvo()) || {};
+            return (f2[alvo] || {}).unidades || {};
+          } catch (e) { return {}; }
+        })();
+        if (!Object.keys(meu).length) continue;
+
+        /* Quanto sobra ao todo, e que fatia dele é minha. */
+        const aRetirar = {};
+        for (const u of Object.keys(obj)) {
+          const lá = Number(total[u]) || 0;
+          const quero = Number(obj[u]) || 0;
+          const sobra = lá - quero;
+          if (sobra <= 0) continue;
+
+          const meuU = Number(meu[u]) || 0;
+          if (!meuU) continue;
+
+          /* A minha parte do excesso, na proporção do que tenho lá. */
+          const minhaFatia = Math.floor(sobra * (meuU / lá));
+          const n = Math.min(meuU, minhaFatia);
+          if (n > 0) aRetirar[u] = n;
+        }
+
+        if (!Object.keys(aRetirar).length) continue;
+
+        const blocos = (() => {
+          try {
+            const f2 = (mUw.__maestroApoioFora && mUw.__maestroApoioFora.porAlvo()) || {};
+            return (f2[alvo] || {}).blocos || [];
+          } catch (e) { return []; }
+        })();
+        if (!blocos.length) continue;
+
+        const inf = cacheCidades[alvo] || { nome: '#' + alvo };
+        const b = blocos[0];
+        const carga = {};
+        for (const u of Object.keys(aRetirar)) {
+          const naBloco = Number((b.unidades || {})[u]) || 0;
+          const n = Math.min(naBloco, aRetirar[u]);
+          if (n > 0) carga[u] = n;
+        }
+        if (!Object.keys(carga).length) continue;
+
+        const rv = await mandarParteDeVolta(b.unitsId, b.de, carga);
+        if (rv.ok) {
+          log(`↩️ ${inf.nome}: tropa a mais volta para casa — `
+            + Object.keys(carga).map((u) => `${carga[u]} ${u}`).join(', ')
+            + ` (o alvo tem ${Object.keys(obj).map((u) => (total[u] || 0)).join('/')}, `
+            + `queria ${Object.keys(obj).map((u) => obj[u]).join('/')}).`);
+        } else {
+          rotina(`Apoio: não consegui retirar a tropa a mais de ${inf.nome} — ${rv.msg}`);
+        }
+        await ctx.sleep(ctx.rand(900, 1600));
       }
     }
 
