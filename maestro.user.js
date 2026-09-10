@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.0000
+// @version      2026.09.12.0100
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1868,7 +1868,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.0000';
+  const MAESTRO_VERSAO = '2026.09.12.0100';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -33158,7 +33158,25 @@ function makeApoioModule(opts) {
          * Uma vez migrado, o Gist deixa de contar. Se o Firebase não responder
          * de todo — erro de rede — o `catch` leva-nos ao Gist na mesma. */
         if (migrouParaFirebase()) {
-          const r0 = { alvos: (d && Array.isArray(d.alvos)) ? d.alvos : [] };
+          /* A LISTA INTEIRA, NÃO SÓ OS ALVOS.
+           *
+           * Isto devolvia `{ alvos }` e deitava fora o resto — incluindo o
+           * `revoltasAuto`, que é onde a main guarda as revoltas que ELA pôs na
+           * lista. Só a main escreve, portanto só a main está "migrada", e era
+           * exactamente a main que perdia o registo:
+           *
+           *   - a saída da lista percorre o `revoltasAuto` à procura de revoltas
+           *     acabadas; vazio, nunca encontrava nenhuma — a cidade ficava na
+           *     lista para sempre e as multis nunca traziam a tropa;
+           *   - a escrita seguinte (uma revolta nova) gravava um `revoltasAuto`
+           *     só com as revoltas em curso: as acabadas saíam do registo mas
+           *     ficavam nos alvos, e passavam a ser apoiadas como alvo normal.
+           *
+           * O caso do Firebase vazio mantém-se: sem `alvos`, a lista é vazia. */
+          const base = (d && typeof d === 'object' && !Array.isArray(d)) ? d : {};
+          const r0 = Object.assign({}, base, {
+            alvos: (d && Array.isArray(d.alvos)) ? d.alvos : [],
+          });
           guardarEmCache(r0);
           return r0;
         }
@@ -33385,6 +33403,85 @@ function makeApoioModule(opts) {
       }
     } catch (e) { seErroDeCodigo(e, 'Apoio'); }
     return out;
+  }
+
+  /* ============ A MINHA PARTE NUM ALVO: PARADA E A CAMINHO ==============
+   *
+   * Parada: a última leitura da Ágora (separador Fora) de cada cidade minha.
+   *
+   * A caminho: os envios do registo que essa leitura AINDA NÃO PODE conter,
+   * porque foi feita antes de a tropa chegar. Faltava por completo: a tropa em
+   * viagem não contava em lado nenhum — nem aqui, nem na soma da frota, que só
+   * publica o que a Ágora mostra — e durante a viagem inteira o alvo parecia
+   * vazio a todas as contas.
+   *
+   * `incerto` diz que há envios meus que podem ainda não ter chegado: com
+   * isso não se retira nada deste alvo, para não trazer e voltar a mandar. */
+  const MARGEM_CHEGADA_MS = 10 * 60 * 1000;   // diferença de relógios e leitura
+  const SEM_CHEGADA_MS = 3 * 3600 * 1000;     // envios antigos, sem hora de chegada
+
+  function lerCacheFora() {
+    try { return JSON.parse(localStorage.getItem('grepoMaestro_apoioFora_v1') || '{}') || {}; }
+    catch (e) { return {}; }
+  }
+
+  /* A última leitura da Ágora desta cidade ainda é de ANTES de este envio
+   * chegar? Então não o pode mostrar — conta como "a caminho". */
+  function envioAindaPorVer(origemId, e, cache) {
+    const lidoEm = Number(((cache || {})[String(origemId)] || {}).quando) || 0;
+    const limite = Number((e || {}).chega)
+      ? Number(e.chega) * 1000 + MARGEM_CHEGADA_MS
+      : (Number((e || {}).t) || 0) + SEM_CHEGADA_MS;
+    return lidoEm < limite;
+  }
+
+  function minhaParteEm(alvoId, reg) {
+    const out = { parado: {}, aCaminho: {}, blocos: [], incerto: false };
+    const cache = lerCacheFora();
+    const minhas = (mUw.ITowns && mUw.ITowns.towns) || {};
+
+    for (const id of Object.keys(cache)) {
+      if (!minhas[id]) continue;
+      for (const b of ((cache[id] || {}).blocos || [])) {
+        if (Number(b.alvoId) !== Number(alvoId)) continue;
+        const u2 = b.unidades || {};
+        out.blocos.push({ unitsId: Number(b.unitsId) || 0, de: Number(id), unidades: u2 });
+        for (const u of Object.keys(u2)) out.parado[u] = (out.parado[u] || 0) + (Number(u2[u]) || 0);
+      }
+    }
+
+    for (const k of Object.keys(reg || {})) {
+      const m = k.match(/^(\d+)->(\d+)$/);
+      if (!m || Number(m[2]) !== Number(alvoId)) continue;
+      const e = reg[k] || {};
+      if (!envioAindaPorVer(m[1], e, cache)) continue;   // a leitura já é de depois da chegada
+      out.incerto = true;
+      for (const u of Object.keys(e.u || {})) {
+        out.aCaminho[u] = (out.aCaminho[u] || 0) + (Number(e.u[u]) || 0);
+      }
+    }
+    return out;
+  }
+
+  /* O `support_id` de um bloco, pelos modelos `Units`.
+   *
+   * Confirmado com a espia (11/09): é o id do modelo. A leitura da Ágora dá o
+   * mesmo número pelo HTML; pelo caminho com Administrador (`outer_units`)
+   * não está confirmado — por isso, havendo um só modelo para o par, usa-se
+   * o dele. */
+  function supportIdDe(origemId, alvoId, alternativa) {
+    try {
+      const mods = mUw.MM.getModels().Units || {};
+      const ids = [];
+      for (const k of Object.keys(mods)) {
+        const a = mods[k].attributes || {};
+        if (Number(a.home_town_id) !== Number(origemId)) continue;
+        if (Number(a.current_town_id) !== Number(alvoId)) continue;
+        ids.push(Number(a.id) || Number(k) || 0);
+      }
+      if (ids.length === 1 && ids[0]) return ids[0];
+    } catch (e) { seErroDeCodigo(e, 'Apoio'); }
+    return Number(alternativa) || 0;
   }
 
   /* QUANTAS CIDADES CONSIGO AINDA APOIAR.
@@ -34006,7 +34103,20 @@ function makeApoioModule(opts) {
         body: 'json=' + encodeURIComponent(JSON.stringify(payload)),
       }).then(lerResposta);
       const j = r && r.json;
-      return { ok: !(j && j.error), msg: (j && (j.error || j.success)) || 'ok' };
+
+      /* A HORA DE CHEGADA vem nas notificações da própria resposta — a mesma
+       * leitura que o encaixe e o reforço já usam. Diz até quando esta tropa
+       * conta como "a caminho": antes disso, nenhuma leitura da Ágora a pode
+       * mostrar. */
+      let chega = 0;
+      try {
+        for (const n of ((j && j.notifications) || [])) {
+          const ma = String(n.param_str || '').match(/"arrival_at"\s*:\s*(\d+)/);
+          if (ma) { chega = Number(ma[1]); break; }
+        }
+      } catch (e) {}
+
+      return { ok: !(j && j.error), msg: (j && (j.error || j.success)) || 'ok', chega };
     } catch (e) { return { ok: false, msg: e.message }; }
   }
 
@@ -34736,6 +34846,41 @@ function makeApoioModule(opts) {
       }
       return out;
     };
+
+    /* ===== A PARTE DE CADA CONTA ========================================
+     *
+     * O objectivo é o total no alvo, repartido pelas contas: 4500 espadachins
+     * numa revolta com vinte multis são 225 por conta — POR CONTA, somando as
+     * cidades todas dela.
+     *
+     * Estava a ser aplicado POR CIDADE: cada cidade de cada conta mandava a
+     * fatia inteira (até cinco pacotes), e com o limite de cidades desligado
+     * no modo de objectivo, mandavam todas. Vinte cidades × 200 × 20 contas
+     * = 80 mil espadachins — foram os 86 mil da 55.9.
+     *
+     * A parte é fixa (objectivo ÷ contas vivas) e compara-se com o que ESTA
+     * conta já lá tem ou tem a caminho. Não depende de ver o que as outras
+     * mandaram: a soma da frota atrasa horas (só conta tropa parada, e a Ágora
+     * relê-se de meia em meia hora), e decidir por ela era o que fazia cada
+     * passagem voltar a mandar. A frota fica só como travão: se ela já vir o
+     * objectivo cumprido, não se manda. */
+    const divisorContas = (() => {
+      let doPerfil = 0;
+      try {
+        const g = JSON.parse(armazem.getItem('grepoFrota_contas_v1') || '[]');
+        doPerfil = Array.isArray(g) ? g.length : 0;
+      } catch (e) { doPerfil = 0; }
+      return Math.max(contasVivas, doPerfil, 2);
+    })();
+    const quotaDe = (alvoId) => {
+      const obj = objetivoDe(alvoId);
+      const out = {};
+      for (const u of Object.keys(obj)) {
+        const n = Number(obj[u]) || 0;
+        if (n > 0) out[u] = Math.ceil(n / divisorContas);
+      }
+      return out;
+    };
     /* O LIMITE DE CIDADES É POR ALVO.
      *
      * Era um número só para todos. Quando a revolta o punha a 10, subia
@@ -34818,12 +34963,19 @@ function makeApoioModule(opts) {
       };
 
       let limpos = 0;
+      const cacheForaLimpeza = lerCacheFora();
       for (const t of towns) {
         const chave = chavePar(t.id, alvo);
         if (!reg[chave]) continue;
         /* Dar meia hora de folga: a tropa pode estar a caminho e o modelo
          * ainda não a mostrar. */
         if (Date.now() - (reg[chave].t || 0) < 30 * 60 * 1000) continue;
+        /* E NUNCA antes de a tropa chegar e a Ágora a poder mostrar.
+         *
+         * Viagens entre ilhas passam muito da meia hora. Apagar o registo a
+         * meio da viagem fazia a tropa desaparecer das contas — nem parada,
+         * nem a caminho — e outra cidade mandava outra vez. */
+        if (envioAindaPorVer(t.id, reg[chave], cacheForaLimpeza)) continue;
         if (!temLaOuACaminho(t.id)) { delete reg[chave]; limpos++; }
       }
       if (limpos) {
@@ -34836,11 +34988,46 @@ function makeApoioModule(opts) {
         .filter((t) => !reg[chavePar(t.id, alvo)])
         .sort((a, b) => (uso[a.id] || 0) - (uso[b.id] || 0));
 
-      /* Com objectivo, quem manda parar é o objectivo — não o número de
-       * cidades. Um alvo em revolta precisa do que precisa. */
-      const servindoObjetivo = frotaLida && Object.keys(faltaNoAlvo(alvo)).length > 0;
+      /* ===== COM OBJECTIVO: O QUE ESTA CONTA AINDA DEVE MANDAR ===========
+       *
+       * Calcula-se UMA vez por alvo e vai-se descontando a cada envio — era
+       * isto que faltava: a fatia era recalculada igual para cada cidade.
+       *
+       * Objectivo cumprido já não cai no pacote. Caía: com `falta` vazia, o
+       * módulo voltava ao pacote de sempre e continuava a mandar até ao
+       * limite de cidades — num alvo que já estava cheio.
+       *
+       * Sem leitura da frota não se sabe quantas contas há para dividir —
+       * não se manda nada para alvos com objectivo nesta passagem. */
+      const objAlvo = objetivoDe(alvo);
+      const comObjetivo = Object.keys(objAlvo).length > 0;
+      let porMandar = null;
+      if (comObjetivo) {
+        if (!frotaLida) {
+          rotina(`Apoio: ${alvo} tem objectivo, mas a frota não foi lida — `
+            + 'sem saber quantas contas há, não mando nada para lá nesta passagem.');
+          continue;
+        }
+        const quota = quotaDe(alvo);
+        const minha = minhaParteEm(alvo, reg);
+        const faltaTotal = faltaNoAlvo(alvo);
+        porMandar = {};
+        for (const u of Object.keys(quota)) {
+          const jaTenho = (Number(minha.parado[u]) || 0) + (Number(minha.aCaminho[u]) || 0);
+          const n = Math.min(quota[u] - jaTenho, Number(faltaTotal[u]) || 0);
+          if (n > 0) porMandar[u] = n;
+        }
+        if (!Object.keys(porMandar).length) {
+          rotina(`Apoio: ${alvo} — a parte desta conta (${Object.keys(quota)
+            .map((u) => `${quota[u]} ${u}`).join(', ')}) já lá está, vai a caminho, `
+            + 'ou a frota já vê o objectivo cumprido.');
+          continue;
+        }
+      }
+      const servindoObjetivo = comObjetivo;
 
       for (const t of candidatas) {
+        if (comObjetivo && !Object.keys(porMandar).length) break;
         if (!servindoObjetivo && Object.keys(reg).filter((k) => {
           const m = k.match(/^(\d+)->(\d+)$/); return m && Number(m[2]) === alvo;
         }).length >= limiteDe(alvo)) break;
@@ -34854,57 +35041,24 @@ function makeApoioModule(opts) {
         const carga = {};
         let algum = 0;
 
-        /* ===== O QUE MANDAR: O PACOTE OU A FATIA DO QUE FALTA ============
+        /* ===== O QUE MANDAR: O PACOTE OU O QUE FALTA À PARTE DESTA CONTA ===
          *
          * Sem objectivo, vale o pacote de sempre — cada conta manda o mesmo e
          * o limite de cidades trava o total.
          *
-         * Com objectivo, manda-se o que FALTA para o cumprir, repartido pelas
-         * contas vivas. Se cada conta mandasse tudo o que falta, as primeiras
-         * a correr enchiam o alvo e as outras chegavam a um alvo cheio; se
-         * mandasse só o pacote, nunca se chegaria ao objectivo.
+         * Com objectivo, cada cidade leva o que AINDA falta à parte desta
+         * conta (`porMandar`, calculado acima e descontado a cada envio), com
+         * o tecto de sempre de cinco pacotes por cidade. Quando a parte está
+         * mandada, as outras cidades já não mandam.
          *
-         * A fatia é recalculada a cada passagem: se uma conta não tiver tropa
-         * e não mandar, a parte dela redistribui-se pelas outras na passagem
-         * seguinte, em vez de ficar um buraco. */
-        const falta = faltaNoAlvo(alvo);
-        /* Sem dados de confiança sobre o que já lá está, o objectivo não
-         * corre: volta-se ao pacote, que é previsível. */
-        const temObjetivo = frotaLida && Object.keys(falta).length > 0;
+         * O cálculo antigo dava a cada CIDADE a fatia inteira da conta — era
+         * a origem do excesso. */
         const desejado = {};
 
-        if (temObjetivo) {
-          /* ===== O OBJECTIVO É O TOTAL DAS CONTAS, NÃO O DE CADA UMA =======
-           *
-           * 4500 espadachins numa revolta é o que se quer LÁ, somando as
-           * vinte contas — cerca de 225 cada. Se a divisão falhar, cada uma
-           * manda os 4500 e o alvo recebe dezenas de milhares.
-           *
-           * Aconteceu: 31 mil espadachins numa revolta. A leitura da frota
-           * vinha vazia, `contasVivas` ficava em 1, e a "fatia" era o
-           * objectivo inteiro.
-           *
-           * Três travões, por ordem:
-           *
-           *   1. sem leitura da frota, não há fatia — volta-se ao pacote,
-           *      porque calcular sem saber o que lá está é inventar;
-           *   2. a divisão nunca é por menos do que as contas conhecidas do
-           *      perfil, mesmo que poucas tenham dado sinal;
-           *   3. um tecto por conta: nunca mais do que cinco pacotes de uma
-           *      vez, aconteça o que acontecer ao cálculo.
-           */
-          const contasDoPerfil = (() => {
-            try {
-              const g = JSON.parse(armazem.getItem('grepoFrota_contas_v1') || '[]');
-              return Array.isArray(g) ? g.length : 0;
-            } catch (e) { return 0; }
-          })();
-          const divisor = Math.max(contasVivas, contasDoPerfil, 2);
-
-          for (const u of Object.keys(falta)) {
-            const fatia = Math.max(1, Math.ceil(falta[u] / divisor));
+        if (comObjetivo) {
+          for (const u of Object.keys(porMandar)) {
             const tecto = Math.max(1, (Number(pacote[u]) || 0) * 5);
-            desejado[u] = Math.min(fatia, tecto);
+            desejado[u] = Math.min(Number(porMandar[u]) || 0, tecto);
           }
         } else {
           for (const u of Object.keys(pacote)) desejado[u] = Number(pacote[u]) || 0;
@@ -34946,9 +35100,19 @@ function makeApoioModule(opts) {
         } catch (e) { seErroDeCodigo(e, 'Apoio'); }
       }
         if (r.ok) {
-          reg[chavePar(t.id, alvo)] = { t: Date.now(), u: cargaFinal };
+          /* A hora de chegada fica no registo: até lá (e um pouco depois,
+           * até a Ágora ser relida) esta tropa conta como "a caminho". */
+          reg[chavePar(t.id, alvo)] = { t: Date.now(), u: cargaFinal, chega: Number(r.chega) || 0 };
           gravarRegisto(reg);
           enviados++;
+
+          /* Descontar da parte desta conta o que acabou de sair. */
+          if (comObjetivo) {
+            for (const u of Object.keys(porMandar)) {
+              porMandar[u] -= Number(cargaFinal[u]) || 0;
+              if (porMandar[u] <= 0) delete porMandar[u];
+            }
+          }
           log(`🛡️ ${t.name} → ${alvo}: ${Object.keys(cargaFinal).map((k) => `${cargaFinal[k]} ${k}`).join(', ')}.`);
           await ctx.sleep(ctx.rand(800, 1600));
         } else {
@@ -34971,109 +35135,118 @@ function makeApoioModule(opts) {
 
     /* ===== TROPA A MAIS NUM ALVO VOLTA PARA CASA ========================
      *
-     * O objectivo diz quanto se quer no alvo. Havia como parar de mandar
-     * quando ele estava cumprido, mas não havia como RETIRAR o que sobrava —
-     * e o excesso ficava lá para sempre.
+     * A parte de cada conta é o objectivo dividido pelas contas. O que esta
+     * conta tiver lá ACIMA da sua parte volta para casa.
      *
-     * Visto em jogo: 12804 espadachins num alvo com objectivo de 3000, vindos
-     * de antes das correcções. Tropa parada é tropa que não defende nada e não
-     * está em casa a servir.
+     * Antes retirava-se uma fatia proporcional com o regresso PARCIAL
+     * (`units_beyond_info?action=send_back_part`), cujo formato nunca foi
+     * confirmado — falhava com "Estas unidades não lhe pertencem" e o excesso
+     * ficava lá para sempre.
      *
-     * Cada conta retira só a SUA parte do excesso, proporcional ao que tem lá:
-     * se as vinte retirassem tudo o que veem a mais, o alvo ficava vazio.
+     * Agora usa-se o regresso TOTAL de um bloco, confirmado com a espia
+     * (11/09). Cada bloco é o que UMA cidade minha tem lá. Um bloco só volta
+     * se, sem ele, esta conta continuar com pelo menos a sua parte em todas
+     * as unidades do objectivo que ele leva — nunca se fica abaixo. Acima da
+     * parte sobra, no máximo, um bloco.
      *
-     * Só corre com o objectivo definido e com a soma da frota lida — sem saber
-     * o total, retirar é tão cego como mandar. */
+     * Não se retira nada de um alvo:
+     *   - enquanto houver envios meus que a Ágora ainda não pode mostrar (o
+     *     que lá tenho estaria contado a menos);
+     *   - que não tenha sido este módulo a apoiar;
+     *   - que seja base dos colonizadores; e nunca blocos com colonizadores.
+     *
+     * No máximo cinco blocos por passagem, para não ser uma rajada.
+     *
+     * Só corre com a frota lida — é dela que vem o número de contas. */
     if (frotaLida) {
+      const enviadoPorMim2 = new Set(Object.keys(lerEnviado()).map(Number));
+      const MAX_DEVOLVER = 5;
+      let devolvidos = 0;
+
       for (const alvo of alvos) {
+        if (devolvidos >= MAX_DEVOLVER) break;
         const obj = objetivoDe(alvo);
         if (!Object.keys(obj).length) continue;
+        if (!enviadoPorMim2.has(Number(alvo))) continue;
+        if (ehBaseDaRotacao(alvo)) continue;
 
         /* Falhou há menos de uma hora? Não se tenta outra vez. */
         try {
-          const reg = JSON.parse(armazem.getItem('grepoApoio_retiradaFalhou_v1') || '{}');
-          const q = Number(reg[String(alvo)]) || 0;
+          const rf = JSON.parse(armazem.getItem('grepoApoio_retiradaFalhou_v1') || '{}');
+          const q = Number(rf[String(alvo)]) || 0;
           if (q && (Date.now() - q) < 3600 * 1000) continue;
         } catch (e) {}
 
-        const total = defesaNoAlvo[String(alvo)] || {};
-        const meu = (() => {
-          try {
-            const f2 = (mUw.__maestroApoioFora && mUw.__maestroApoioFora.porAlvo()) || {};
-            return (f2[alvo] || {}).unidades || {};
-          } catch (e) { return {}; }
-        })();
-        if (!Object.keys(meu).length) continue;
-
-        /* Quanto sobra ao todo, e que fatia dele é minha. */
-        const aRetirar = {};
-        for (const u of Object.keys(obj)) {
-          const lá = Number(total[u]) || 0;
-          const quero = Number(obj[u]) || 0;
-          const sobra = lá - quero;
-          if (sobra <= 0) continue;
-
-          const meuU = Number(meu[u]) || 0;
-          if (!meuU) continue;
-
-          /* A minha parte do excesso, na proporção do que tenho lá. */
-          const minhaFatia = Math.floor(sobra * (meuU / lá));
-          const n = Math.min(meuU, minhaFatia);
-          if (n > 0) aRetirar[u] = n;
+        const quota = quotaDe(alvo);
+        const minha = minhaParteEm(alvo, reg);
+        if (minha.incerto) {
+          rotina(`Apoio: ${alvo} — há envios meus que a Ágora ainda não mostra; `
+            + 'não retiro nada daí até os ver.');
+          continue;
         }
 
-        if (!Object.keys(aRetirar).length) continue;
+        const tenho = Object.assign({}, minha.parado);
+        const acima = Object.keys(quota).some((u) => (Number(tenho[u]) || 0) > quota[u]);
+        if (!acima) continue;
 
-        const blocos = (() => {
-          try {
-            const f2 = (mUw.__maestroApoioFora && mUw.__maestroApoioFora.porAlvo()) || {};
-            return (f2[alvo] || {}).blocos || [];
-          } catch (e) { return []; }
-        })();
-        if (!blocos.length) continue;
+        const popDe = (u2) => Object.keys(u2 || {})
+          .reduce((s2, u) => s2 + (Number(u2[u]) || 0) * popDaUnidade(u), 0);
+        const blocos = minha.blocos
+          .filter((b) => !((Number((b.unidades || {}).colonize_ship) || 0) > 0))
+          .sort((a, b) => popDe(b.unidades) - popDe(a.unidades));
 
         const inf = cacheCidades[alvo] || { nome: '#' + alvo };
-        const b = blocos[0];
-        const carga = {};
-        for (const u of Object.keys(aRetirar)) {
-          const naBloco = Number((b.unidades || {})[u]) || 0;
-          const n = Math.min(naBloco, aRetirar[u]);
-          if (n > 0) carga[u] = n;
-        }
-        if (!Object.keys(carga).length) continue;
+        for (const b of blocos) {
+          if (devolvidos >= MAX_DEVOLVER) break;
+          const bu = b.unidades || {};
 
-        const rv = await mandarParteDeVolta(b.unitsId, b.de, carga);
-        if (rv.ok) {
-          log(`↩️ ${inf.nome}: tropa a mais volta para casa — `
-            + Object.keys(carga).map((u) => `${carga[u]} ${u}`).join(', ')
-            + ` (o alvo tem ${Object.keys(obj).map((u) => (total[u] || 0)).join('/')}, `
-            + `queria ${Object.keys(obj).map((u) => obj[u]).join('/')}).`);
-        } else {
-          rotina(`Apoio: não consegui retirar a tropa a mais de ${inf.nome} — ${rv.msg}`);
+          /* Sem este bloco, continuo com a minha parte em tudo o que ele leva? */
+          const podeIr = Object.keys(quota).every((u) => {
+            const n = Number(bu[u]) || 0;
+            return !n || ((Number(tenho[u]) || 0) - n) >= quota[u];
+          });
+          const levaAlgoDoObjetivo = Object.keys(quota).some((u) => (Number(bu[u]) || 0) > 0);
+          if (!podeIr || !levaAlgoDoObjetivo) continue;
 
-          /* NÃO INSISTIR NUM PEDIDO QUE NÃO MUDA SOZINHO.
-           *
-           * "Estas unidades não lhe pertencem" significa que o identificador
-           * está errado, não que o momento seja mau. Repetir de dois em dois
-           * minutos enche o registo e não resolve.
-           *
-           * PENDENTE — o que a espia de 11/09 confirmou:
-           *   - o número do `place_units_<id>` da Ágora (o caminho das multis)
-           *     É o `support_id` e o id do modelo `Units`;
-           *   - o regresso TOTAL parte da ORIGEM, separador Fora:
-           *       POST /game/building_place?town_id=<ORIGEM>&action=send_back
-           *       json={"support_id":417043,"town_id":<ORIGEM>,"nl_init":true}
-           * Por confirmar: se o `id` do `outer_units` (o caminho com
-           * Administrador) é o mesmo número, e o formato do regresso PARCIAL
-           * (retirar só parte, no separador Fora) — é esse que está errado aqui. */
+          const sid = supportIdDe(b.de, alvo, b.unitsId);
+          if (!sid) continue;
+
+          const ok = await mandarDeVolta(sid, b.de);
+          if (!ok) {
+            rotina(`Apoio: não consegui mandar de volta o bloco de ${b.de} em ${inf.nome} `
+              + '— não volto a tentar este alvo durante uma hora.');
+            try {
+              const K = 'grepoApoio_retiradaFalhou_v1';
+              const rf = JSON.parse(armazem.getItem(K) || '{}');
+              rf[String(alvo)] = Date.now();
+              armazem.setItem(K, JSON.stringify(rf));
+            } catch (e) {}
+            break;
+          }
+
+          devolvidos++;
+          for (const u of Object.keys(bu)) tenho[u] = (Number(tenho[u]) || 0) - (Number(bu[u]) || 0);
+
+          /* Tirar o bloco da leitura guardada e do registo: senão a passagem
+           * seguinte contava-o outra vez, até a Ágora ser relida. */
           try {
-            const K = 'grepoApoio_retiradaFalhou_v1';
-            const reg = JSON.parse(armazem.getItem(K) || '{}');
-            reg[String(alvo)] = Date.now();
-            armazem.setItem(K, JSON.stringify(reg));
-          } catch (e) {}
+            const cacheF = lerCacheFora();
+            const e3 = cacheF[String(b.de)];
+            if (e3 && Array.isArray(e3.blocos)) {
+              e3.blocos = e3.blocos.filter((x) => !(Number(x.alvoId) === Number(alvo)
+                && Number(x.unitsId) === Number(b.unitsId)));
+              localStorage.setItem('grepoMaestro_apoioFora_v1', JSON.stringify(cacheF));
+            }
+          } catch (e) { seErroDeCodigo(e, 'Apoio'); }
+          delete reg[chavePar(b.de, alvo)];
+          gravarRegisto(reg);
+
+          log(`↩️ ${inf.nome}: tropa a mais volta para casa — `
+            + Object.keys(bu).map((u) => `${bu[u]} ${u}`).join(', ')
+            + ` (esta conta fica com ${Object.keys(quota).map((u) => Math.max(0, tenho[u] || 0)).join('/')}; `
+            + `a parte dela é ${Object.keys(quota).map((u) => quota[u]).join('/')}).`);
+          await ctx.sleep(ctx.rand(900, 1600));
         }
-        await ctx.sleep(ctx.rand(900, 1600));
       }
     }
 
