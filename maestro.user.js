@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.11.1230
+// @version      2026.09.11.1330
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1868,7 +1868,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.11.1230';
+  const MAESTRO_VERSAO = '2026.09.11.1330';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -39303,84 +39303,55 @@ function makeReforcoModule(opts) {
    *
    * As duas cidades são minhas, portanto a fórmula do jogo aplica-se — a
    * imprecisão é de segundos e a margem de um minuto cobre-a. */
-  /* O TEMPO DE VIAGEM VEM DO JOGO, NÃO DE UMA FÓRMULA MINHA.
+  /* O TEMPO DE VIAGEM: CALCULADO, PORQUE O JOGO NÃO O DÁ AQUI.
    *
-   * Eu calculava-o pela distância entre ilhas e pela velocidade da unidade
-   * mais lenta, com um factor de velocidade do mundo que ADIVINHEI. O
-   * resultado foi tropa a chegar catorze minutos depois do ataque — pior do
-   * que não mandar, porque morre em viagem.
+   * Tentei lê-lo da janela de apoio — `town_info?action=support` — e esse
+   * pedido NÃO traz o tempo: as chaves são `menu, json, tmpl, t_token` e não
+   * há `way_duration` em lado nenhum, nem no HTML. Confirmado em jogo.
    *
-   * O jogo dá o número certo: a janela de apoio de uma cidade para outra traz
-   * o `way_duration` em segundos. É o mesmo princípio que passámos a usar no
-   * encaixe — perguntar em vez de calcular.
+   * Pior: era um pedido por par de cidades, dezenas por passagem, e foi o que
+   * andou a provocar os 429 — para não trazer nada.
    *
-   * Um pedido por par de cidades, e o resultado fica guardado: a distância
-   * entre duas cidades não muda. */
+   * Volta-se à fórmula, mas com a constante que o ENCAIXE calibrou com
+   * comandos reais (erro medido de 0,3%) em vez do valor que eu tinha
+   * adivinhado. É a mesma que ele usa para acertar ao segundo.
+   *
+   * A distância entre duas cidades não muda, por isso guarda-se. */
   const viagensSabidas = {};
 
-  /* Levantada quando o servidor recusa: a passagem pára e tenta daqui a dois
-   * minutos, em vez de insistir. */
-  let travouAqui = false;
+  /* A constante do encaixe: distância × K ÷ velocidade, mais o tempo de
+   * preparação. Os bónus da cidade de origem estão absorvidos nela — não se
+   * voltam a aplicar. */
+  const K_VIAGEM = 5258;
 
-  async function viagemEntre(origemId, destinoId, unidades) {
+  function viagemEntre(origemId, destinoId, unidades) {
     const chave = `${origemId}->${destinoId}`;
     if (viagensSabidas[chave]) return viagensSabidas[chave];
 
     try {
-      const url = mUw.location.origin + '/game/town_info?town_id=' + Number(origemId)
-        + '&action=support&h=' + mUw.Game.csrfToken
-        + '&json=' + encodeURIComponent(JSON.stringify({
-            id: Number(destinoId), town_id: Number(origemId), nl_init: true,
-          }))
-        + '&_=' + Date.now();
+      const o = coordsDe(origemId);
+      const d = coordsDe(destinoId);
+      if (!o || !d) return null;
 
-      /* PELO LEITOR COMUM: assim o 429 avisa o núcleo e os outros módulos
-       * também param, em vez de continuarem a bater num servidor que já
-       * recusa. */
-      const lr = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window)
-        .__maestroLerResposta;
-      const r = await mUw.fetch(url, {
-        headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
-      });
+      const dist = Math.sqrt((o.x - d.x) ** 2 + (o.y - d.y) ** 2);
+      const gd = mUw.GameData.units || {};
 
-      if (lr) {
-        const d = await lr(r);
-        if (d.travou) { travouAqui = true; return null; }
-        const j2 = d.json || {};
-        let seg = Number(j2.way_duration || j2.duration) || 0;
-        if (!seg && j2.html) {
-          const m2 = String(j2.html).match(/way_duration[^>]*>\s*~?\s*(\d+):(\d+):(\d+)/);
-          if (m2) seg = (+m2[1]) * 3600 + (+m2[2]) * 60 + (+m2[3]);
-        }
-        if (!seg) return null;
-        viagensSabidas[chave] = seg;
-        return seg;
+      /* A velocidade é a da unidade MAIS LENTA que vai no grupo. */
+      let vel = 0;
+      for (const u of Object.keys(unidades)) {
+        if (!unidades[u]) continue;
+        const v = Number((gd[u] || {}).speed) || 0;
+        if (v && (!vel || v < vel)) vel = v;
       }
+      if (!vel) return null;
 
-      /* O SERVIDOR CORTOU: A PASSAGEM PÁRA AQUI.
-       *
-       * Pus o travão dos 429 nos envios e esqueci-me de o pôr AQUI — e este é
-       * o pedido que se faz mais vezes: um por par de cidades. Sem travão, ele
-       * pergunta dezenas de viagens seguidas, o servidor corta, e a passagem
-       * inteira não envia nada.
-       *
-       * Devolver `travou` faz o chamador parar em vez de continuar a bater. */
-      if (r.status === 429) { travouAqui = true; return null; }
+      /* O tempo de preparação vem das constantes do jogo. */
+      const prep = (() => {
+        try { return Number(mUw.Game.constants.units.runtime_setup_time) || 300; }
+        catch (e) { return 300; }
+      })();
 
-      const txt = await r.text();
-      if (/^\s*</.test(txt)) return null;
-
-      let j = null;
-      try { j = JSON.parse(txt).json; } catch (e2) { return null; }
-
-      /* O tempo pode vir num campo directo ou dentro do HTML da janela. */
-      let segundos = Number((j && (j.way_duration || j.duration))) || 0;
-      if (!segundos && j && j.html) {
-        const m = String(j.html).match(/way_duration[^>]*>\s*~?\s*(\d+):(\d+):(\d+)/);
-        if (m) segundos = (+m[1]) * 3600 + (+m[2]) * 60 + (+m[3]);
-      }
-      if (!segundos) return null;
-
+      const segundos = Math.round(prep + (K_VIAGEM * dist) / vel);
       viagensSabidas[chave] = segundos;
       return segundos;
     } catch (e) { seErroDeCodigo(e, 'Reforco'); return null; }
@@ -39414,12 +39385,8 @@ function makeReforcoModule(opts) {
         body: 'json=' + encodeURIComponent(JSON.stringify(corpo)),
       });
 
-      /* O SERVIDOR PODE RESPONDER COM UMA PÁGINA, NÃO COM DADOS.
-       *
-       * Com 429 ("demasiados pedidos") vem HTML, e tentar lê-lo como dados dá
-       * "Unexpected token '<'" — uma mensagem que não diz nada a quem lê o
-       * registo. Distingue-se aqui, e o chamador sabe que tem de parar. */
-      /* Pelo leitor comum: avisa o núcleo no 429. */
+      /* Pelo leitor comum: o 429 avisa o núcleo, que pára tudo — e uma página
+       * de erro deixa de aparecer como "Unexpected token '<'". */
       const lr = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window)
         .__maestroLerResposta;
       const d = lr ? await lr(r) : { json: {} };
@@ -39471,8 +39438,6 @@ function makeReforcoModule(opts) {
       }
     } catch (e) {}
     if (!c.ativo) { rotina('Reforço: está desligado.'); return; }
-
-    travouAqui = false;
 
     const ataques = await ataquesContraMim();
     const envios = lerEnvios();
@@ -39627,23 +39592,13 @@ function makeReforcoModule(opts) {
          * A viagem tem de caber no que falta para o impacto, com a margem de
          * segurança. Chegar depois é perder a tropa em viagem — pior do que
          * não mandar. */
-        const viagem = await viagemEntre(origem.id, id, carga);
-
-        if (travouAqui) {
-          log('⏸️ Reforço: o servidor está a recusar pedidos — paro e tento na '
-            + 'próxima passagem.');
-          return;
-        }
-
+        /* Já não é um pedido: é conta, e não custa nada. */
+        const viagem = viagemEntre(origem.id, id, carga);
         if (viagem == null) {
-          rotina(`Reforço: não consegui saber quanto demora de ${origem.name} a ${nome} `
+          rotina(`Reforço: não sei as coordenadas de ${origem.name} ou de ${nome} `
             + '— não mando às cegas.');
           continue;
         }
-
-        /* Espaçar: este pedido faz-se uma vez por par de cidades, e são
-         * muitos. Sem pausa, o servidor corta ao fim de poucos. */
-        await ctx.sleep(ctx.rand(500, 1100));
         if (viagem + (Number(c.margemSeg) || 60) > segundos) {
           rotina(`Reforço: ${origem.name} não chega a tempo de ${nome} `
             + `(viagem ${Math.round(viagem / 60)} min, faltam ${Math.round(segundos / 60)} min).`);
