@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.11.1130
+// @version      2026.09.11.1230
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1868,7 +1868,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.11.1130';
+  const MAESTRO_VERSAO = '2026.09.11.1230';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -27054,20 +27054,25 @@ function makeEncaixeModule(opts) {
                               //             em mundos de cerco: 1s depois estraga)
                               // 'depois' → só aceita à hora ou depois
                               // 'ambos'  → aceita para os dois lados
-    comecarAntes: 12,         // começa N segundos antes do envio previsto — a
-                              // variação do jogo também ADIANTA, por isso vale a
-                              // pena cobrir uma janela e não só um instante
-    maxTentativas: 40,        // travão de segurança (raramente atingido)
-    // Medido por simulação com a variação real (±3 s): desistir aos 5 atrasos
-    // dá 94,5% de sucesso com margem 0; aos 10 sobe para 99,6%. Mais do que 10
-    // não acrescenta nada.
-    // Trava por TEMPO: passados N segundos da hora ideal de envio, deixa de
-    // tentar. A deriva é de ~1 s por segundo, portanto depois disso as
-    // chegadas estão pelo menos N segundos atrasadas e não há hipótese.
-    limiteAposEnvioSeg: 10,
-    atrasosSeguidosParaParar: 15, // pára quando N tentativas SEGUIDAS chegam
-                                  // depois da hora: a janela já fechou e as
-                                  // seguintes só podiam chegar ainda mais tarde
+    /* ============ QUEM MANDA É O RELÓGIO ================================
+     *
+     * A rajada abre 20 segundos ANTES da hora de envio e fecha 15 segundos
+     * DEPOIS. Enquanto estiver aberta, tenta-se; quando fecha, pára-se. Não há
+     * mais nenhuma razão para desistir.
+     *
+     * Porquê assim: os desvios não pioram de forma ordenada. Numa rajada real
+     * saltam entre -26 e +6 segundos, e houve encaixes a acertar à vigésima
+     * segunda tentativa depois de muitas fora da janela. Desistir ao fim de N
+     * atrasos seguidos deitava fora hipóteses boas.
+     *
+     * O tecto de tentativas fica alto de propósito: com ciclos de ~370 ms, os
+     * 35 segundos de janela dão umas noventa: o relógio fecha muito antes de o
+     * número contar. Fica como rede para o caso de a ligação ficar mais
+     * rápida. */
+    comecarAntes: 20,         // a rajada abre 20 s antes da hora de envio
+    maxTentativas: 200,       // rede: quem trava a sério é o relógio
+    limiteAposEnvioSeg: 15,   // e fecha 15 s depois da hora marcada
+    atrasosSeguidosParaParar: 9999, // desligado: os atrasos não são ordenados
     // Folga sobre o tempo de regresso das tropas. Quanto MAIS CURTO o ciclo,
     // mais tentativas caem perto do alvo: medido, passar de 2 s para 1 s por
     // ciclo sobe o sucesso com margem 0 de 41% para 66%. Começa curta e cresce
@@ -28494,9 +28499,20 @@ function makeEncaixeModule(opts) {
 
     try {
       const obs = new MutationObserver(() => {
+        /* JANELA FECHADA: a hora guardada esquece-se.
+         *
+         * É o que garante que ela nunca sobrevive à sessão — trocar de cidade
+         * mantém-na, fechar a janela apaga-a. Sem isto, abrir a janela amanhã
+         * traria a hora de hoje e agendava-se sem reparar. */
+        if (!document.querySelector('input.unit_input[name]')) {
+          if (horaFixa.h || horaFixa.m || horaFixa.s) {
+            horaFixa = { dia: '0', h: '', m: '', s: '' };
+          }
+          return;
+        }
+
         // só faz trabalho a sério se houver janela nova sem o painel
         if (document.getElementById('encaixe-box')) return;
-        if (!document.querySelector('input.unit_input[name]')) return;
         tentar();
       });
       obs.observe(document.body, { childList: true, subtree: true });
@@ -28506,6 +28522,16 @@ function makeEncaixeModule(opts) {
     setInterval(tentar, 2000);
     tentar();
   }
+
+  /* A HORA DE CHEGADA, ENQUANTO A JANELA DO JOGO ESTIVER ABERTA.
+   *
+   * Trocar de cidade destrói e volta a montar este painel, e a hora perdia-se.
+   * Num cerco são vinte cidades a apontar à mesma chegada — vinte vezes a
+   * escrever o mesmo, e vinte oportunidades de enganar-se num dígito.
+   *
+   * Vive só em memória, de propósito: quando FECHAS a janela do jogo, esquece.
+   * Assim nunca se agenda com uma hora velha de outra sessão. */
+  let horaFixa = { dia: '0', h: '', m: '', s: '' };
 
   function injetarNaJanela(ctx) {
     try {
@@ -28555,12 +28581,23 @@ function makeEncaixeModule(opts) {
 
           <div style="font-size:12px;letter-spacing:.5px;opacity:.65;margin-bottom:3px">DATA DE CHEGADA</div>
           <div style="display:flex;gap:4px;align-items:center;margin-bottom:8px">
-            <select id="encj-dia" style="flex:0 0 74px"><option value="0">Hoje</option><option value="1">Amanhã</option></select>
-            <input id="encj-h" type="number" min="0" max="23" placeholder="HH" style="width:46px;text-align:center">
+            <!-- A HORA FICA ENQUANTO A JANELA ESTIVER ABERTA.
+                 Mudar de cidade redesenha este painel e a hora perdia-se — com
+                 vinte cidades a apontar à mesma chegada, era reescrevê-la vinte
+                 vezes e uma oportunidade de enganar-se em cada. Vive em
+                 memória: ao FECHAR a janela do jogo, esquece. -->
+            <select id="encj-dia" style="flex:0 0 74px">
+              <option value="0"${horaFixa.dia === '1' ? '' : ' selected'}>Hoje</option>
+              <option value="1"${horaFixa.dia === '1' ? ' selected' : ''}>Amanhã</option>
+            </select>
+            <input id="encj-h" type="number" min="0" max="23" placeholder="HH"
+              value="${horaFixa.h || ''}" style="width:46px;text-align:center">
             <span style="opacity:.5">:</span>
-            <input id="encj-m" type="number" min="0" max="59" placeholder="MM" style="width:46px;text-align:center">
+            <input id="encj-m" type="number" min="0" max="59" placeholder="MM"
+              value="${horaFixa.m || ''}" style="width:46px;text-align:center">
             <span style="opacity:.5">:</span>
-            <input id="encj-s" type="number" min="0" max="59" placeholder="SS" style="width:46px;text-align:center">
+            <input id="encj-s" type="number" min="0" max="59" placeholder="SS"
+              value="${horaFixa.s || ''}" style="width:46px;text-align:center">
           </div>
 
           <!-- A TOLERÂNCIA vem do painel do Maestro, por tipo de envio.
@@ -28902,6 +28939,24 @@ function makeEncaixeModule(opts) {
       mostrarAgendados();
 
       let diaSeguinte = false;
+      /* Guardar o que está escrito, para sobreviver à troca de cidade. */
+      const guardarHoraFixa = () => {
+        try {
+          horaFixa = {
+            dia: String((box.querySelector('#encj-dia') || {}).value || '0'),
+            h: String((box.querySelector('#encj-h') || {}).value || ''),
+            m: String((box.querySelector('#encj-m') || {}).value || ''),
+            s: String((box.querySelector('#encj-s') || {}).value || ''),
+          };
+        } catch (e) {}
+      };
+
+      ['#encj-dia', '#encj-h', '#encj-m', '#encj-s'].forEach((sel) => {
+        const el = box.querySelector(sel);
+        if (el) el.addEventListener('input', guardarHoraFixa);
+        if (el) el.addEventListener('change', guardarHoraFixa);
+      });
+
       const lerHora = () => {
         diaSeguinte = false;
         const h = Number(box.querySelector('#encj-h').value);
