@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.11.1630
+// @version      2026.09.11.1830
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1868,7 +1868,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.11.1630';
+  const MAESTRO_VERSAO = '2026.09.11.1830';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -39454,43 +39454,149 @@ function makeReforcoModule(opts) {
    * adivinhado. É a mesma que ele usa para acertar ao segundo.
    *
    * A distância entre duas cidades não muda, por isso guarda-se. */
-  const viagensSabidas = {};
 
   /* A constante do encaixe: distância × K ÷ velocidade, mais o tempo de
    * preparação. Os bónus da cidade de origem estão absorvidos nela — não se
    * voltam a aplicar. */
   const K_VIAGEM = 5258;
 
-  function viagemEntre(origemId, destinoId, unidades) {
-    const chave = `${origemId}->${destinoId}`;
-    if (viagensSabidas[chave]) return viagensSabidas[chave];
+  /* A DISTÂNCIA E O TEMPO DE PREPARAÇÃO — as partes fáceis. */
+  function distanciaEntre(origemId, destinoId) {
+    const o = coordsDe(origemId);
+    const d = coordsDe(destinoId);
+    if (!o || !d) return null;
+    return Math.sqrt((o.x - d.x) ** 2 + (o.y - d.y) ** 2);
+  }
 
+  function tempoPreparacao() {
+    try { return Number(mUw.Game.constants.units.runtime_setup_time) || 300; }
+    catch (e) { return 300; }
+  }
+
+  const mesmaIlha = (a2, b2) => {
+    const o = coordsDe(a2); const d = coordsDe(b2);
+    return !!(o && d && o.x === d.x && o.y === d.y);
+  };
+
+  /* ============ QUANTO DEMORA, COM ESTA VELOCIDADE ==================== */
+  function viagemComVelocidade(origemId, destinoId, vel) {
+    const dist = distanciaEntre(origemId, destinoId);
+    if (dist == null || !(vel > 0)) return null;
+    return Math.round(tempoPreparacao() + (K_VIAGEM * dist) / vel);
+  }
+
+  /* ============ MONTAR A CARGA QUE CHEGA A TEMPO ======================
+   *
+   * A tropa terrestre que vai para OUTRA ILHA viaja dentro dos transportes, à
+   * velocidade DELES — não à sua. Eu usava a velocidade da unidade mais lenta
+   * da carga, e um hoplita a pé é muito mais lento do que um transporte
+   * rápido: dava 33 minutos onde o jogo mostrava 21:58, e o reforço rejeitava
+   * cidades que chegavam bem a tempo.
+   *
+   * E basta UM barco lento para o envio inteiro andar à velocidade dele —
+   * muitas cidades têm um só para servir o encaixe, e esse arrastava tudo.
+   *
+   * A ordem de decisão:
+   *
+   *   1. com TODOS os transportes (mais carga) — chega a tempo? vai assim;
+   *   2. senão, só com os RÁPIDOS — chega? vai assim, com menos tropa;
+   *   3. senão, ou se a tropa que cabe não chegar aos 200 de população,
+   *      a cidade fica de fora.
+   *
+   * Na mesma ilha nada disto se aplica: vale a velocidade da tropa terrestre.
+   */
+  const POP_MINIMA = 200;
+
+  function montarEnvio(origemId, destinoId, querido, emCasa, segundosAteImpacto, margem) {
     try {
-      const o = coordsDe(origemId);
-      const d = coordsDe(destinoId);
-      if (!o || !d) return null;
-
-      const dist = Math.sqrt((o.x - d.x) ** 2 + (o.y - d.y) ** 2);
       const gd = mUw.GameData.units || {};
+      const cabeATempo = (v) => {
+        const t = viagemComVelocidade(origemId, destinoId, v);
+        return (t != null && t + margem <= segundosAteImpacto) ? t : null;
+      };
 
-      /* A velocidade é a da unidade MAIS LENTA que vai no grupo. */
-      let vel = 0;
-      for (const u of Object.keys(unidades)) {
-        if (!unidades[u]) continue;
-        const v = Number((gd[u] || {}).speed) || 0;
-        if (v && (!vel || v < vel)) vel = v;
+      /* ---- MESMA ILHA: por terra, sem transportes ---- */
+      if (mesmaIlha(origemId, destinoId)) {
+        const carga = {};
+        let vel = 0;
+        for (const u of Object.keys(querido)) {
+          const n = Math.min(Number(querido[u]) || 0, Number(emCasa[u]) || 0);
+          if (n <= 0) continue;
+          if ((gd[u] || {}).is_naval) continue;          // navios não vão por terra
+          carga[u] = n;
+          const v = Number((gd[u] || {}).speed) || 0;
+          if (v && (!vel || v < vel)) vel = v;
+        }
+        if (!Object.keys(carga).length || !vel) return null;
+        const t = cabeATempo(vel);
+        return t == null ? null : { carga, viagem: t, via: 'terra' };
       }
-      if (!vel) return null;
 
-      /* O tempo de preparação vem das constantes do jogo. */
-      const prep = (() => {
-        try { return Number(mUw.Game.constants.units.runtime_setup_time) || 300; }
-        catch (e) { return 300; }
-      })();
+      /* ---- OUTRA ILHA: a velocidade é a dos transportes ---- */
+      const lentos = Number(emCasa.big_transporter) || 0;
+      const rapidos = Number(emCasa.small_transporter) || 0;
+      if (!lentos && !rapidos) return null;
 
-      const segundos = Math.round(prep + (K_VIAGEM * dist) / vel);
-      viagensSabidas[chave] = segundos;
-      return segundos;
+      const velLento = Number((gd.big_transporter || {}).speed) || 0;
+      const velRapido = Number((gd.small_transporter || {}).speed) || 0;
+
+      /* Encher os lugares com a tropa que falta, do que rende mais por lugar
+       * para o que rende menos. */
+      const encher = (lugares) => {
+        const carga = {};
+        let pop = 0;
+        const ordem = Object.keys(querido)
+          .filter((u) => !((gd[u] || {}).is_naval) && (Number(emCasa[u]) || 0) > 0)
+          .sort((x, y) => (Number((gd[x] || {}).population) || 1) - (Number((gd[y] || {}).population) || 1));
+        let livres = lugares;
+        for (const u of ordem) {
+          const custo = Number((gd[u] || {}).population) || 1;
+          const querMax = Math.min(Number(querido[u]) || 0, Number(emCasa[u]) || 0);
+          const cabem = Math.min(querMax, Math.floor(livres / custo));
+          if (cabem <= 0) continue;
+          carga[u] = cabem;
+          livres -= cabem * custo;
+          pop += cabem * custo;
+        }
+        /* E os navios de guerra que forem pedidos vão por si. */
+        for (const u of Object.keys(querido)) {
+          if (!(gd[u] || {}).is_naval) continue;
+          if (u === 'big_transporter' || u === 'small_transporter') continue;
+          const n = Math.min(Number(querido[u]) || 0, Number(emCasa[u]) || 0);
+          if (n > 0) { carga[u] = n; pop += n * (Number((gd[u] || {}).population) || 1); }
+        }
+        return { carga, pop };
+      };
+
+      const capLento = Number((gd.big_transporter || {}).capacity) || 0;
+      const capRapido = Number((gd.small_transporter || {}).capacity) || 0;
+
+      /* 1. TODOS OS TRANSPORTES — mais carga, mas à velocidade do mais lento. */
+      if (lentos > 0) {
+        const t = cabeATempo(Math.min(velLento, velRapido || velLento));
+        if (t != null) {
+          const r = encher(lentos * capLento + rapidos * capRapido);
+          if (r.pop >= POP_MINIMA) {
+            r.carga.big_transporter = lentos;
+            if (rapidos) r.carga.small_transporter = rapidos;
+            return { carga: r.carga, viagem: t, via: 'todos os transportes' };
+          }
+        }
+      }
+
+      /* 2. SÓ OS RÁPIDOS — menos carga, mas mais depressa. */
+      if (rapidos > 0) {
+        const t = cabeATempo(velRapido);
+        if (t != null) {
+          const r = encher(rapidos * capRapido);
+          if (r.pop >= POP_MINIMA) {
+            r.carga.small_transporter = rapidos;
+            return { carga: r.carga, viagem: t, via: 'só transportes rápidos' };
+          }
+        }
+      }
+
+      return null;
     } catch (e) { seErroDeCodigo(e, 'Reforco'); return null; }
   }
 
@@ -39731,36 +39837,25 @@ function makeReforcoModule(opts) {
           try { return mUw.ITowns.getTown(Number(origem.id)).units() || {}; } catch (e) { return {}; }
         })();
 
-        /* O que esta cidade pode dar do que falta. */
-        const carga = {};
-        for (const u of Object.keys(f)) {
-          const n = Math.min(Number(f[u]) || 0, Number(emCasa[u]) || 0);
-          if (n > 0) carga[u] = n;
-        }
-        /* SÓ SE PERGUNTA A VIAGEM A QUEM TEM TROPA A DAR.
+        /* A CARGA E A VIAGEM DECIDEM-SE JUNTAS.
          *
-         * Estava a perguntar a todas as cidades do grupo, incluindo as que não
-         * tinham nada do que falta — dezenas de pedidos que nunca dariam um
-         * envio. É a maior parte do desperdício. */
-        if (!Object.keys(carga).length) continue;
+         * Não faz sentido montar a carga primeiro e perguntar depois se chega:
+         * é a composição que determina a velocidade. Com todos os transportes
+         * leva-se mais tropa mas anda-se à velocidade do mais lento; só com os
+         * rápidos leva-se menos e chega-se mais cedo.
+         *
+         * Escolhe-se a que leva MAIS e ainda chega a tempo. */
+        const plano = montarEnvio(origem.id, id, f, emCasa, segundos,
+          Number(c.margemSeg) || 60);
 
-        /* CHEGA A TEMPO?
-         *
-         * A viagem tem de caber no que falta para o impacto, com a margem de
-         * segurança. Chegar depois é perder a tropa em viagem — pior do que
-         * não mandar. */
-        /* Já não é um pedido: é conta, e não custa nada. */
-        const viagem = viagemEntre(origem.id, id, carga);
-        if (viagem == null) {
-          rotina(`Reforço: não sei as coordenadas de ${origem.name} ou de ${nome} `
-            + '— não mando às cegas.');
-          continue;
-        }
-        if (viagem + (Number(c.margemSeg) || 60) > segundos) {
+        if (!plano) {
           rotina(`Reforço: ${origem.name} não chega a tempo de ${nome} `
-            + `(viagem ${Math.round(viagem / 60)} min, faltam ${Math.round(segundos / 60)} min).`);
+            + `ou não tem 200 de população para levar (faltam ${Math.round(segundos / 60)} min).`);
           continue;
         }
+
+        const carga = plano.carga;
+        const viagem = plano.viagem;
 
         const r = await enviarApoio(origem.id, id, carga);
 
@@ -39812,6 +39907,7 @@ function makeReforcoModule(opts) {
 
         log(`🛡️ Reforço: ${origem.name} → ${nome} — `
           + Object.keys(carga).map((u) => `${carga[u]} ${u}`).join(', ')
+          + ` · ${plano.via} · viagem ${Math.round(viagem / 60)} min`
           + ` (chega ${Math.round((segundos - viagem) / 60)} min antes do ataque).`);
 
         /* Espaçar como os outros módulos fazem. Um envio a cada segundo e
@@ -39824,12 +39920,18 @@ function makeReforcoModule(opts) {
           + Object.keys(f).map((u) => `${f[u]} ${u}`).join(', ')
           + ' — não havia mais cidades que chegassem a tempo.');
 
-        /* Nenhuma chega a tempo: não vale a pena voltar a tentar de dois em
-         * dois minutos — as viagens só ficam mais curtas do lado errado. */
-        if (!mandados) {
-          tratados[chaveAtaque(a)] = a.chega;
-          try { armazem.setItem(TRATADOS_KEY, JSON.stringify(tratados)); } catch (e) {}
-        }
+        /* ESGOTOU-SE O QUE HAVIA — NÃO SE VOLTA A TENTAR.
+         *
+         * A marca só era posta quando NENHUMA cidade tinha enviado naquela
+         * passagem. Bastava uma ter conseguido para o ataque continuar a ser
+         * reavaliado de dois em dois minutos, e a percorrer as vinte outra vez
+         * para chegar à mesma conclusão.
+         *
+         * Percorreram-se todas as cidades e o objectivo continua a faltar:
+         * o tempo até ao impacto só encurta, portanto as que não chegavam agora
+         * também não chegarão daqui a dois minutos. Fica tratado. */
+        tratados[chaveAtaque(a)] = a.chega;
+        try { armazem.setItem(TRATADOS_KEY, JSON.stringify(tratados)); } catch (e) {}
       } else {
         tratados[chaveAtaque(a)] = a.chega;
         try { armazem.setItem(TRATADOS_KEY, JSON.stringify(tratados)); } catch (e) {}
