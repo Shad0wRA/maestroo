@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.11.0030
+// @version      2026.09.11.0130
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1799,7 +1799,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.11.0030';
+  const MAESTRO_VERSAO = '2026.09.11.0130';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -20918,7 +20918,7 @@ function makeDeusesModule(opts) {
         // qual cidade desse deus? nunca uma de deus FIXO — essas são tuas por
         // escolha e o equilíbrio não deve mexer nelas.
         const fixas = c.cidadesFarm || {};
-        const candidatas = towns.filter((t) => deusDa(t.id) === doador)
+        let candidatas = towns.filter((t) => deusDa(t.id) === doador)
           /* AS CIDADES DO FARM NÃO ENTRAM AQUI.
            *
            * Elas têm regra própria: rodam quando a main lhes rouba o favor.
@@ -20938,6 +20938,36 @@ function makeDeusesModule(opts) {
            * Visto em jogo: 4 grupos escolhidos, 4 cidades com Afrodite, duas
            * delas no mesmo grupo. */
           .filter((t) => alvo !== AFRODITE || podeReceberAfrodite(t.id, towns, c));
+        /* A AFRODITE ESCOLHE DE ONDE PUDER, NÃO SÓ DO DEUS EXCEDENTÁRIO.
+         *
+         * O equilíbrio olha para um deus com cidades a mais e tira-lhe uma. Se
+         * NENHUMA cidade desse deus estiver nos grupos da Afrodite, a troca não
+         * acontece — e ela fica abaixo do que os pesos pedem. Foi assim que
+         * ficou em 3 quando o peso pedia 5.
+         *
+         * Quando o alvo é a Afrodite, alarga-se a procura a todas as cidades
+         * que a possam receber, começando pelas dos deuses que estão mais
+         * acima do que lhes toca. A regra dos grupos continua a mandar: uma
+         * por grupo antes de qualquer ter a segunda. */
+        if (!candidatas.length && alvo === AFRODITE) {
+          candidatas = towns
+            .filter((t) => !emFarm.has(Number(t.id)))
+            .filter((t) => !doGrupoVoa.has(Number(t.id)))
+            .filter((t) => (fixas[t.id] || {}).tipo !== 'fixo')
+            .filter((t) => deusDa(t.id) && deusDa(t.id) !== AFRODITE)
+            .filter((t) => !(c.protegerMiticas && miticasNaCidade(t.id, deusDa(t.id))))
+            .filter((t) => podeReceberAfrodite(t.id, towns, c))
+            .sort((x, y) => {
+              const sx = (tenho[deusDa(x.id)] || 0) - (querido[deusDa(x.id)] || 0);
+              const sy = (tenho[deusDa(y.id)] || 0) - (querido[deusDa(y.id)] || 0);
+              return sy - sx;
+            });
+          if (candidatas.length) {
+            log(`↔️ Afrodite: nenhuma cidade de ${NOMES[doador]} entra nos grupos dela — `
+              + `procurei nos outros deuses e encontrei ${candidatas.length}.`);
+          }
+        }
+
         if (!candidatas.length) {
           log(`— ${NOMES[doador]}: sem cidades disponíveis (fixas ou com míticas); não mexo.`);
           tenho[doador] = querido[doador] || 0;   // deixa de ser candidato
