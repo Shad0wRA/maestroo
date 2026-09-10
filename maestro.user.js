@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.11.1830
+// @version      2026.09.11.1930
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1868,7 +1868,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.11.1830';
+  const MAESTRO_VERSAO = '2026.09.11.1930';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -40068,6 +40068,10 @@ function makeReforcoModule(opts) {
 function makeExpansaoModule(opts) {
   opts = opts || {};
 
+  /* A janela do jogo. Este módulo é um invólucro e não tem o `mUw` dos
+   * módulos normais. */
+  const jogo = () => (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window);
+
   /* Os dois caminhos continuam a ser o que eram; o que muda é terem um dono
    * só, um painel só e uma regra só. */
   const fundacao = makeFundacaoModule(opts.fundacao || { intervaloMin: 30 });
@@ -40117,25 +40121,77 @@ function makeExpansaoModule(opts) {
         return { pode: false, porque: 'já mandei um colonizador para cá' };
       }
 
-      // 3. tenho um colonizador em viagem para esta ilha
-      const mvs = uw.MM.getModels().MovementsUnits || {};
-      for (const k of Object.keys(mvs)) {
-        const mo = (mvs[k] || {}).attributes || {};
-        if (!/colon/i.test(String(mo.type || mo.command_name || ''))) continue;
-        const ix = Number(mo.target_island_x != null ? mo.target_island_x : mo.island_x);
-        const iy = Number(mo.target_island_y != null ? mo.target_island_y : mo.island_y);
-        if (Number.isFinite(ix) && Number.isFinite(iy) && `${ix}:${iy}` === chave) {
-          return { pode: false, porque: 'tenho um colonizador a caminho desta ilha' };
-        }
-        const destino = Number(mo.target_town_id) || 0;
-        if (destino && ilhaDe(destino) === chave) {
-          return { pode: false, porque: 'tenho um colonizador a caminho desta ilha' };
+      /* 3. TENHO UM COLONIZADOR EM VIAGEM PARA ESTA ILHA.
+       *
+       * Os colonizadores NÃO estão no `MovementsUnits` e NÃO têm campo `type`.
+       * Confirmado com a espia: aparecem na visão geral dos comandos com o
+       * identificador em TEXTO e a ilha em campos próprios:
+       *
+       *   { id: "colonization_5120", origin_town_id: 1752,
+       *     island_x: 365, island_y: 460, number_on_island: 1 }
+       *
+       * Eu procurava um `type` com "colon" numa colecção que nem os tem — a
+       * barreira nunca podia funcionar, e foi assim que saíram dois
+       * colonizadores para a ilha 365:460.
+       *
+       * A lista é recolhida por quem chama e guardada aqui. */
+      const emViagem = uw.__maestroColonizacoesEmCurso || [];
+      for (const c2 of emViagem) {
+        if (`${Number(c2.island_x)}:${Number(c2.island_y)}` === chave) {
+          return { pode: false, porque: 'já tenho um colonizador a caminho desta ilha' };
         }
       }
     } catch (e) { return { pode: true, porque: '' }; }
 
     return { pode: true, porque: '' };
   }
+
+  /* ============ QUE COLONIZADORES TENHO EM VIAGEM ====================
+   *
+   * Lê-se da visão geral dos comandos, que é onde eles aparecem. O resultado
+   * fica guardado para a barreira usar, e refresca-se antes de cada decisão de
+   * fundar — nunca com mais de um minuto, porque um colonizador enviado agora
+   * tem de contar já. */
+  let colonizacoesQuando = 0;
+
+  async function refrescarColonizacoes() {
+    try {
+      if (Date.now() - colonizacoesQuando < 60 * 1000) return;
+
+      const t = Number(jogo().Game.townId);
+      const url = jogo().location.origin + '/game/town_overviews?town_id=' + t
+        + '&action=command_overview&h=' + jogo().Game.csrfToken
+        + '&json=' + encodeURIComponent(JSON.stringify({ town_id: t, nl_init: true }))
+        + '&_=' + Date.now();
+
+      const lr = jogo().__maestroLerResposta;
+      const rr = await jogo().fetch(url, {
+        headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
+      });
+      const r = lr ? await lr(rr) : await rr.json();
+      const d = (r && r.json) || {};
+      const cmds = d.commands || (d.data && d.data.commands) || [];
+
+      const out = [];
+      for (const c2 of cmds) {
+        /* O identificador dos colonizadores é texto: "colonization_5120". */
+        if (!/^colonization_/i.test(String(c2.id || ''))) continue;
+        if (c2.colonization_finished_at) continue;          // já fundou
+        out.push({
+          id: String(c2.id),
+          island_x: Number(c2.island_x),
+          island_y: Number(c2.island_y),
+          numero: Number(c2.number_on_island),
+          origem: Number(c2.origin_town_id) || 0,
+        });
+      }
+
+      jogo().__maestroColonizacoesEmCurso = out;
+      colonizacoesQuando = Date.now();
+    } catch (e) { seErroDeCodigo(e, 'Expansao'); }
+  }
+
+  try { jogo().__maestroRefrescarColonizacoes = refrescarColonizacoes; } catch (e) {}
 
   /* Fica acessível aos dois caminhos e a quem mais precise dela. */
   try {
@@ -40154,6 +40210,13 @@ function makeExpansaoModule(opts) {
   let ultimaFundacao = 0;
 
   async function run(ctx) {
+    /* ANTES DE DECIDIR, VER QUEM JÁ ESTÁ A CAMINHO.
+     *
+     * É esta lista que impede um segundo colonizador para uma ilha onde já vai
+     * um. Refresca-se no máximo de minuto a minuto — um enviado agora tem de
+     * contar já na decisão seguinte. */
+    try { await refrescarColonizacoes(); } catch (e) { seErroDeCodigo(e, 'Expansao'); }
+
     /* O fechar ilha primeiro: quando há um plano em curso, ele tem prioridade
      * sobre a fundação avulsa — é o que já estava definido nas prioridades dos
      * colonizadores e continua a valer. */
