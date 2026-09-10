@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.11.2130
+// @version      2026.09.11.2230
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1868,7 +1868,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.11.2130';
+  const MAESTRO_VERSAO = '2026.09.11.2230';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -10200,7 +10200,17 @@ function makeRecrutamentoModule(opts) {
      * A folga em si continua a existir enquanto houver obra: sem ela, o
      * recrutamento gastava tudo e a cidade ficava com os edifícios
      * bloqueados. */
-    const DESTRAVAM = ['farm', 'storage', 'main', 'academy', 'barracks', 'docks'];
+    /* SÓ A QUINTA E O ARMAZÉM.
+     *
+     * A lista tinha também o senado, a academia, o quartel e o porto. Subir
+     * esses custa MUITA população — uma academia a caminho do nível trinta come
+     * facilmente as centenas que apareciam reservadas — e o benefício não é
+     * urgente: destravam unidades e pesquisas, não a cidade.
+     *
+     * A quinta devolve população e o armazém deixa acumular mais recursos;
+     * esses dois compensam sempre esperar. Os outros bloqueavam tropa durante
+     * dias por nada. */
+    const DESTRAVAM = ['farm', 'storage'];
 
     const reservaPop = (() => {
       const base = Number(popReservada) || 0;
@@ -10875,11 +10885,24 @@ function makeRecrutamentoModule(opts) {
            *
            * Visto em jogo: a 55.17 com 2534 de população livre e 162
            * trirremes por fazer não recrutava, sem dizer porquê. */
+          /* DUAS CAUSAS DIFERENTES, DUAS MENSAGENS.
+           *
+           * A mensagem culpava sempre a reserva — mesmo quando a cidade tinha
+           * ZERO população livre e a reserva era ZERO. Visto em jogo na 55.15:
+           * "toda a população livre (0) está reservada (precisa de 0)", quando
+           * a causa era só a cidade estar cheia.
+           *
+           * Culpar a coisa errada faz perder tempo a procurar no sítio errado
+           * — foi o que me aconteceu a mim. */
           const popLivreAgora = Number((recursos || {}).population) || 0;
-          if (popParaConstruir >= popLivreAgora) {
-            rotina(`${town.name}: toda a população livre (${popLivreAgora}) está `
-              + `reservada para acabar de construir (precisa de ${popParaConstruir}). `
-              + 'Não recruto para a cidade não ficar sem espaço para subir edifícios.');
+
+          if (popLivreAgora <= 0) {
+            rotina(`${town.name}: a cidade está cheia — zero de população livre. `
+              + 'Sobe a quinta ou dispensa tropa para abrir espaço.');
+          } else if (popParaConstruir >= popLivreAgora) {
+            rotina(`${town.name}: os ${popLivreAgora} de população livre estão `
+              + `guardados para a quinta ou o armazém (precisam de ${popParaConstruir}). `
+              + 'Esses devolvem espaço; o resto do template não bloqueia tropa.');
           }
 
           /* Ficar com registo de que a cidade FOI avaliada.
