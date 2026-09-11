@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.2100
+// @version      2026.09.12.2200
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2107,7 +2107,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.2100';
+  const MAESTRO_VERSAO = '2026.09.12.2200';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -28045,37 +28045,36 @@ function makeEncaixeModule(opts) {
     } catch (e) { return { ok: false, msg: e.message }; }
   }
 
+  /* PELO LEITOR ÚNICO DO NÚCLEO, SEMPRE FRESCA.
+   *
+   * O encaixe pergunta a seguir a enviar — é para encontrar o comando que
+   * acabou de sair. Uma cópia de há 20 s não o tem, por isso pede-se sempre de
+   * novo. O `townId` fica pela forma: a lista traz os comandos de todas as
+   * cidades. Uma leitura falhada devolve lista vazia, como antes (quem chama
+   * trata-a como "ainda não apareceu"), mas a razão fica sempre registada. */
   async function comandosDoServidor(townId) {
     if (semAdministrador()) { ultimaRazaoVazio = 'sem Administrador (marcado há pouco)'; return []; }
     try {
-      const url = mUw.location.origin + '/game/town_overviews?town_id=' + Number(townId)
-        + '&action=command_overview&h=' + mUw.Game.csrfToken
-        + '&json=' + encodeURIComponent(JSON.stringify({ town_id: Number(townId), nl_init: true }))
-        + '&_=' + Date.now();
-      const r = await mUw.fetch(url, { headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include' })
-        .then(lerResposta);
-      const erroAdm = r && r.json && r.json.error;
-      if (erroAdm && /administrador|administrator|premium/i.test(String(erroAdm))) {
-        // O encaixe é usado só na main, que tem sempre Administrador — isto é
-        // apenas uma salvaguarda para não insistir se algum dia for usado
-        // noutra conta (sem ele, o módulo não teria como verificar a chegada).
-        marcarSemAdministrador();
+      const vgF = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroVisaoGeral;
+      const vg = vgF ? await vgF({ fresca: true })
+        : { ok: false, razao: 'o núcleo não tem o leitor da visão geral' };
+      if (!vg.ok) {
+        if (vg.razao === 'sem Administrador') {
+          // O encaixe é usado só na main, que tem sempre Administrador — isto é
+          // apenas uma salvaguarda para não insistir se algum dia for usado
+          // noutra conta (sem ele, o módulo não teria como verificar a chegada).
+          marcarSemAdministrador();
+          ultimaRazaoVazio = 'o servidor diz que falta o Administrador';
+          return [];
+        }
+        ultimaRazaoVazio = vg.razao || 'não sei porquê';
         return [];
       }
-      if (erroAdm) { ultimaRazaoVazio = `o jogo respondeu: ${erroAdm}`; return []; }
 
-      /* A lista pode vir em `json.commands` ou em `json.data.commands`: aceitam-se
-       * as duas, como já faziam o reforço, os feitiços e a expansão. Isto só lia a
-       * segunda — e na main, com 50 comandos na visão geral, a esquiva recebia 0
-       * ("o servidor devolveu 0 comando(s), sem razão registada", 11/09). */
-      const dj = (r && r.json) || {};
-      const cmds = dj.commands || (dj.data && dj.data.commands) || [];
-      if (!cmds.length) {
-        ultimaRazaoVazio = (r && r.json)
-          ? `resposta sem comandos (chaves: ${Object.keys(r.json).join(', ').slice(0, 80)})`
-          : 'resposta vazia do servidor';
-      } else { ultimaRazaoVazio = ''; }
-      return cmds.map((c) => ({
+      /* As chaves lê-as o núcleo (confirmado em jogo: a lista vem em
+       * `json.data.commands`). Aqui fica só o que o encaixe quer de cada um. */
+      ultimaRazaoVazio = vg.comandos.length ? '' : 'a visão geral veio sem comandos';
+      return vg.comandos.map((c) => ({
         command_id: Number(c.id),
         arrival_at: Number(c.arrival_at),
         started_at: Number(c.started_at),
@@ -28085,7 +28084,11 @@ function makeEncaixeModule(opts) {
         regresso: !!(c.return || c.cmd_return),
         cancelavel: !!c.cancelable,
       })).filter((c) => c.command_id && c.arrival_at && !c.regresso);
-    } catch (e) { return []; }
+    } catch (e) {
+      seErroDeCodigo(e, 'Encaixe');
+      ultimaRazaoVazio = 'erro: ' + ((e && e.message) || e);
+      return [];
+    }
   }
 
   // Identifica o comando ACABADO de enviar: o que apareceu a mais desde que
