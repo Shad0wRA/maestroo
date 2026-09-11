@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.0200
+// @version      2026.09.12.0300
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1868,7 +1868,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.0200';
+  const MAESTRO_VERSAO = '2026.09.12.0300';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -34424,12 +34424,52 @@ function makeApoioModule(opts) {
               + '&json=' + encodeURIComponent(JSON.stringify({ town_id: Number(base.id), nl_init: true }))
               + '&_=' + Date.now();
 
-            const resp = await mUw.fetch(url, {
+            /* "NÃO CONSEGUI LER" NÃO É "NÃO HÁ REVOLTAS".
+             *
+             * A visão geral só existe com Administrador. Sem ele — ou com um
+             * erro, um corte, uma verificação de bot — a resposta vinha sem
+             * comandos e lia-se como "nenhuma revolta". Com a folga curta no
+             * fim da revolta, isso tirava da lista uma cidade vista na R1 logo
+             * na troca para a R2 — a tropa saía quando o colonizador já podia
+             * entrar.
+             *
+             * Agora uma leitura falhada não tira nada da lista (nem põe), e
+             * avisa-se no ecrã, no máximo de hora a hora. */
+            const temAdm = (() => {
+              try {
+                const f = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroTemAdministrador;
+                return f ? !!f() : true;
+              } catch (e) { return true; }
+            })();
+
+            const resp = !temAdm ? null : await mUw.fetch(url, {
               headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
             }).then((r) => r.json()).catch(() => null);
 
             const d = (resp && resp.json) || {};
-            const cmds = d.commands || (d.data && d.data.commands) || [];
+            const cmdsLidos = Array.isArray(d.commands) ? d.commands
+              : ((d.data && Array.isArray(d.data.commands)) ? d.data.commands : null);
+            const leituraOk = !!resp && !d.error && !!cmdsLidos;
+            const cmds = cmdsLidos || [];
+
+            if (!leituraOk) {
+              const K_AVISO = 'grepoApoio_avisoVisaoGeral_v1';
+              let ultimoAviso = 0;
+              try { ultimoAviso = Number(armazem.getItem(K_AVISO)) || 0; } catch (e) {}
+              const porque = !temAdm ? 'esta conta não tem Administrador'
+                : (d.error ? `o jogo respondeu: ${d.error}` : 'o pedido falhou');
+              const quantas = Object.keys(lista.revoltasAuto || {}).length;
+              const msg = `⚠️ Revoltas: não consegui ler a visão geral (${porque}). Não detecto revoltas `
+                + 'novas, e as que estão na lista ficam lá até conseguir ler'
+                + (quantas ? ` (${quantas} agora).` : '.');
+              if (AGORA - ultimoAviso >= 3600) {
+                log(msg);
+                try { armazem.setItem(K_AVISO, String(AGORA)); } catch (e) {}
+              } else {
+                (ctx.logRotina || log)(msg);
+              }
+            }
+
             const minhasIds = new Set((ctx.getMyTowns() || []).map((t) => Number(t.id)));
 
             /* VÁRIOS JOGADORES PODEM REVOLTAR A MESMA CIDADE.
@@ -34493,6 +34533,7 @@ function makeApoioModule(opts) {
             const graca = Math.max(5, Number(c.minutosFolgaFimRevolta) || 15) * 60;
             const aRetirar = [];
             for (const id of Object.keys(auto)) {
+              if (!leituraOk) break;                              // não sei: nada sai
               if (porCidade[id]) continue;                        // ainda em revolta
               if (AGORA < Number((auto[id] || {}).ultima || 0) + graca) continue;
               aRetirar.push(Number(id));
