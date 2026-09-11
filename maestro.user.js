@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.1500
+// @version      2026.09.12.1600
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1929,7 +1929,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.1500';
+  const MAESTRO_VERSAO = '2026.09.12.1600';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -35358,6 +35358,27 @@ function makeApoioModule(opts) {
         if (!enviadoPorMim.has(onde)) continue;             // não fui eu que o pus lá
         ondeTenho.add(onde);
       }
+
+      /* E OS BLOCOS QUE OS MODELOS NÃO TÊM.
+       *
+       * Nas multis os modelos `Units` estão incompletos (espia de 11/09: um
+       * bloco, o 425240, não estava lá). Um alvo onde a conta só tinha blocos
+       * desses nunca era retirado ao sair da lista — o fim de uma revolta
+       * incluído. A leitura da Ágora (separador Fora) tem-nos todos. */
+      try {
+        const cacheF = lerCacheFora();
+        for (const de of Object.keys(cacheF)) {
+          if (!mUw.ITowns.towns[de]) continue;
+          for (const b of ((cacheF[de] || {}).blocos || [])) {
+            const onde = Number(b.alvoId) || 0;
+            if (!onde || onde === Number(de)) continue;
+            if ((Number((b.unidades || {}).colonize_ship) || 0) > 0) continue;
+            if (naLista.has(onde) || doColonos.has(onde)) continue;
+            if (!enviadoPorMim.has(onde)) continue;
+            ondeTenho.add(onde);
+          }
+        }
+      } catch (e) { seErroDeCodigo(e, 'Apoio'); }
 
       for (const cidade of ondeTenho) {
         const n = await retirarApoio(ctx, cidade);
