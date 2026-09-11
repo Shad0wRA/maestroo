@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.2400
+// @version      2026.09.12.2500
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2107,7 +2107,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.2400';
+  const MAESTRO_VERSAO = '2026.09.12.2500';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -33422,6 +33422,30 @@ function makeApoioModule(opts) {
     return out;
   }
 
+  /* A CIDADE E O ALVO ESTÃO NA MESMA ILHA?
+   *
+   * true / false, ou null se não se sabe onde está o alvo — aí quem chama fica
+   * como estava. A ilha do alvo vem das minhas cidades (se o alvo for meu) ou
+   * da cache dos nomes, que a tira dos modelos `Units` (a tropa que lá tenho
+   * traz `island_x`/`island_y`) ou do mapa. */
+  function mesmaIlhaQueOAlvo(townId, alvoId) {
+    try {
+      const t = mUw.ITowns.getTown(Number(townId));
+      const ox = Number(t.getIslandCoordinateX());
+      const oy = Number(t.getIslandCoordinateY());
+      let ilha = null;
+      if (mUw.ITowns.towns[Number(alvoId)]) {
+        const a = mUw.ITowns.getTown(Number(alvoId));
+        ilha = { x: Number(a.getIslandCoordinateX()), y: Number(a.getIslandCoordinateY()) };
+      } else if (cacheCidades[Number(alvoId)] && cacheCidades[Number(alvoId)].ilha) {
+        ilha = cacheCidades[Number(alvoId)].ilha;
+      }
+      if (!ilha || !Number.isFinite(ox) || !Number.isFinite(oy)
+          || !Number.isFinite(Number(ilha.x)) || !Number.isFinite(Number(ilha.y))) return null;
+      return ox === Number(ilha.x) && oy === Number(ilha.y);
+    } catch (e) { return null; }
+  }
+
   /* Ler a resposta do servidor com segurança.
    *
    * `resposta.json()` rebenta com "Unexpected end of JSON input" quando o
@@ -35888,7 +35912,15 @@ function makeApoioModule(opts) {
          * O pacote traz só as unidades a apoiar; sem navios de carga o jogo
          * recusa com "Necessita de navios de transporte para poder apoiar uma
          * cidade noutra ilha". As birremes são de guerra e não servem. */
-        const cargaFinal = juntarTransportes(t.id, carga, c);
+        /* NA MESMA ILHA A TROPA VAI A PÉ.
+         *
+         * Pediam-se transportes para todas as cidades, e uma cidade sem eles
+         * ficava sem tropa terrestre para mandar — "sem transportes para
+         * levar a tropa; salto" — com o alvo na mesma ilha, onde o jogo não os
+         * pede. Só se juntam quando o alvo está noutra ilha, ou quando não se
+         * sabe onde está (aí fica como estava). */
+        const aPe = mesmaIlhaQueOAlvo(t.id, alvo) === true;
+        const cargaFinal = aPe ? carga : juntarTransportes(t.id, carga, c);
         const temAlgo = Object.keys(cargaFinal).some((u) => (Number(cargaFinal[u]) || 0) > 0);
         if (!temAlgo) {
           rotina(`${t.name} → ${alvo}: sem transportes para levar a tropa; salto.`);
