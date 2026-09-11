@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.1600
+// @version      2026.09.12.1700
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1929,7 +1929,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.1600';
+  const MAESTRO_VERSAO = '2026.09.12.1700';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -38620,12 +38620,104 @@ function makeFrotaModule(opts) {
 
   /* ---------------------- passagem -------------------------------------- */
 
+  /* ============ VIGIA DA FROTA — na main principal ======================
+   *
+   * Cada conta já publica no sinal de vida a versão, se tem captcha no ecrã e
+   * as cidades paradas; o painel mostrava-o, mas só os erros de código iam ao
+   * Discord. Visto (11/09): uma multi parada horas com um falso captcha, e
+   * ninguém soube.
+   *
+   * A main principal vê a frota de 5 em 5 min e manda UMA mensagem com o que
+   * mudou: conta calada, captcha por resolver, versão antiga (só 2 h depois de
+   * a main correr a nova — a versão demora a entrar), cidades paradas com o
+   * armazém cheio. E outra quando se resolve. Nunca repete o mesmo aviso.
+   * Basta a main ter canal no Discord. */
+  const VIGIA_KEY = 'grepoFrota_vigia_v1';
+  const VERSAO_VISTA_KEY = 'grepoFrota_versaoVista_v1';
+  let vigiaUltima = 0;
+
+  function souMainPrincipal() {
+    try {
+      if (localStorage.getItem('grepoMaestro_principal_v1') !== '1') return false;
+      return (JSON.parse(localStorage.getItem('grepoMaestro_modulos_v1') || '{}') || {}).perfil === 'main';
+    } catch (e) { return false; }
+  }
+
+  async function vigiarFrota(ctx, w, fb) {
+    if (!souMainPrincipal()) return;
+    if (Date.now() - vigiaUltima < 5 * 60 * 1000) return;
+    vigiaUltima = Date.now();
+    if (!fb || !fb.ler || !fb.url || !fb.url()) return;
+    const dados = await fb.ler(`frota/${mWorld}`);
+    if (!dados || typeof dados !== 'object') return;
+    const agora = Math.floor(Date.now() / 1000);
+    const minha = String(w.__maestroVersao || '');
+
+    let vista = {};
+    try { vista = JSON.parse(armazem.getItem(VERSAO_VISTA_KEY) || '{}') || {}; } catch (e) { vista = {}; }
+    if (vista.versao !== minha) {
+      vista = { versao: minha, quando: agora };
+      try { armazem.setItem(VERSAO_VISTA_KEY, JSON.stringify(vista)); } catch (e) {}
+    }
+    const versaoAssente = (agora - Number(vista.quando || agora)) > 2 * 3600;
+
+    let estado = {};
+    try { estado = JSON.parse(armazem.getItem(VIGIA_KEY) || '{}') || {}; } catch (e) { estado = {}; }
+    const eu = String((mUw.Game || {}).player_name || '');
+    const novos = [], resolvidos = [];
+    for (const chave of Object.keys(dados)) {
+      const x = dados[chave] || {};
+      const nome = String(x.conta || chave);
+      if (nome === eu) continue;
+      const quando = Number(x.quando) || 0;
+      if (!quando || agora - quando > 24 * 3600) continue;            // conta retirada
+      const calada = agora - quando > SEM_SINAL;
+      const problemas = {
+        calada,
+        captcha: !calada && Number(x.captcha) === 1,
+        versao: !calada && versaoAssente && !!minha && String(x.versao || '') < minha,
+        paradas: !calada && ((x.jogo || {}).cheio || 0) >= 85 && ((x.jogo || {}).paradas || 0) > 0,
+      };
+      const antes = estado[nome] || {};
+      const depois = {};
+      for (const p of Object.keys(problemas)) {
+        if (problemas[p]) {
+          depois[p] = antes[p] || agora;
+          if (!antes[p]) novos.push({ nome, p, x, desde: agora - quando });
+        } else if (antes[p]) {
+          resolvidos.push({ nome, p });
+        }
+      }
+      estado[nome] = depois;
+    }
+    try { armazem.setItem(VIGIA_KEY, JSON.stringify(estado)); } catch (e) {}
+    if (!novos.length && !resolvidos.length) return;
+
+    const TXT = { calada: 'calada', captcha: 'captcha por resolver', versao: 'versão antiga',
+      paradas: 'cidades paradas com o armazém cheio' };
+    const linhaNovo = (n) => {
+      if (n.p === 'calada') return `🔇 **${n.nome}** — sem sinal há ${Math.round(n.desde / 60)} min`;
+      if (n.p === 'captcha') return `🛑 **${n.nome}** — captcha por resolver`;
+      if (n.p === 'versao') return `🕰️ **${n.nome}** — ainda na ${n.x.versao || '?'} (a main está na ${minha})`;
+      return `🧱 **${n.nome}** — ${(n.x.jogo || {}).paradas} cidade(s) parada(s) com o armazém cheio`;
+    };
+    const linhas = novos.map(linhaNovo).concat(resolvidos.map((r) => `✅ **${r.nome}** — já não: ${TXT[r.p]}`));
+    ctx.log(`👁️ Vigia da frota (${mWorld}): ` + linhas.map((l) => l.replace(/\*\*/g, '')).join(' · '));
+    if (ctx.avisarDiscord) {
+      const corpo = { titulo: `👁️ Vigia da frota — ${String(mWorld).toUpperCase()}`,
+        descricao: linhas.join('\n').slice(0, 3000) };
+      const ordem = novos.some((n) => n.p === 'captcha') ? ['captcha', 'erro', 'ataque'] : ['erro', 'ataque', 'captcha'];
+      for (const t of ordem) { if (await ctx.avisarDiscord(t, corpo)) break; }
+    }
+  }
+
   async function run(ctx) {
     mUw = ctx.uw; mWorld = ctx.WORLD;
     const rotina = ctx.logRotina || ctx.log;
 
     const w = janela();
     const fb = w.__maestroFb;
+    try { await vigiarFrota(ctx, w, fb); } catch (e) { seErroDeCodigo(e, 'Frota'); }
     let temFb = false;
     try { temFb = !!(fb && fb.escrever && fb.url && fb.url()); } catch (e) { seErroDeCodigo(e, 'Frota'); }
     if (!temFb) {
@@ -41679,6 +41771,29 @@ function makeExpansaoModule(opts) {
         }, 30 * 60 * 1000);
       }, 30000 + desvio);
     } catch (e) { seErroDeCodigo(e, 'Frota'); }
+
+    /* VERSÃO NOVA, AVISO RÁPIDO — pelo Firebase.
+     *
+     * A verificação acima descarrega o ficheiro inteiro (1,8 MB) de meia em
+     * meia hora; encurtar isso eram sessenta abas a descarregar vezes sem
+     * conta. Em vez disso: a primeira conta a correr uma versão nova escreve-a
+     * em `maestroVersao` (uma chave pequena), e as outras, que a lêem de 2 em 2
+     * min, vão logo buscar a nova. */
+    try {
+      setTimeout(() => {
+        const avisoDeVersao = async () => {
+          try {
+            const f = uw.__maestroFb;
+            if (!f || !f.url || !f.url()) return;
+            const publicada = String((await f.ler('maestroVersao')) || '');
+            if (String(MAESTRO_VERSAO) > publicada) await f.escrever('maestroVersao', String(MAESTRO_VERSAO));
+            else if (publicada > String(MAESTRO_VERSAO)) verificarVersaoNova();
+          } catch (e) { seErroDeCodigo(e, 'núcleo'); }
+        };
+        avisoDeVersao();
+        setInterval(avisoDeVersao, 2 * 60 * 1000);
+      }, 45000 + Math.floor(Math.random() * 60000));
+    } catch (e) { seErroDeCodigo(e, 'núcleo'); }
     if (autoStartLigado()) {
       log('core', 'Pronto — arranque automático ligado.');
       startMaestro();
