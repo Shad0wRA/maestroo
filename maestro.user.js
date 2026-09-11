@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.2200
+// @version      2026.09.12.2400
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2107,7 +2107,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.2200';
+  const MAESTRO_VERSAO = '2026.09.12.2400';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -3406,14 +3406,29 @@
         captchaNoEcraDesde = Date.now(); captchaAvisadoEm = Date.now();
         log('core', '⏸️ Há um captcha no ecrã — paro tudo, sem trocar de cidade, até o resolveres. '
           + `(${vistoNoEcra.desc})`);
+        /* E AVISA NO DISCORD.
+         *
+         * Com o ciclo parado, param também os módulos que avisavam: a recolha
+         * das aldeias (avisava a cada passagem) e o sinal de vida da frota (o
+         * vigia da main só dava pela conta ao fim de 20 min, como "calada").
+         * O captcha ficava só neste registo, que na VPS ninguém vê — visto numa
+         * multi (11/09). O `avisarCaptcha` avisa no máximo de meia em meia hora
+         * por conta. */
+        try { avisarCaptcha('captcha no ecrã — o maestro está parado até o resolveres'); } catch (e) {}
       } else if (Date.now() - captchaNoEcraDesde > 30 * 60 * 1000) {
         captchaNoEcraDesde = 0;
         captchaIgnorarAte = Date.now() + 30 * 60 * 1000;
         log('core', `⚠️ 30 min parado por um captcha no ecrã (${vistoNoEcra.desc}) — retomo, e não volto `
           + 'a parar por ele durante 30 min. Se estiver mesmo lá, resolve-o.');
+        try { avisarCaptcha('captcha no ecrã há 30 min, por resolver — o maestro retoma sem ele'); } catch (e) {}
       } else if (Date.now() - captchaAvisadoEm > 10 * 60 * 1000) {
         captchaAvisadoEm = Date.now();
         log('core', `⏸️ O captcha continua no ecrã há ${Math.round((Date.now() - captchaNoEcraDesde) / 60000)} min.`);
+        // No Discord só sai de meia em meia hora (o `avisarCaptcha` trava o resto).
+        try {
+          avisarCaptcha(`captcha no ecrã há ${Math.round((Date.now() - captchaNoEcraDesde) / 60000)} min — `
+            + 'o maestro continua parado');
+        } catch (e) {}
       }
       if (captchaNoEcraDesde) return;
     } else if (captchaNoEcraDesde) {
@@ -35103,11 +35118,6 @@ function makeApoioModule(opts) {
 
           const base = (ctx.getMyTowns() || [])[0];
           if (base) {
-            const url = mUw.location.origin + '/game/town_overviews?town_id=' + Number(base.id)
-              + '&action=command_overview&h=' + mUw.Game.csrfToken
-              + '&json=' + encodeURIComponent(JSON.stringify({ town_id: Number(base.id), nl_init: true }))
-              + '&_=' + Date.now();
-
             /* "NÃO CONSEGUI LER" NÃO É "NÃO HÁ REVOLTAS".
              *
              * A visão geral só existe com Administrador. Sem ele — ou com um
@@ -35125,14 +35135,14 @@ function makeApoioModule(opts) {
               } catch (e) { return true; }
             })();
 
-            const resp = !temAdm ? null : await mUw.fetch(url, {
-              headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
-            }).then((r) => r.json()).catch(() => null);
-
-            const d = (resp && resp.json) || {};
-            const cmdsLidos = Array.isArray(d.commands) ? d.commands
-              : ((d.data && Array.isArray(d.data.commands)) ? d.data.commands : null);
-            const visaoOk = !!resp && !d.error && !!cmdsLidos;
+            /* Pelo leitor único do núcleo: trata do 429 (a leitura antiga nem o
+             * via) e partilha a cópia de 20 s — uma revolta dura horas. As duas
+             * chaves e a regra "sem lista não é lista vazia" já lá estão. */
+            const vgF = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroVisaoGeral;
+            const vg = !temAdm ? { ok: false, razao: 'sem Administrador' }
+              : (vgF ? await vgF() : { ok: false, razao: 'o núcleo não tem o leitor da visão geral' });
+            const cmdsLidos = vg.ok ? vg.comandos : null;
+            const visaoOk = !!vg.ok;
 
             /* A FASE: R1 ANTES DO `started_at`, R2 DEPOIS.
              *
@@ -35163,7 +35173,7 @@ function makeApoioModule(opts) {
               let ultimoAviso = 0;
               try { ultimoAviso = Number(armazem.getItem(K_AVISO)) || 0; } catch (e) {}
               const porque = !temAdm ? 'esta conta não tem Administrador'
-                : (d.error ? `o jogo respondeu: ${d.error}` : 'o pedido falhou');
+                : (vg.razao || 'o pedido falhou');
               const quantas = Object.keys(lista.revoltasAuto || {}).length;
               const msg = modelos.ok
                 ? `⚠️ Revoltas: sem visão geral (${porque}) — uso os dados de revolta que o `
@@ -37346,6 +37356,13 @@ function makeFundacaoModule(opts) {
     // uma vez por passagem: as ilhas para onde já vai colonizador
     const emViagem = await ilhasComColonizadorAcaminho(t.id);
 
+    /* Sem saber que colonizadores vão a caminho, não se manda outro. */
+    if (emViagem == null) {
+      log(`Fundação: não consegui ler os colonizadores em viagem (${razaoColonizadores}) — `
+        + 'não fundo nesta passagem.');
+      return;
+    }
+
     for (const ilha of aTentar) {
       const chave = `${ilha.x}:${ilha.y}`;
 
@@ -37846,13 +37863,12 @@ function makeFundacaoModule(opts) {
     return false;
   }
 
-  /* Colonizadores em viagem, lidos da visão geral de comandos.
+  /* Colonizadores em viagem desta conta, como "x:y" da ilha.
    *
-   * Só funciona com Administrador (a main) — nas multis o pedido não devolve
-   * nada e fica-se pelo registo local, que é a base em qualquer caso.
-   *
-   * O texto do jogo é: "55.3 (Jogador) → Ilha 64948 (Fundação de uma cidade)".
-   * Basta procurar o número da ilha nas linhas de fundação. */
+   * Devolve `null` se não conseguiu ler — quem chama não funda nessa
+   * passagem. Sem Administrador fica como sempre: só o registo local. */
+  let razaoColonizadores = '';
+
   async function ilhasComColonizadorAcaminho(townIdBase) {
     const out = new Set();
 
@@ -37880,20 +37896,34 @@ function makeFundacaoModule(opts) {
     } catch (e) { seErroDeCodigo(e, 'Fundacao'); }
     if (out.size) return out;
 
+    /* PELO LEITOR ÚNICO DO NÚCLEO, SEMPRE FRESCA — um colonizador enviado
+     * agora tem de contar já, senão sai outro para a mesma ilha.
+     *
+     * Lia-se o HTML à procura de "Ilha 64948 (Fundação…)" e guardava-se o
+     * NÚMERO da ilha; quem chama procura "x:y", e o número nunca batia. A lista
+     * dos comandos traz a ilha em campos próprios (confirmado com a espia —
+     * ver a barreira da Expansão): id "colonization_…", island_x, island_y. */
     try {
-      const url = mUw.location.origin + '/game/town_overviews?town_id=' + Number(townIdBase)
-        + '&action=command_overview&h=' + mUw.Game.csrfToken
-        + '&json=' + encodeURIComponent(JSON.stringify({ town_id: Number(townIdBase), nl_init: true }));
-      const r = await mUw.fetch(url, { headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include' })
-        .then(lerResposta);
-      const html = ((r || {}).json || {}).html || '';
-      if (html.length < 2000) return out;   // só a moldura: sem Administrador
-
-      // "Ilha 64948 (Fundação de uma cidade)"
-      const re = /Ilha\s+(\d+)[^<]*\(\s*Funda/gi;
-      let m;
-      while ((m = re.exec(html))) out.add(Number(m[1]));
-    } catch (e) { seErroDeCodigo(e, 'Fundacao'); }
+      const vgF = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroVisaoGeral;
+      const vg = vgF ? await vgF({ fresca: true })
+        : { ok: false, razao: 'o núcleo não tem o leitor da visão geral' };
+      if (!vg.ok) {
+        if (vg.razao === 'sem Administrador') return out;
+        razaoColonizadores = vg.razao || 'não sei porquê';
+        return null;
+      }
+      for (const c2 of vg.comandos) {
+        if (!/^colonization_/i.test(String(c2.id || ''))) continue;
+        if (c2.colonization_finished_at) continue;              // já fundou
+        const x = Number(c2.island_x);
+        const y = Number(c2.island_y);
+        if (x && y) out.add(`${x}:${y}`);
+      }
+    } catch (e) {
+      seErroDeCodigo(e, 'Fundacao');
+      razaoColonizadores = 'erro: ' + ((e && e.message) || e);
+      return null;
+    }
     return out;
   }
 
@@ -41678,6 +41708,13 @@ function makeExpansaoModule(opts) {
         return { pode: false, porque: 'já mandei um colonizador para cá' };
       }
 
+      /* SEM SABER QUE COLONIZADORES VÃO A CAMINHO, NÃO SE MANDA OUTRO.
+       * A última leitura da visão geral falhou (ver `refrescarColonizacoes`). */
+      if (uw.__maestroColonizacoesLidas === false) {
+        return { pode: false,
+          porque: `não consegui ler os colonizadores em viagem (${uw.__maestroColonizacoesRazao || '?'})` };
+      }
+
       /* 3. TENHO UM COLONIZADOR EM VIAGEM PARA ESTA ILHA.
        *
        * Os colonizadores NÃO estão no `MovementsUnits` e NÃO têm campo `type`.
@@ -41715,19 +41752,25 @@ function makeExpansaoModule(opts) {
     try {
       if (Date.now() - colonizacoesQuando < 60 * 1000) return;
 
-      const t = Number(jogo().Game.townId);
-      const url = jogo().location.origin + '/game/town_overviews?town_id=' + t
-        + '&action=command_overview&h=' + jogo().Game.csrfToken
-        + '&json=' + encodeURIComponent(JSON.stringify({ town_id: t, nl_init: true }))
-        + '&_=' + Date.now();
+      /* PELO LEITOR ÚNICO DO NÚCLEO, SEMPRE FRESCA: um colonizador enviado
+       * agora tem de contar já. */
+      const vgF = jogo().__maestroVisaoGeral;
+      const vg = vgF ? await vgF({ fresca: true })
+        : { ok: false, razao: 'o núcleo não tem o leitor da visão geral' };
 
-      const lr = jogo().__maestroLerResposta;
-      const rr = await jogo().fetch(url, {
-        headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
-      });
-      const r = lr ? await lr(rr) : await rr.json();
-      const d = (r && r.json) || {};
-      const cmds = d.commands || (d.data && d.data.commands) || [];
+      /* NÃO CONSEGUI LER ≠ NENHUM COLONIZADOR A CAMINHO.
+       *
+       * Uma leitura falhada deixava a lista vazia, e a barreira deixava sair
+       * outro colonizador para uma ilha onde já ia um. Agora fica marcado que
+       * não se sabe, e a barreira não deixa sair nenhum até se conseguir ler.
+       * Não se marca a hora: tenta-se outra vez na passagem seguinte. Sem
+       * Administrador fica como sempre (lista vazia; decide o registo local). */
+      if (!vg.ok && vg.razao !== 'sem Administrador') {
+        jogo().__maestroColonizacoesLidas = false;
+        jogo().__maestroColonizacoesRazao = vg.razao || 'não sei porquê';
+        return;
+      }
+      const cmds = vg.ok ? vg.comandos : [];
 
       const out = [];
       for (const c2 of cmds) {
@@ -41744,8 +41787,16 @@ function makeExpansaoModule(opts) {
       }
 
       jogo().__maestroColonizacoesEmCurso = out;
+      jogo().__maestroColonizacoesLidas = true;
+      jogo().__maestroColonizacoesRazao = '';
       colonizacoesQuando = Date.now();
-    } catch (e) { seErroDeCodigo(e, 'Expansao'); }
+    } catch (e) {
+      seErroDeCodigo(e, 'Expansao');
+      try {
+        jogo().__maestroColonizacoesLidas = false;
+        jogo().__maestroColonizacoesRazao = 'erro: ' + ((e && e.message) || e);
+      } catch (e2) {}
+    }
   }
 
   try { jogo().__maestroRefrescarColonizacoes = refrescarColonizacoes; } catch (e) {}
