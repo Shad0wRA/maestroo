@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.1200
+// @version      2026.09.12.1300
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -931,8 +931,37 @@
     } catch (e) { return { ok: false, msg: e.message }; }
   }
 
+  /* A FROTA LÊ-SE UMA VEZ, NÃO QUATRO.
+   *
+   * A frota do mundo inteiro (as 21 contas, com o apoio de cada uma) era lida
+   * em quatro sítios por passagem — núcleo, apoio e duas vezes na frota. Cada
+   * conta publica de 5 em 5 minutos: uma cópia com 45 segundos serve a todos.
+   * Uma escrita nesse caminho (o sinal de vida desta conta) deita-a fora. */
+  const FROTA_CACHE_MS = 45 * 1000;
+  const cacheFrota = {};   // caminho → { quando, dados }
+  async function fbLerComCache(caminho) {
+    const c = String(caminho || '');
+    if (/^frota\/[^/]+$/.test(c)) {
+      const g = cacheFrota[c];
+      if (g && Date.now() - g.quando < FROTA_CACHE_MS) {
+        try { return JSON.parse(g.dados); } catch (e) { delete cacheFrota[c]; }
+      }
+      const d = await fbLer(caminho);
+      if (d != null) {
+        try { cacheFrota[c] = { quando: Date.now(), dados: JSON.stringify(d) }; } catch (e) {}
+      }
+      return d;
+    }
+    return fbLer(caminho);
+  }
+  async function fbEscreverEEsquecer(caminho, dados) {
+    const c = String(caminho || '');
+    for (const k of Object.keys(cacheFrota)) if (c === k || c.indexOf(k + '/') === 0) delete cacheFrota[k];
+    return fbEscrever(caminho, dados);
+  }
+
   try {
-    uw.__maestroFb = { ler: fbLer, escrever: fbEscrever, apagar: fbApagar, url: firebaseUrl };
+    uw.__maestroFb = { ler: fbLerComCache, escrever: fbEscreverEEsquecer, apagar: fbApagar, url: firebaseUrl };
   } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ CONFIRMAÇÃO PRÓPRIA =====================================
@@ -1900,7 +1929,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.1200';
+  const MAESTRO_VERSAO = '2026.09.12.1300';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -3175,7 +3204,7 @@
   let running = false;
   /* Já avisámos que a janela do encaixe está aberta, e desde quando. */
   let avisouEncaixeAberto = false;
-  let captchaNoEcraDesde = 0, captchaAvisadoEm = 0;
+  let captchaNoEcraDesde = 0, captchaAvisadoEm = 0, captchaIgnorarAte = 0;
   let encaixeAbertoDesde = 0;
 
   async function tick() {
@@ -3190,15 +3219,25 @@
      * trocasse de cidade podia mexer na janela da aldeia onde ele está. Fica
      * tudo parado, e retoma-se sozinho quando o captcha desaparecer. Lembra-se
      * de dez em dez minutos. */
-    if (haVerificacaoDeBot()) {
+    /* Só o que está NO ECRÃ pára o ciclo — não um aviso esquecido na pilha
+     * das notificações. E nunca mais de 30 minutos seguidos: se ao fim disso
+     * ainda "houver captcha", segue-se, e o aviso fica no registo. */
+    const vistoNoEcra = (Date.now() < captchaIgnorarAte) ? null : captchaNoEcra();
+    if (vistoNoEcra) {
       if (!captchaNoEcraDesde) {
         captchaNoEcraDesde = Date.now(); captchaAvisadoEm = Date.now();
-        log('core', '⏸️ Há um captcha no ecrã — paro tudo, sem trocar de cidade, até o resolveres.');
+        log('core', '⏸️ Há um captcha no ecrã — paro tudo, sem trocar de cidade, até o resolveres. '
+          + `(${vistoNoEcra.desc})`);
+      } else if (Date.now() - captchaNoEcraDesde > 30 * 60 * 1000) {
+        captchaNoEcraDesde = 0;
+        captchaIgnorarAte = Date.now() + 30 * 60 * 1000;
+        log('core', `⚠️ 30 min parado por um captcha no ecrã (${vistoNoEcra.desc}) — retomo, e não volto `
+          + 'a parar por ele durante 30 min. Se estiver mesmo lá, resolve-o.');
       } else if (Date.now() - captchaAvisadoEm > 10 * 60 * 1000) {
         captchaAvisadoEm = Date.now();
         log('core', `⏸️ O captcha continua no ecrã há ${Math.round((Date.now() - captchaNoEcraDesde) / 60000)} min.`);
       }
-      return;
+      if (captchaNoEcraDesde) return;
     } else if (captchaNoEcraDesde) {
       captchaNoEcraDesde = 0;
       log('core', '▶️ O captcha saiu do ecrã — retomo o trabalho.');
@@ -3551,15 +3590,51 @@
    *
    * O `delete_all` apaga TUDO, incluindo essa. Se ela lá estiver, não se
    * apaga nada — perder uma verificação de bot sem a ver custa a conta. */
-  function haVerificacaoDeBot() {
-    /* PRIMEIRO NO ECRÃ.
-     *
-     * A verificação é uma JANELA, não uma notificação — procurava-se só na
-     * pilha das notificações e não se encontrava nada. Visto em jogo: o
-     * captcha no ecrã e o maestro a continuar a trabalhar, a dizer que tinha
-     * recolhido 96 aldeias e zero recursos.
-     *
-     * Enquanto ela estiver aberta, nada do que o maestro faz produz efeito. */
+  /* VISÍVEL A SÉRIO.
+   *
+   * Bastava ter pai de posição e tamanho — e o hCaptcha deixa na página a
+   * janela do desafio escondida (invisível, fora do ecrã). Contava como
+   * "captcha no ecrã": o maestro parava logo ao arrancar e não retomava
+   * depois de resolvido (11/09). Agora: nada escondido por display,
+   * visibility ou opacidade, e dentro do ecrã. */
+  function estaNoEcra(el) {
+    try {
+      if (!el || el.isConnected === false) return false;
+      if (typeof el.checkVisibility === 'function') {
+        if (!el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })) return false;
+      } else {
+        for (let n = el; n && n.nodeType === 1; n = n.parentElement) {
+          const cs = getComputedStyle(n);
+          if (cs.display === 'none' || cs.visibility === 'hidden' || Number(cs.opacity) === 0) return false;
+        }
+      }
+      const r = el.getBoundingClientRect();
+      if (!(r.width > 40 && r.height > 40)) return false;
+      const vw = window.innerWidth || document.documentElement.clientWidth || 0;
+      const vh = window.innerHeight || document.documentElement.clientHeight || 0;
+      if (r.right <= 0 || r.bottom <= 0 || (vw && r.left >= vw) || (vh && r.top >= vh)) return false;
+      return true;
+    } catch (e) { return false; }
+  }
+
+  /* Um hCaptcha RESOLVIDO não conta: quando se resolve, o hCaptcha preenche
+   * o campo `h-captcha-response` que está junto dele. */
+  function hcaptchaResolvido(el) {
+    try {
+      for (let n = el.parentElement, i = 0; n && i < 4; n = n.parentElement, i++) {
+        const t = n.querySelector && n.querySelector('textarea[name="h-captcha-response"], textarea[name="g-recaptcha-response"]');
+        if (t) return !!String(t.value || '').trim();
+      }
+    } catch (e) {}
+    return false;
+  }
+
+  /* O captcha que está NO ECRÃ, ou null — com uma descrição para o registo.
+   *
+   * A verificação é uma JANELA, não uma notificação. Visto em jogo: o captcha
+   * no ecrã e o maestro a continuar a trabalhar. Enquanto ela estiver aberta,
+   * nada do que o maestro faz produz efeito. */
+  function captchaNoEcra() {
     try {
       const marcas = [
         '[class*="captcha" i]', '[id*="captcha" i]',
@@ -3570,18 +3645,22 @@
         'iframe[src*="hcaptcha" i]',
       ];
       for (const sel of marcas) {
-        const els = document.querySelectorAll(sel);
-        for (const el of els) {
-          /* Só conta se estiver VISÍVEL: o jogo tem elementos escondidos com
-           * estes nomes que existem sempre. */
-          try {
-            if (!el.offsetParent && getComputedStyle(el).position !== 'fixed') continue;
-            const r = el.getBoundingClientRect();
-            if (r.width > 40 && r.height > 40) return true;
-          } catch (e) { seErroDeCodigo(e, 'núcleo'); }
+        for (const el of document.querySelectorAll(sel)) {
+          if (!estaNoEcra(el)) continue;
+          const iframe = el.tagName === 'IFRAME' ? el : (el.querySelector && el.querySelector('iframe[src*="hcaptcha" i]'));
+          if (iframe && hcaptchaResolvido(iframe)) continue;
+          const r = el.getBoundingClientRect();
+          const nome = (el.tagName || '').toLowerCase() + (el.id ? '#' + el.id : '')
+            + ((typeof el.className === 'string' && el.className.trim()) ? '.' + el.className.trim().split(/\s+/).slice(0, 2).join('.') : '');
+          return { sel, desc: `${nome} ${Math.round(r.width)}×${Math.round(r.height)} em ${Math.round(r.left)},${Math.round(r.top)}` };
         }
       }
     } catch (e) { seErroDeCodigo(e, 'núcleo'); }
+    return null;
+  }
+
+  function haVerificacaoDeBot() {
+    if (captchaNoEcra()) return true;
 
     /* E também nas notificações, para o caso de aparecer por lá. */
     try {
