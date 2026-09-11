@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.0600
+// @version      2026.09.12.0900
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1868,7 +1868,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.0600';
+  const MAESTRO_VERSAO = '2026.09.12.0900';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -2427,6 +2427,7 @@
     'grepoApoio_transpVolta_v1',         // transportes que ESTA conta já mandou vir
     'grepoAldeias_captcha_v1',           // captcha visto NESTA conta
     'grepoAldeias_captchaMostrado_v1',   // quando ESTA conta abriu a recolha para mostrar o captcha
+    'grepoFecharIlha_enviei_v1',         // ilhas para onde ESTA conta já mandou colonizador
     'grepoAlertas_reforco_v1',           // reforços que ESTA conta pediu
     'grepoAlertas_ultimaPassagem_v1',    // quando ESTA conta olhou pela última vez
     'grepoApoio_cacheAlvos_v1',          // os alvos como ESTA conta os leu
@@ -3142,6 +3143,7 @@
   let running = false;
   /* Já avisámos que a janela do encaixe está aberta, e desde quando. */
   let avisouEncaixeAberto = false;
+  let captchaNoEcraDesde = 0, captchaAvisadoEm = 0;
   let encaixeAbertoDesde = 0;
 
   async function tick() {
@@ -3149,6 +3151,26 @@
 
     /* O servidor está a limitar? Não insistir — só piora e deixa tudo cego. */
     if (servidorTravado()) return;
+
+    /* HÁ UM CAPTCHA NO ECRÃ? PÁRA TUDO ATÉ O RESOLVERES.
+     *
+     * Com ele aberto nada do que o maestro faz tem efeito — e um módulo que
+     * trocasse de cidade podia mexer na janela da aldeia onde ele está. Fica
+     * tudo parado, e retoma-se sozinho quando o captcha desaparecer. Lembra-se
+     * de dez em dez minutos. */
+    if (haVerificacaoDeBot()) {
+      if (!captchaNoEcraDesde) {
+        captchaNoEcraDesde = Date.now(); captchaAvisadoEm = Date.now();
+        log('core', '⏸️ Há um captcha no ecrã — paro tudo, sem trocar de cidade, até o resolveres.');
+      } else if (Date.now() - captchaAvisadoEm > 10 * 60 * 1000) {
+        captchaAvisadoEm = Date.now();
+        log('core', `⏸️ O captcha continua no ecrã há ${Math.round((Date.now() - captchaNoEcraDesde) / 60000)} min.`);
+      }
+      return;
+    } else if (captchaNoEcraDesde) {
+      captchaNoEcraDesde = 0;
+      log('core', '▶️ O captcha saiu do ecrã — retomo o trabalho.');
+    }
 
     /* A JANELA DO ENCAIXE ESTÁ ABERTA?
      *
@@ -3176,8 +3198,17 @@
       if (Date.now() - encaixeAbertoDesde > 10 * 60 * 1000) {
         let fechou = false;
         try {
-          const x = document.querySelector('.gpwindow_frame .btn_wnd.close, '
-            + '.gpwindow_frame .ui-dialog-titlebar-close, .gpwindow_frame .close');
+          /* SÓ A JANELA DE ENVIO.
+           *
+           * Carregava-se no primeiro "fechar" do ecrã — que podia ser o de
+           * outra janela, a do captcha incluída. E o selector nem apanhava o
+           * botão: a espia (11/09) mostrou que o fechar está na raiz da janela
+           * (`.js-window-main-container`), não dentro do `.gpwindow_frame`. */
+          const campo = Array.prototype.find.call(
+            document.querySelectorAll('input.unit_input[name]'), (el) => !!el.offsetParent)
+            || document.getElementById('encaixe-box');
+          const raiz = campo && campo.closest && campo.closest('.js-window-main-container');
+          const x = raiz && raiz.querySelector('.btn_wnd.close, .ui-dialog-titlebar-close');
           if (x) { x.click(); fechou = true; }
         } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
@@ -3502,6 +3533,9 @@
         '[class*="captcha" i]', '[id*="captcha" i]',
         '[class*="botcheck" i]', '[id*="botcheck" i]',
         '[class*="bot_check" i]', '[id*="bot_check" i]',
+        /* O captcha do jogo é o hCaptcha ("I am human"), dentro da janela da
+         * aldeia — visto em jogo (11/09). O widget é sempre um iframe dele. */
+        'iframe[src*="hcaptcha" i]',
       ];
       for (const sel of marcas) {
         const els = document.querySelectorAll(sel);
@@ -17902,27 +17936,53 @@ function makeAldeiasModule(opts) {
   }
 
   /* =========================================================================
-   *  MOSTRAR O CAPTCHA NO ECRÃ — abrir a recolha e carregar no botão.
+   *  MOSTRAR O CAPTCHA NO ECRÃ — abrir uma aldeia e carregar em Recolher.
    *
    *  Os pedidos do maestro não passam pelo tratamento do próprio jogo: quando
    *  o servidor pede verificação, responde `backend_requested_verification` e
    *  mais nada — nenhuma janela abre. Um clique no botão do jogo passa por
-   *  esse tratamento, e é o jogo que abre o captcha. Pedido teu (11/09).
+   *  esse tratamento, e é o jogo que mostra o captcha. Pedido teu (11/09).
    *
-   *  Tudo confirmado com a espia (11/09, main):
-   *    com Capitão:  FarmTownOverviewWindowFactory.openFarmTownOverview()
-   *                  → `a.checkbox.select_all` → `#fto_claim_button`
-   *    sem Capitão:  FarmTownWindowFactory.openWindow(<aldeia>)
-   *                  → `.action_card .card_click_area` ("Recolher", opção 1)
-   *    armazém cheio (nos dois): confirmação → `.btn_confirm` ("Sim")
-   *  Clica-se no elemento mais fundo que tu clicaste: o clique sobe aos pais,
-   *  e o que o jogo escuta está num deles.
+   *  O que tem de ficar no ecrã (imagem tua, 11/09): a janela da aldeia
+   *  bárbara com o hCaptcha ("I am human") e o Confirmar lá dentro. Por isso
+   *  abre-se SEMPRE a janela de uma aldeia — com Capitão também: pela visão
+   *  geral, o captcha apareceria noutra janela.
+   *
+   *  Confirmado com a espia (11/09):
+   *    FarmTownWindowFactory.openWindow(<aldeia>)
+   *      → `.action_card .card_click_area` ("Recolher", opção 1)
+   *    armazém cheio: confirmação → `.btn_confirm` ("Sim")
+   *
+   *  Enquanto o captcha estiver no ecrã, o núcleo pára o ciclo: ninguém troca
+   *  de cidade e a janela fica como está até o resolveres.
    *
    *  Uma vez por suspensão. Não se toca no captcha: resolves tu.
    * ====================================================================== */
   const CAPTCHA_MOSTRADO_KEY = 'grepoAldeias_captchaMostrado_v1';
 
-  async function mostrarCaptchaPelaRecolha(ctx, farmTownId) {
+  /* Que aldeia abrir: uma pronta na ilha da cidade aberta (o jogo recolhe a
+   * partir dela); senão uma pronta noutra ilha, indo à cidade de lá; senão a
+   * que falhou. */
+  function aldeiaParaMostrarCaptcha(ctx, prontas, falhou) {
+    try {
+      const prontasIds = new Set((prontas || []).map((p) => Number(p.farmTownId)));
+      const porIlha = aldeiasPorIlha();
+      const naIlha = (townId) => {
+        const isl = ilhaDaCidade(townId);
+        return isl ? (porIlha[isl.x + ':' + isl.y] || []) : [];
+      };
+      const atual = Number(mUw.Game.townId) || 0;
+      const aqui = naIlha(atual).find((f) => prontasIds.has(Number(f.id)));
+      if (aqui) return { farmTownId: Number(aqui.id), townId: atual };
+      for (const t of (ctx.getMyTowns() || [])) {
+        const f2 = naIlha(t.id).find((f) => prontasIds.has(Number(f.id)));
+        if (f2) return { farmTownId: Number(f2.id), townId: Number(t.id) };
+      }
+    } catch (e) { seErroDeCodigo(e, 'Aldeias'); }
+    return (falhou && falhou.farmTownId) ? falhou : null;
+  }
+
+  async function mostrarCaptchaPelaRecolha(ctx, alvo) {
     const log = ctx.log;
     try {
       const antes = Number(armazem.getItem(CAPTCHA_MOSTRADO_KEY) || 0);
@@ -17947,38 +18007,52 @@ function makeAldeiasModule(opts) {
       return null;
     };
     const clicar = (el, fundo) => {
-      const alvo = (fundo && el.querySelector(fundo)) || el;
-      alvo.click();
+      const alvoClique = (fundo && el.querySelector(fundo)) || el;
+      alvoClique.click();
     };
 
     try {
-      const capitao = temCapitao();
-      const fto = mUw.FarmTownOverviewWindowFactory;
       const ftw = mUw.FarmTownWindowFactory;
-
-      if (capitao && fto && typeof fto.openFarmTownOverview === 'function') {
-        fto.openFarmTownOverview();
-        const todas = await esperar('#fto_town_wrapper a.checkbox.select_all', 10000);
-        if (!todas) { log('⚠️ Captcha: abri a recolha, mas a lista das cidades não apareceu.'); return; }
-        clicar(todas);
-        await ctx.sleep(2500);                     // o jogo carrega as aldeias de todas
-        const btn = await esperar('#fto_claim_button', 5000);
-        if (!btn) { log('⚠️ Captcha: não encontrei o botão Recolher na janela.'); return; }
-        clicar(btn, '.caption span, .caption');
-      } else if (farmTownId && ftw && typeof ftw.openWindow === 'function') {
-        ftw.openWindow(Number(farmTownId));
-        const cartao = await esperar('.farm_towns .action_card .card_click_area', 10000);
-        if (!cartao) { log('⚠️ Captcha: abri a aldeia, mas o cartão Recolher não apareceu.'); return; }
-        clicar(cartao);
-      } else {
-        log('⚠️ Captcha: não consegui abrir a janela da recolha — resolve-o à mão '
+      if (!alvo || !alvo.farmTownId || !ftw || typeof ftw.openWindow !== 'function') {
+        log('⚠️ Captcha: não consegui abrir a janela de uma aldeia — resolve-o à mão '
           + '(abre uma aldeia e recolhe).');
         return;
       }
 
-      /* Armazém cheio: o jogo pergunta antes de recolher. */
-      const sim = await esperar('.confirmation .btn_confirm', 3000);
-      if (sim) clicar(sim, '.caption span, .caption');
+      /* A recolha faz-se a partir da cidade aberta: tem de ser a da ilha. */
+      if (alvo.townId && Number(mUw.Game.townId) !== Number(alvo.townId)) {
+        const mudou = await ctx.switchToTown(Number(alvo.townId));
+        if (!mudou) { log('⚠️ Captcha: não consegui ir à cidade da aldeia — resolve-o à mão.'); return; }
+        await ctx.sleep(800);
+      }
+
+      ftw.openWindow(Number(alvo.farmTownId));
+      const cartao = await esperar('.farm_towns .action_card .card_click_area', 10000);
+      if (!cartao) { log('⚠️ Captcha: abri a aldeia, mas o cartão Recolher não apareceu.'); return; }
+      clicar(cartao);
+
+      /* ARMAZÉM CHEIO: o jogo pergunta antes de recolher — e SÓ isso se
+       * confirma.
+       *
+       * O captcha também tem um botão "Confirmar", e esse é teu (11/09: "que
+       * eu resolverei sozinho"). Por isso: com o captcha no ecrã não se
+       * carrega em mais nada, e nunca num botão que esteja na janela da
+       * aldeia ou junto do hCaptcha. */
+      const haCaptcha = () => {
+        try { return !!(mUw.__maestroHaCaptcha && mUw.__maestroHaCaptcha()); } catch (e) { return false; }
+      };
+      const ateSim = Date.now() + 3000;
+      while (Date.now() < ateSim && !haCaptcha()) {
+        const sim = Array.prototype.find.call(document.querySelectorAll('.confirmation .btn_confirm'), (el) => {
+          if (!visivel(el)) return false;
+          if (el.closest && el.closest('.farm_town')) return false;          // dentro da aldeia: é o do captcha
+          const raiz = el.closest && el.closest('.js-window-main-container');
+          if (raiz && raiz.querySelector && raiz.querySelector('iframe[src*="hcaptcha" i]')) return false;
+          return true;
+        });
+        if (sim) { clicar(sim, '.caption span, .caption'); break; }
+        await ctx.sleep(250);
+      }
 
       /* O captcha apareceu? */
       const ha = mUw.__maestroHaCaptcha;
@@ -17988,8 +18062,8 @@ function makeAldeiasModule(opts) {
         try { viu = !!(ha && ha()); } catch (e) { viu = false; }
       }
       log(viu
-        ? '🧩 Captcha no ecrã: abri a recolha e carreguei em recolher. Resolve-o.'
-        : '⚠️ Abri a recolha e carreguei em recolher, mas o captcha não apareceu. '
+        ? '🧩 Captcha no ecrã, na janela da aldeia. Resolve-o — o maestro fica parado até lá.'
+        : '⚠️ Abri a aldeia e carreguei em Recolher, mas o captcha não apareceu. '
           + 'Resolve-o à mão (abre uma aldeia e recolhe).');
     } catch (e) { seErroDeCodigo(e, 'Aldeias'); }
   }
@@ -18186,7 +18260,7 @@ function makeAldeiasModule(opts) {
       if (r.captcha) {
         (ctx.logRotina || log)(`Recolha em massa: o jogo pediu verificação (${r.msg}).`);
         await tratarCaptcha(ctx, 'recolha em massa');
-        await mostrarCaptchaPelaRecolha(ctx, null);
+        await mostrarCaptchaPelaRecolha(ctx, aldeiaParaMostrarCaptcha(ctx, prontas, null));
         return;
       }
       if (r.ok) {
@@ -18283,15 +18357,8 @@ function makeAldeiasModule(opts) {
       if (r.captcha) {
         (ctx.logRotina || log)(`Recolha: o jogo pediu verificação (${r.msg}).`);
         await tratarCaptcha(ctx, 'recolha');
-        /* Para o clique, uma aldeia da cidade que está aberta no jogo: é por
-         * ela que o jogo recolhe. Sem nenhuma, serve a que falhou. */
-        let aldeia = p.farmTownId;
-        try {
-          const atual = Number(mUw.Game.townId) || 0;
-          const daAtual = prontas.find((p3) => Number(cidadePorAldeia[p3.farmTownId]) === atual);
-          if (daAtual) aldeia = daAtual.farmTownId;
-        } catch (e) { seErroDeCodigo(e, 'Aldeias'); }
-        await mostrarCaptchaPelaRecolha(ctx, aldeia);
+        await mostrarCaptchaPelaRecolha(ctx,
+          aldeiaParaMostrarCaptcha(ctx, prontas, { farmTownId: p.farmTownId, townId }));
         return;
       }
       if (r.ok) { n++; recursos += p.rende || 0; }
@@ -27368,6 +27435,17 @@ function makeEncaixeModule(opts) {
         armazem.setItem(CFG_KEY, JSON.stringify(c));
       }
     } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
+
+    /* A JANELA É FIXA — decidido (10/09): abre 20 s antes, fecha 15 s depois,
+     * tenta enquanto estiver aberta e não desiste por atrasos seguidos.
+     *
+     * Os valores guardados (e os do perfil) ganhavam aos de omissão: uma conta
+     * com "desistir após 15" antigo continuava a desistir. Agora ignoram-se, e
+     * o painel deixou de ter estes campos. */
+    c.comecarAntes = DEFAULTS.comecarAntes;
+    c.limiteAposEnvioSeg = DEFAULTS.limiteAposEnvioSeg;
+    c.maxTentativas = DEFAULTS.maxTentativas;
+    c.atrasosSeguidosParaParar = DEFAULTS.atrasosSeguidosParaParar;
     return c;
   }
   function guardarCfg(c) { try { armazem.setItem(CFG_KEY, JSON.stringify(c)); } catch (e) { seErroDeCodigo(e, 'Encaixe'); } }
@@ -27617,6 +27695,19 @@ function makeEncaixeModule(opts) {
      * A resposta do envio traz o comando nas notificações — é a fonte mais
      * fiável que há, porque é o próprio servidor a confirmar o que criou. */
     try {
+      /* ONDE ESTÁ A RESPOSTA: EM `r.raw`.
+       *
+       * O `post` deste módulo devolve `{ ok, msg, raw }` — a resposta do
+       * servidor fica em `raw`. Isto lia `r.json`, que não existe: o
+       * identificador e a chegada nunca eram lidos, e o módulo caía SEMPRE no
+       * caminho lento (modelo local e visão geral), que falha quando a lista
+       * do servidor ainda não mostra o comando acabado de criar.
+       *
+       * Visto em jogo (11/09): "não consegui ler a chegada · modelo local:
+       * vazio · servidor: 0 comando(s)" e depois "não encontrei o comando para
+       * cancelar" — com tropa a sair da 1275 sem controlo. */
+      const jr = (r && r.raw && r.raw.json) || (r && r.json) || {};
+
       /* O IDENTIFICADOR ESTÁ NO TOPO DA RESPOSTA, não dentro das notificações.
        *
        * Confirmado com a espia:
@@ -27629,11 +27720,11 @@ function makeEncaixeModule(opts) {
        *
        * Daí o "não consegui ler a chegada" e o "não encontrei o comando para
        * cancelar" — com tropa a sair sem confirmação. */
-      if (r && r.json && r.json.id) r.__commandId = Number(r.json.id);
+      if (jr.id) r.__commandId = Number(jr.id);
 
       /* A HORA DE CHEGADA vem nas notificações, e com ela não é preciso
        * perguntar nada ao servidor: dá para calcular o desvio no instante. */
-      const notas = ((r && r.json && r.json.notifications) || []);
+      const notas = jr.notifications || [];
       for (const n of notas) {
         const txt = String(n.param_str || '');
         if (!r.__commandId) {
@@ -27997,7 +28088,8 @@ function makeEncaixeModule(opts) {
       // antes" só decidia quando a rotina arrancava, e ela ficava depois à
       // espera da hora exacta — a primeira tentativa saía sempre na hora, nunca
       // antes, e todo o varrimento inicial se perdia.
-      const antecipacao = (plano.comecarAntes != null) ? Number(plano.comecarAntes) : c.comecarAntes;
+      /* Fixo: os planos antigos guardavam o seu próprio "começar antes". */
+      const antecipacao = c.comecarAntes;
       const inicioRajada = envioPrevisto - antecipacao - vies;
 
       /* A HORA DE ENVIO JÁ PASSOU?
@@ -28050,7 +28142,7 @@ function makeEncaixeModule(opts) {
       // Atenção ao 0: `x || 10` trocaria um limite de 0 s por 10 s, tornando
       // impossível pedir "parar assim que passar da hora". Mesmo erro que já
       // nos mordeu na margem de segundos.
-      const limiteTempo = envioPrevisto + numeroOu(plano.limiteAposEnvioSeg, numeroOu(c.limiteAposEnvioSeg, 10));
+      const limiteTempo = envioPrevisto + c.limiteAposEnvioSeg;   // fixo: 15 s
       for (let tentativa = 1; tentativa <= c.maxTentativas; tentativa++) {
         // Trava por tempo: passada a janela, mais tentativas só chegariam
         // ainda mais tarde (a deriva é de ~1 s por segundo decorrido).
@@ -28325,7 +28417,7 @@ function makeEncaixeModule(opts) {
           return;
         }
 
-        const limiteAtrasos = numeroOu(plano.atrasosSeguidosParaParar, numeroOu(c.atrasosSeguidosParaParar, 10));
+        const limiteAtrasos = c.atrasosSeguidosParaParar;   // fixo: desligado
         if (atrasosSeguidos >= limiteAtrasos) {
           anotarFalha({
             quando: Math.floor(Date.now() / 1000),
@@ -28448,7 +28540,7 @@ function makeEncaixeModule(opts) {
        * às 03:59:07, 37 s atrasada.
        *
        * Agora marca-se a hora exacta e o temporizador dispara sozinho. */
-      const antesDoPlano = (plano.comecarAntes != null) ? Number(plano.comecarAntes) : c.comecarAntes;
+      const antesDoPlano = c.comecarAntes;   // fixo
 
       if (faltam <= antesDoPlano + 5) {
         executar(ctx, plano).catch(() => {});
@@ -28865,17 +28957,7 @@ function makeEncaixeModule(opts) {
           </div>
 
           <div style="display:flex;gap:5px;align-items:center;margin-bottom:8px;font-size:13px">
-            <span>Tentativas:</span>
-            <input id="encj-max" type="number" min="1" max="80" value="${c.maxTentativas}" style="width:48px">
-            <span style="opacity:.5">·</span>
-            <span title="Desiste quando este número de tentativas seguidas chegar depois da hora">Desistir após:</span>
-            <input id="encj-atrasos" type="number" min="1" max="30" value="${c.atrasosSeguidosParaParar}" style="width:42px">
-            <span style="opacity:.5">·</span>
-            <span title="Deixa de tentar passados estes segundos da hora ideal de envio">Parar após:</span>
-            <input id="encj-limite" type="number" min="2" max="120" value="${c.limiteAposEnvioSeg}" style="width:42px">s
-            <span style="opacity:.5">·</span>
-            <span title="Começa a tentar estes segundos antes da hora ideal de envio">Começar antes:</span>
-            <input id="encj-antes" type="number" min="0" max="60" value="${c.comecarAntes}" style="width:42px">s
+            <span style="opacity:.6" title="Fixo: começa ${c.comecarAntes} s antes da hora de envio, pára ${c.limiteAposEnvioSeg} s depois e tenta enquanto a janela estiver aberta">Janela: −${c.comecarAntes} s a +${c.limiteAposEnvioSeg} s</span>
             <span style="opacity:.5">·</span>
             <span>Cidade alvo:</span>
             <input id="encj-alvo" type="number" placeholder="id desta cidade" style="width:92px" title="Identificador da cidade DESTA janela — usa 'captar' se não souberes">
@@ -29427,7 +29509,6 @@ function makeEncaixeModule(opts) {
             return Number.isFinite(v) ? Math.min(5, Math.max(0, v)) : 2;
           })(),
           direcao: box.querySelector('#encj-dir').value,
-          maxTentativas: Number(box.querySelector('#encj-max').value) || 40,
           ativo: true,
         });
         guardarCfg(conf);
@@ -29518,13 +29599,6 @@ function makeEncaixeModule(opts) {
         guardarCfg(Object.assign({}, cfg(), {
           margemSeg: Math.min(5, Math.max(0, Number(box.querySelector('#encj-margem').value))),
           direcao: box.querySelector('#encj-dir').value,
-          maxTentativas: Number(box.querySelector('#encj-max').value) || 40,
-          atrasosSeguidosParaParar: Number(box.querySelector('#encj-atrasos').value) || 15,
-          limiteAposEnvioSeg: Number(box.querySelector('#encj-limite').value) || 10,
-          comecarAntes: (function () {
-            const v = Number(box.querySelector('#encj-antes').value);
-            return Number.isFinite(v) ? Math.max(0, v) : 12;
-          })(),
         }));
         // redesenhar o painel do maestro: senão continua a mostrar os valores
         // de quando foi aberto (era isto que mostrava ±2s com margem 0 escolhida)
@@ -29534,7 +29608,7 @@ function makeEncaixeModule(opts) {
           }
         } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
       };
-      ['#encj-margem', '#encj-dir', '#encj-max', '#encj-atrasos', '#encj-limite', '#encj-antes'].forEach((sel) => {
+      ['#encj-margem', '#encj-dir'].forEach((sel) => {
         const el = box.querySelector(sel);
         if (el) el.onchange = () => { guardarOpcoes(); avaliarMargem(); };
       });
@@ -38781,6 +38855,80 @@ function makeFecharIlhaModule(opts) {
     return 0;
   }
 
+  /* ============ QUEM ESTÁ DISPONÍVEL — CADA CONTA NA SUA CHAVE ===========
+   *
+   * Pedido teu (11/09): só dar a partida quando houver contas disponíveis
+   * (colonizador + vaga) para TODOS os lugares livres da ilha.
+   *
+   * Antes os lugares eram repartidos ao criar o plano, pelas primeiras contas
+   * da frota, tivessem ou não colonizador e vaga — e o plano esperava por
+   * todas. Uma conta sem cultura parava a ilha, com outras livres ao lado.
+   *
+   * Cada conta publica a sua disponibilidade numa chave SÓ DELA. A fila é um
+   * objecto único que cada conta lia, mudava e gravava inteiro: com vinte e
+   * uma a escrever, a escrita de uma apagava a de outra. */
+  const chaveSegura = (ch) => String(ch || '').replace(/[.#$\[\]\/:]/g, '_');
+  const caminhoContas = (plano) => `fecharIlhaContas/${mWorld}/${chaveSegura(plano.chave)}`;
+  const DISP_VALIDADE_S = 20 * 60;     // uma declaração mais velha já não conta
+  const DISP_REFRESCAR_S = 10 * 60;    // quem está disponível repete de 10 em 10 min
+  const dispPublicada = {};            // chave → o último que ESTA conta escreveu
+
+  function minhaDisponibilidade(ctx, plano) {
+    const cidade = tenhoColonizador();
+    if (!cidade) return { pode: false, porque: 'sem colonizador' };
+    const vaga = vagaParaCidade();
+    if (!vaga.pode) {
+      return { pode: false, porque: `sem vaga (${vaga.tenho}+${vaga.aCaminho}/${vaga.limite})` };
+    }
+    /* Uma cidade por ilha por conta — a mesma regra da fundação. */
+    let podeIr = { pode: true, porque: '' };
+    try {
+      const f = janela().__maestroPodeFundarNaIlha;
+      if (f) podeIr = f(mUw, ctx, plano.x, plano.y) || podeIr;
+    } catch (e) { seErroDeCodigo(e, 'FecharIlha'); }
+    if (!podeIr.pode) return { pode: false, porque: podeIr.porque || 'já tenho cidade nesta ilha' };
+    return { pode: true, cidade };
+  }
+
+  async function publicarDisponibilidade(plano, disp) {
+    const f = fb();
+    if (!f) return null;
+    const agoraS = Math.floor(Date.now() / 1000);
+    const antes = dispPublicada[plano.chave];
+    if (antes && antes.pode === !!disp.pode && (agoraS - antes.quando) < DISP_REFRESCAR_S) return null;
+    const reg = { pode: !!disp.pode, cidade: Number(disp.cidade) || 0,
+      porque: String(disp.porque || ''), quando: agoraS };
+    try {
+      const r = await f.escrever(`${caminhoContas(plano)}/${meuNome()}`, reg);
+      if (r && r.ok === false) return null;
+      dispPublicada[plano.chave] = { pode: reg.pode, quando: agoraS };
+      return reg;
+    } catch (e) { seErroDeCodigo(e, 'FecharIlha'); return null; }
+  }
+
+  async function lerDisponiveis(plano) {
+    const f = fb();
+    if (!f) return null;
+    try { return (await f.ler(caminhoContas(plano))) || {}; } catch (e) { return null; }
+  }
+
+  /* JÁ ENVIEI PARA ESTA ILHA? — guardado NESTA conta.
+   *
+   * O `enviados` do plano partilhado pode perder-se numa escrita por cima. Sem
+   * ele, a conta achava que não tinha enviado e mandava OUTRO colonizador. */
+  const ENVIEI_KEY = 'grepoFecharIlha_enviei_v1';
+  function jaEnvieiPara(chave) {
+    try { return Number((JSON.parse(armazem.getItem(ENVIEI_KEY) || '{}') || {})[String(chave)]) || 0; }
+    catch (e) { return 0; }
+  }
+  function marcarEnviei(chave) {
+    try {
+      const d = JSON.parse(armazem.getItem(ENVIEI_KEY) || '{}') || {};
+      d[String(chave)] = Math.floor(Date.now() / 1000);
+      armazem.setItem(ENVIEI_KEY, JSON.stringify(d));
+    } catch (e) { seErroDeCodigo(e, 'FecharIlha'); }
+  }
+
   async function enviarColonizador(townId, x, y, numero) {
     const url = mUw.location.origin + '/game/frontend_bridge?town_id=' + Number(townId)
       + '&action=execute&h=' + mUw.Game.csrfToken;
@@ -38821,32 +38969,17 @@ function makeFecharIlhaModule(opts) {
     const ilha = await estadoDaIlha(x, y, towns[0].id);
     if (!ilha.livres.length) return { ok: false, msg: 'a ilha não tem lugares livres' };
 
-    /* As contas vêm da frota: é a lista mais completa que existe. */
-    const contas = [];
-    try {
-      const f = fb();
-      const d = (f && await f.ler(`frota/${mWorld}`)) || {};
-      for (const k of Object.keys(d)) {
-        const nome = ((d[k] || {}).conta || '').trim();
-        if (nome && contas.indexOf(nome) < 0) contas.push(nome);
-      }
-    } catch (e) {}
-    if (contas.indexOf(meuNome()) < 0) contas.push(meuNome());
-    if (!contas.length) return { ok: false, msg: 'não conheço contas nenhumas' };
-
-    /* Um lugar por conta, pela ordem dos lugares livres. Se houver mais contas
-     * do que lugares, as que sobram ficam de fora — não há onde as pôr. */
-    const atribuicoes = {};
-    const quantas = Math.min(contas.length, ilha.livres.length);
-    for (let i = 0; i < quantas; i++) atribuicoes[contas[i]] = ilha.livres[i];
-
+    /* OS LUGARES REPARTEM-SE NA PARTIDA, NÃO AQUI.
+     *
+     * Quem vai para cada lugar decide-se quando houver contas disponíveis para
+     * os lugares todos — a lista de quem pode muda com as horas (colonizadores
+     * a sair do estaleiro, cultura a subir). */
     const plano = {
       chave: `${x}:${y}`, x: Number(x), y: Number(y),
       criadoPor: meuNome(), alianca: minhaAlianca(),
       quando: Math.floor(Date.now() / 1000),
       estado: 'preparar',
-      atribuicoes, prontos: {}, enviados: {},
-      deFora: contas.length - quantas,
+      atribuicoes: {}, prontos: {}, enviados: {},
     };
     /* Entra no FIM da fila. Se já houver uma ilha em curso, esta espera. */
     const fila = await lerFila();
@@ -38889,7 +39022,7 @@ function makeFecharIlhaModule(opts) {
         + 'Vê o painel para continuar ou apagar.');
       return;
     }
-    if (!plano || !plano.atribuicoes) { rotina('Fechar ilha: não há plano nenhum.'); return; }
+    if (!plano) { rotina('Fechar ilha: não há plano nenhum.'); return; }
 
     /* O FIREBASE NÃO GUARDA OBJECTOS VAZIOS.
      *
@@ -38902,47 +39035,55 @@ function makeFecharIlhaModule(opts) {
      * verificar em cada linha. */
     plano.prontos = plano.prontos || {};
     plano.enviados = plano.enviados || {};
+    plano.atribuicoes = plano.atribuicoes || {};
     if (plano.estado === 'abortado' || plano.estado === 'feito') {
       rotina(`Fechar ilha: o plano de ${plano.chave} está ${plano.estado}.`);
       return;
     }
 
     const eu = meuNome();
-    const meuLugar = plano.atribuicoes[eu];
-
-    /* Enquanto tenho lugar e não enviei, este colonizador é meu: nem a
-     * fundação nem a rotação lhe tocam. */
-    if (meuLugar != null && !plano.enviados[eu]) querNC('fecharilha', 60, 1);
-    else jaNaoQuerNC('fecharilha');
     const souODono = plano.criadoPor === eu;
 
-    /* ---- 1. O QUE ESTA CONTA TEM DE FAZER ---- */
-    if (meuLugar != null) {
-      if (plano.estado === 'preparar' && !plano.prontos[eu]) {
-        const cidade = tenhoColonizador();
-        const vaga = vagaParaCidade();
+    /* O registo partilhado perdeu o meu envio? Repõe-se a partir do local. */
+    const enviei = jaEnvieiPara(plano.chave);
+    if (enviei && plano.atribuicoes[eu] != null && !plano.enviados[eu]) {
+      plano.enviados[eu] = enviei;
+      await gravarPlano(plano);
+      rotina(`Fechar ilha ${plano.chave}: o registo do meu envio tinha-se perdido — reposto.`);
+    }
 
-        if (!cidade) {
-          rotina(`Fechar ilha: guardo o lugar ${meuLugar} em ${plano.chave}, `
-            + 'mas ainda não tenho colonizador.');
-        } else if (!vaga.pode) {
-          /* Sem vaga não vale a pena declarar-se pronta: o envio falharia e o
-           * lugar ficaria ocupado por uma conta que não o pode usar. */
-          rotina(`Fechar ilha: tenho colonizador para ${plano.chave} mas não tenho `
-            + `vaga — ${vaga.tenho} cidades e ${vaga.aCaminho} a caminho, limite ${vaga.limite}. `
-            + 'Precisa de mais cultura.');
-        } else {
-          plano.prontos[eu] = { cidade, quando: Math.floor(Date.now() / 1000) };
-          await gravarPlano(plano);
-          log(`🔒 Fechar ilha: pronto para o lugar ${meuLugar} em ${plano.chave}.`);
-        }
+    /* ---- 0. ENQUANTO SE PREPARA: ESTOU DISPONÍVEL? ----
+     *
+     * Todas as contas, e não só as que tinham lugar: quem sai é quem pode. A
+     * disponibilidade volta a ver-se a cada passagem — quem perde a vaga ou o
+     * colonizador desmarca-se logo, em vez de ficar marcada até à partida. */
+    if (plano.estado === 'preparar') {
+      const disp = minhaDisponibilidade(ctx, plano);
+      const antes = dispPublicada[plano.chave];
+      const escrito = await publicarDisponibilidade(plano, disp);
+      if (escrito && (!antes || antes.pode !== escrito.pode)) {
+        if (escrito.pode) log(`🔒 Fechar ilha ${plano.chave}: disponível (colonizador e vaga).`);
+        else if (antes) log(`Fechar ilha ${plano.chave}: deixei de estar disponível — ${disp.porque}.`);
+        else rotina(`Fechar ilha ${plano.chave}: não estou disponível — ${disp.porque}.`);
       }
+      /* Disponível, o colonizador fica guardado: nem a fundação nem a
+       * rotação lhe tocam. */
+      if (disp.pode) querNC('fecharilha', 60, 1); else jaNaoQuerNC('fecharilha');
+    } else if (plano.atribuicoes[eu] != null && !plano.enviados[eu] && !enviei) {
+      querNC('fecharilha', 60, 1);
+    } else {
+      jaNaoQuerNC('fecharilha');
+    }
 
+    const meuLugar = plano.atribuicoes[eu];
+
+    /* ---- 1. A MINHA VEZ DE ENVIAR ---- */
+    if (meuLugar != null) {
       /* Uma conta que já desistiu não volta a tentar. */
       if (plano.estado === 'lancar' && (plano.falhados || {})[eu]) {
         (ctx.logRotina || log)(`Fechar ilha: já desisti em ${plano.chave} `
           + `(${plano.falhados[eu]}).`);
-      } else if (plano.estado === 'lancar' && !plano.enviados[eu]) {
+      } else if (plano.estado === 'lancar' && !plano.enviados[eu] && !enviei) {
         let meuLugarUsado = null;
 
         /* Confirmar OUTRA VEZ à partida: entre declarar-se pronta e a ordem
@@ -39041,6 +39182,7 @@ function makeFecharIlhaModule(opts) {
           }
 
           if (r.ok) {
+            marcarEnviei(plano.chave);
             plano.enviados[eu] = Math.floor(Date.now() / 1000);
             await gravarPlano(plano);
             log(`🏛️ Fechar ilha: colonizador a caminho de ${plano.chave}, `
@@ -39098,68 +39240,88 @@ function makeFecharIlhaModule(opts) {
         }
         rotina(`Fechar ilha ${plano.chave}: faltam ${ilhaAgora.livres.length} lugar(es) `
           + 'por ocupar — a fila espera pela chegada dos colonizadores.');
+
+        /* QUEM FALHOU CEDE O LUGAR A OUTRA CONTA DISPONÍVEL.
+         *
+         * Uma conta pode perder a vaga ou o colonizador entre a partida e a sua
+         * vez. Sem isto a ilha ficava a meio. */
+        const falharam = Object.keys(plano.falhados || {})
+          .filter((n) => plano.atribuicoes[n] != null && !plano.enviados[n]);
+        if (falharam.length) {
+          const disp = (await lerDisponiveis(plano)) || {};
+          const agoraS = Math.floor(Date.now() / 1000);
+          const ocupadas = new Set(Object.keys(plano.atribuicoes));
+          let mudou = false;
+          for (const n of falharam) {
+            const sub = Object.keys(disp).find((m) => !ocupadas.has(m) && !(plano.falhados || {})[m]
+              && disp[m] && disp[m].pode && (agoraS - Number(disp[m].quando || 0)) < DISP_VALIDADE_S);
+            if (!sub) break;
+            plano.atribuicoes[sub] = plano.atribuicoes[n];
+            delete plano.atribuicoes[n];
+            ocupadas.add(sub);
+            mudou = true;
+            log(`Fechar ilha ${plano.chave}: ${n} falhou (${plano.falhados[n]}) — o lugar `
+              + `${plano.atribuicoes[sub]} passa para ${sub}.`);
+          }
+          if (mudou) await gravarPlano(plano);
+        }
       }
     }
 
-    /* ---- 2. O QUE A CONTA QUE CRIOU O PLANO TEM DE FAZER ---- */
+    /* ---- 2. A CONTA QUE CRIOU O PLANO: HÁ CONTAS PARA FECHAR? ----
+     *
+     * Lêem-se os lugares livres da ilha AGORA (pode já ter cidades) e as
+     * contas disponíveis — colonizador, vaga, e sem cidade nesta ilha. Só se
+     * dá a partida quando há contas para TODOS os lugares; os lugares
+     * repartem-se nesse momento, pelas que se declararam primeiro. */
     if (!souODono || plano.estado !== 'preparar') return;
 
-    const nomes = Object.keys(plano.atribuicoes);
-    const faltam = nomes.filter((n) => !plano.prontos[n]);
-    if (faltam.length) {
-      rotina(`Fechar ilha ${plano.chave}: ${nomes.length - faltam.length} de ${nomes.length} `
-        + `prontas. Falta: ${faltam.slice(0, 5).join(', ')}`
-        + (faltam.length > 5 ? ` e mais ${faltam.length - 5}` : '') + '.');
+    const towns = ctx.getMyTowns() || [];
+    if (!towns.length) return;
+    const ilha = await estadoDaIlha(plano.x, plano.y, towns[0].id);
+    const faltam = ilha.livres.length;
+
+    if (!faltam) {
+      plano.estado = 'feito';
+      plano.fechadaEm = Math.floor(Date.now() / 1000);
+      await gravarPlano(plano);
+      log(`✅ Fechar ilha ${plano.chave}: já não tem lugares livres — sai da fila.`);
       return;
     }
 
-    /* Todas prontas: última vista de olhos à ilha antes de dar a partida. */
-    const towns = ctx.getMyTowns() || [];
-    const ilha = await estadoDaIlha(plano.x, plano.y, towns[0].id);
-    const livres = new Set(ilha.livres);
+    const disp = await lerDisponiveis(plano);
+    if (disp == null) { rotina(`Fechar ilha ${plano.chave}: não consegui ler quem está disponível.`); return; }
+    const agoraS = Math.floor(Date.now() / 1000);
+    const prontas = Object.keys(disp)
+      .filter((n) => disp[n] && disp[n].pode && (agoraS - Number(disp[n].quando || 0)) < DISP_VALIDADE_S)
+      .sort((a, b) => Number(disp[a].quando || 0) - Number(disp[b].quando || 0));
 
-    const perdidos = nomes.filter((n) => !livres.has(Number(plano.atribuicoes[n])));
-    if (perdidos.length) {
-      /* De quem são os lugares que se perderam? */
-      let sóAliados = true;
-      const quem = [];
-      for (const n of perdidos) {
-        const dono = ilha.donos[Number(plano.atribuicoes[n])] || {};
-        quem.push(`${dono.nome || '?'}`);
-        if (!dono.alianca || dono.alianca !== Number(plano.alianca)) sóAliados = false;
-      }
-
-      if (!sóAliados) {
-        plano.estado = 'abortado';
-        plano.motivo = `lugares ocupados por ${quem.join(', ')}`;
-        await gravarPlano(plano);
-        log(`⛔ Fechar ilha ${plano.chave}: ABORTADO — ${plano.motivo}. `
-          + 'Meia ilha não serve de nada e são colonizadores a mais para arriscar.');
-        if (ctx.avisarDiscord) {
-          ctx.avisarDiscord('ataque', {
-            titulo: '⛔ Fechar ilha abortado',
-            descricao: `A ilha **${plano.chave}** perdeu lugares para ${quem.join(', ')}.`,
-          });
-        }
-        return;
-      }
-
-      /* Foram aliados: segue-se com menos contas. */
-      for (const n of perdidos) delete plano.atribuicoes[n];
+    /* Para o painel: guarda-se a contagem quando muda. */
+    const cont = plano.ultimaContagem || {};
+    if (cont.livres !== faltam || cont.disponiveis !== prontas.length) {
+      plano.ultimaContagem = { livres: faltam, disponiveis: prontas.length, quando: agoraS };
       await gravarPlano(plano);
-      log(`Fechar ilha ${plano.chave}: ${perdidos.length} lugar(es) ficaram para aliados `
-        + `— sigo com ${Object.keys(plano.atribuicoes).length} conta(s).`);
-      return;   // na passagem seguinte volta a verificar
     }
 
+    if (prontas.length < faltam) {
+      rotina(`Fechar ilha ${plano.chave}: ${faltam} lugar(es) livre(s) e ${prontas.length} `
+        + `conta(s) com colonizador e vaga — falta(m) ${faltam - prontas.length}.`);
+      return;
+    }
+
+    const escolhidas = prontas.slice(0, faltam);
+    const atribuicoes = {};
+    escolhidas.forEach((n, i) => { atribuicoes[n] = ilha.livres[i]; });
+    plano.atribuicoes = atribuicoes;
     plano.estado = 'lancar';
-    plano.lancadoEm = Math.floor(Date.now() / 1000);
+    plano.lancadoEm = agoraS;
     await gravarPlano(plano);
-    log(`🚀 Fechar ilha ${plano.chave}: todas prontas — PARTIDA para ${nomes.length} lugares.`);
+    log(`🚀 Fechar ilha ${plano.chave}: ${faltam} lugar(es) livre(s) e ${prontas.length} conta(s) `
+      + `disponíveis — PARTIDA para ${faltam}.`);
     if (ctx.avisarDiscord) {
       ctx.avisarDiscord('ataque', {
         titulo: '🚀 A fechar uma ilha',
-        descricao: `**${nomes.length}** contas a fundar em **${plano.chave}** ao mesmo tempo.`,
+        descricao: `**${faltam}** contas a fundar em **${plano.chave}** ao mesmo tempo.`,
       });
     }
   }
@@ -39200,9 +39362,9 @@ function makeFecharIlhaModule(opts) {
       ctx.log('Fechar ilha: a preparar o plano…');
       const r = await criarPlano(ctx, x, y);
       if (!r.ok) { ctx.log(`Fechar ilha: ${r.msg}.`); return; }
-      const n = Object.keys(r.plano.atribuicoes).length;
-      ctx.log(`Fechar ilha ${r.plano.chave}: plano criado para ${n} conta(s)`
-        + (r.plano.deFora ? ` (${r.plano.deFora} ficaram de fora, sem lugar)` : '') + '.');
+      ctx.log(`Fechar ilha ${r.plano.chave}: plano criado`
+        + (r.posicao > 1 ? ` (${r.posicao}.º na fila)` : '')
+        + ' — a partida dá-se quando houver contas com colonizador e vaga para todos os lugares livres.');
       painel(container, ctx);
     };
 
@@ -39238,6 +39400,18 @@ function makeFecharIlhaModule(opts) {
         : '';
 
       const p = emCurso[0];
+      if (p && p.estado === 'preparar' && !Object.keys(p.atribuicoes || {}).length) {
+        const ct = p.ultimaContagem || {};
+        alvo.innerHTML = htmlFila + `
+          <div style="margin-bottom:4px">Ilha <b>${esc(p.chave)}</b> · à espera de contas</div>
+          <div style="font-size:12px;opacity:.8">`
+          + (ct.livres != null
+            ? `${ct.disponiveis} conta(s) com colonizador e vaga para ${ct.livres} lugar(es) livre(s). `
+              + 'A partida dá-se quando chegarem para todos.'
+            : 'A contar lugares e contas…') + `</div>`;
+        ligarTirar();
+        return;
+      }
       if (!p || !p.atribuicoes) {
         alvo.innerHTML = htmlFila + '<div style="opacity:.6;font-size:12px">Não há nenhuma ilha em curso.</div>';
         ligarTirar();
@@ -39482,6 +39656,49 @@ function makeTiqueModule(opts) {
   const usarItem = (id) => pedir(`RotaEventInventoryItem/${id}`, 'utilize', { inventory_item_id: Number(id) });
   const deitarFora = (id) => pedir(`RotaEventInventoryItem/${id}`, 'trash', { inventory_item_id: Number(id) });
 
+  /* USAR NUMA CIDADE, OU NOUTRA.
+   *
+   * O item aplica-se à cidade ACTIVA. Com o efeito já lá, o servidor recusa
+   * com `backend_requested_verification` — a mesma resposta de um captcha,
+   * porque é uma acção que a janela do jogo não deixaria fazer. Visto em jogo
+   * (11/09): aviso de captcha no Discord, e era só o efeito já activo.
+   *
+   * Por isso uma recusa num item não é, por si, captcha: tenta-se a cidade
+   * seguinte. O captcha a sério vê-se na rodada, que não tem "já activo".
+   *
+   * No máximo MAX_CIDADES_ITEM cidades por item, e volta-se no fim à cidade
+   * onde se estava. */
+  const MAX_CIDADES_ITEM = 4;
+
+  async function usarNalgumaCidade(item, cidades, ctx) {
+    const rot = ctx.logRotina || ctx.log;
+    const original = Number(mUw.Game.townId) || 0;
+    let ultimo = null, tentadas = 0;
+    try {
+      for (const t of (cidades || [])) {
+        if (tentadas >= MAX_CIDADES_ITEM) break;
+        const tid = Number(t.id);
+        if (tid !== Number(mUw.Game.townId)) {
+          const mudou = await ctx.switchToTown(tid);
+          if (!mudou) { rot(`Tique: não consegui ir a ${t.name}.`); continue; }
+          await ctx.sleep(ctx.rand(500, 1000));
+        }
+        tentadas++;
+        const r = await usarItem(item.id);
+        if (r.ok) return { ok: true, cidade: t, tentadas };
+        if (r.travou) return { ok: false, travou: true, msg: r.msg, tentadas };
+        ultimo = r.msg;
+        rot(`Tique: ${nomeDoItem(item)} não entrou em ${t.name} — ${r.msg}`);
+        await ctx.sleep(ctx.rand(600, 1200));
+      }
+      return { ok: false, msg: ultimo || 'nenhuma cidade para tentar', tentadas };
+    } finally {
+      try {
+        if (original && Number(mUw.Game.townId) !== original) await ctx.switchToTown(original);
+      } catch (e) { seErroDeCodigo(e, 'Tique'); }
+    }
+  }
+
   /* ---------------------- que prémio é este? ---------------------------- */
 
   /* Um impulso de TREINO DE TROPA traz o tipo de unidade na configuração:
@@ -39516,6 +39733,24 @@ function makeTiqueModule(opts) {
    *
    * Agora ordena-se pela falta: a que tem maior diferença entre o template e o
    * que tem em casa fica com o impulso. */
+  /* Todas as que treinam esta unidade e ainda precisam, a que mais precisa
+   * primeiro — para o impulso poder ir para a seguinte se a primeira recusar. */
+  function cidadesQueTreinam(unidade, ctx) {
+    try {
+      const exp = JSON.parse(armazem.getItem('grepoRecruta_expandido_v1') || '{}');
+      const out = [];
+      for (const t of (ctx.getMyTowns() || [])) {
+        const alvos = exp[t.id] || exp[String(t.id)];
+        if (!alvos || !alvos[unidade]) continue;
+        let tem = 0;
+        try { tem = Number((mUw.ITowns.getTown(Number(t.id)).units() || {})[unidade]) || 0; } catch (e) { tem = 0; }
+        const falta = Number(alvos[unidade]) - tem;
+        if (falta > 0) out.push(Object.assign({}, t, { faltam: falta }));
+      }
+      return out.sort((a, b) => b.faltam - a.faltam);
+    } catch (e) { seErroDeCodigo(e, 'Tique'); return []; }
+  }
+
   function cidadeQueTreina(unidade, ctx) {
     try {
       const exp = JSON.parse(armazem.getItem('grepoRecruta_expandido_v1') || '{}');
@@ -39615,29 +39850,42 @@ function makeTiqueModule(opts) {
     let usados = 0;
     let deitados = 0;
 
+    /* Itens que já não entraram em cidade nenhuma nesta passagem: não se
+     * voltam a tentar a cada volta. */
+    const naoEntraram = new Set();
+
     for (let volta = 0; volta < (Number(c.maxPorPassagem) || 12); volta++) {
       /* ---- 1. ESVAZIAR O INVENTÁRIO ----
        *
        * Só leva oito. Se estiver cheio, rodar perde o prémio — por isso
        * trata-se dos itens ANTES de rodar, não depois. */
+      let falhouItem = false;
       for (const item of ev.itens) {
+        if (falhouItem) break;
+        if (naoEntraram.has(String(item.id))) continue;
         const unidade = unidadeDoItem(item);
 
         if (!unidade) {
-          /* Não é tropa: usa-se sempre, vale em qualquer cidade. */
-          const r = await usarItem(item.id);
-          if (r.ok) { usados++; log(`🎁 Tique: usei ${nomeDoItem(item)}.`); }
-          else {
-            rotina(`Tique: não consegui usar ${nomeDoItem(item)} — ${r.msg}`);
-            if (/verification|captcha/i.test(String(r.msg || ''))) {
-              log('⏸️ Tique: o jogo pediu verificação — paro aqui.');
-              try {
-                const av = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window)
-                  .__maestroAvisarCaptcha;
-                if (av) await av('Fortuna de Tique');
-              } catch (e) {}
-              return;
-            }
+          /* Não é tropa: vale em qualquer cidade — primeiro a activa, depois
+           * as outras (o efeito pode já estar activo nesta). */
+          const atual = Number(mUw.Game.townId);
+          const minhas = ctx.getMyTowns() || [];
+          const ordem = minhas.filter((t) => Number(t.id) === atual)
+            .concat(minhas.filter((t) => Number(t.id) !== atual));
+          const r = await usarNalgumaCidade(item, ordem, ctx);
+          if (r.ok) {
+            usados++;
+            log(`🎁 Tique: usei ${nomeDoItem(item)}`
+              + (r.tentadas > 1 ? ` em ${r.cidade.name} (nas anteriores não entrou)` : '') + '.');
+          } else {
+            /* Não entrou em nenhuma: fica no inventário, e não se tentam os
+             * outros itens nesta passagem — se for mesmo um captcha, a rodada
+             * mostra-o sem gastar mais pedidos. */
+            log(`⚠️ Tique: ${nomeDoItem(item)} não entrou em ${r.tentadas} cidade(s) `
+              + `(${r.msg}) — fica no inventário.`);
+            naoEntraram.add(String(item.id));
+            falhouItem = true;
+            break;
           }
           await ctx.sleep(ctx.rand(600, 1200));
           continue;
@@ -39653,7 +39901,8 @@ function makeTiqueModule(opts) {
 
         /* Na main: o impulso aplica-se à cidade ACTIVA, por isso é preciso
          * estar na cidade certa antes de o usar. */
-        const cidade = cidadeQueTreina(unidade, ctx);
+        const cidades = cidadesQueTreinam(unidade, ctx);
+        const cidade = cidades[0] || null;
         if (!cidade) {
           /* NENHUMA CIDADE SERVE: FORA.
            *
@@ -39685,30 +39934,35 @@ function makeTiqueModule(opts) {
           continue;
         }
 
-        const mudou = await ctx.switchToTown(cidade.id);
-        if (!mudou) { rotina(`Tique: não consegui ir a ${cidade.name} para usar o impulso.`); continue; }
-        await ctx.sleep(ctx.rand(500, 1000));
-
-        const r = await usarItem(item.id);
+        /* Tenta-se na que mais precisa e, se recusar (o impulso pode já estar
+         * activo nela), nas seguintes que treinam esta unidade. */
+        const r = await usarNalgumaCidade(item, cidades, ctx);
         if (r.ok) {
           usados++;
-          log(`🎁 Tique: ${nomeDoItem(item)} usado em ${cidade.name}`
-            + (cidade.faltam ? ` (a que mais precisa — faltam ${cidade.faltam})` : '') + '.');
+          log(`🎁 Tique: ${nomeDoItem(item)} usado em ${r.cidade.name}`
+            + (r.cidade.faltam ? ` (faltam ${r.cidade.faltam})` : '')
+            + (r.tentadas > 1 ? ` — nas anteriores não entrou` : '') + '.');
         } else {
-          log(`⚠️ Tique: não consegui usar ${nomeDoItem(item)} em ${cidade.name} — ${r.msg}.`);
-          /* CAPTCHA: PARAR JÁ.
-           *
-           * Insistir com uma verificação de bot por resolver é a pior coisa a
-           * fazer — cada pedido a mais reforça a suspeita. Deixa-se o prémio
-           * para a passagem seguinte. */
-          if (/verification|captcha/i.test(String(r.msg || ''))) {
-            log('⏸️ Tique: o jogo pediu verificação — paro aqui.');
-            try {
-              const av = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window)
-                .__maestroAvisarCaptcha;
-              if (av) await av('Fortuna de Tique');
-            } catch (e) {}
-            return;
+          /* NENHUMA DAS CIDADES O ACEITOU: FORA — pedido teu (11/09). Guardá-lo
+           * ocupava um dos oito lugares do inventário. */
+          const rd = await deitarFora(item.id);
+          if (rd.ok) {
+            deitados++;
+            log(`🗑️ Tique: ${nomeDoItem(item)} não entrou em nenhuma das ${r.tentadas} `
+              + `cidade(s) que treinam esta unidade (${r.msg}) — descartei.`);
+          } else {
+            log(`⚠️ Tique: ${nomeDoItem(item)} não entrou em nenhuma cidade e não consegui `
+              + `descartá-lo — ${rd.msg}.`);
+            /* Descartar não tem "já activo": uma recusa aqui é verificação a sério. */
+            if (/verification|captcha/i.test(String(rd.msg || ''))) {
+              log('⏸️ Tique: o jogo pediu verificação — paro aqui.');
+              try {
+                const av = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window)
+                  .__maestroAvisarCaptcha;
+                if (av) await av('Fortuna de Tique');
+              } catch (e) {}
+              return;
+            }
           }
         }
         await ctx.sleep(ctx.rand(600, 1200));
@@ -39750,7 +40004,20 @@ function makeTiqueModule(opts) {
       if (ev.moedas - (Number(c.guardarMoedas) || 0) < ev.custo) break;
 
       const r = await rodar(ev.rotaId);
-      if (!r.ok) { rotina(`Tique: não consegui rodar — ${r.msg}`); break; }
+      if (!r.ok) {
+        rotina(`Tique: não consegui rodar — ${r.msg}`);
+        /* A rodada não tem "efeito já activo": uma verificação aqui é a sério. */
+        if (/verification|captcha/i.test(String(r.msg || ''))) {
+          log('⏸️ Tique: o jogo pediu verificação ao rodar — paro aqui.');
+          try {
+            const av = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window)
+              .__maestroAvisarCaptcha;
+            if (av) await av('Fortuna de Tique');
+          } catch (e) {}
+          return;
+        }
+        break;
+      }
       rodadas++;
       await ctx.sleep(ctx.rand(900, 1600));
 
