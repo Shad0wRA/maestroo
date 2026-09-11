@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.1900
+// @version      2026.09.12.2000
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2107,7 +2107,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.1900';
+  const MAESTRO_VERSAO = '2026.09.12.2000';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -19163,6 +19163,11 @@ function makeAlertasModule(opts) {
   /* O servidor recusou pedidos nesta passagem: sem isto, não se distingue
    * "não há ataques" de "não consegui ver". */
   let limitado429 = false;
+  /* Qualquer outra leitura falhada (verificação, página de erro, resposta
+   * sem lista…), e quantas passagens seguidas: a primeira vai para o ecrã,
+   * as seguintes para a rotina. */
+  let falhaLeituraAlertas = '';
+  let falhasSeguidasAlertas = 0;
   const VISTOS_KEY = 'grepoAlertas_vistos_v1';
 
   function cfg() {
@@ -19195,90 +19200,8 @@ function makeAlertasModule(opts) {
   }
 
 
-  // FONTE FIÁVEL DOS COMANDOS A CHEGAR.
-  // O modelo local (MM.getModels().MovementsUnits) fica vazio ou desatualizado
-  // até a página ser recarregada — confirmado no jogo. Para decisões que
-  // dependem de ver um ataque a tempo, perguntamos ao servidor.
-  // Endpoint: /game/town_overviews?action=command_overview
-  async function comandosDoServidor(townId) {
-    try {
-      const url = mUw.location.origin + '/game/town_overviews?town_id=' + Number(townId)
-        + '&action=command_overview&h=' + mUw.Game.csrfToken
-        + '&json=' + encodeURIComponent(JSON.stringify({ town_id: Number(townId), nl_init: true }))
-        + '&_=' + Date.now();
-      const resp = await mUw.fetch(url, { headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include' });
-      if (resp.status === 429) {
-        // Limite de pedidos do servidor: recuar e tentar mais tarde.
-        limitado429 = true;
-        try { mUw.console.log('[ALERTAS] servidor a limitar pedidos (429) — espero.'); } catch (e) { seErroDeCodigo(e, 'Alertas'); }
-        await new Promise((r2) => setTimeout(r2, 3000));
-        return [];
-      }
-      const r = await resp.json();
-      const erro = r && r.json && r.json.error;
-      if (erro && /administrador|administrator|premium/i.test(String(erro))) {
-        marcarSemAdministrador();
-        try { mUw.console.log('[ALERTAS] sem Administrador: uso só os dados locais.'); } catch (e) { seErroDeCodigo(e, 'Alertas'); }
-
-        /* PÔR O MODELO EM DIA E LER.
-         *
-         * Sem Administrador esta via devolve sempre vazio, e os alertas
-         * ficavam a depender de um modelo que não se actualiza — nem sequer
-         * avisavam de ataques reais.
-         *
-         * O `gpAjax` sobre a vista da cidade força o refresco, que é o que o
-         * jogo faz quando abres a cidade. */
-        try {
-          await new Promise((resolve) => {
-            try {
-              mUw.gpAjax.ajaxGet('town_info', 'index',
-                { town_id: Number(townId), nl_init: true }, true, () => resolve());
-            } catch (e2) { resolve(); }
-            setTimeout(resolve, 2500);
-          });
-
-          const mv = mUw.MM.getModels().MovementsUnits || {};
-          const out = [];
-          for (const k of Object.keys(mv)) {
-            const a = mv[k].attributes || {};
-            if (Number(a.target_town_id) !== Number(townId)) continue;
-            if (!a.arrival_at) continue;
-            out.push({
-              command_id: Number(a.id || a.command_id) || 0,
-              arrival_at: Number(a.arrival_at),
-              started_at: Number(a.started_at) || 0,
-              target_town_id: Number(a.target_town_id),
-              home_town_id: Number(a.home_town_id) || 0,
-              type: String(a.type || ''),
-              link_origin: a.link_origin || '',
-              town_name_origin: a.town_name_origin || '',
-            });
-          }
-          return out;
-        } catch (e) { seErroDeCodigo(e, 'Alertas'); }
-
-        return [];
-      }
-      /* A lista pode vir em `json.commands` ou em `json.data.commands`: aceitam-se
-       * as duas, como já faziam o reforço, os feitiços e a expansão. Isto só lia a
-       * segunda — e na main, com 50 comandos na visão geral, a esquiva recebia 0
-       * ("o servidor devolveu 0 comando(s), sem razão registada", 11/09). */
-      const dj = (r && r.json) || {};
-      const cmds = dj.commands || (dj.data && dj.data.commands) || [];
-      const saida = cmds.map((c) => ({
-        command_id: Number(c.id),
-        arrival_at: Number(c.arrival_at),
-        started_at: Number(c.started_at),
-        target_town_id: Number(c.destination_town_id),
-        home_town_id: Number(c.origin_town_id),
-        type: String(c.type || ''),
-        link_origin: c.link_origin || '',
-        town_name_origin: c.town_name_origin || '',
-      })).filter((c) => c.command_id && c.arrival_at);
-      cacheServidor = { t: Date.now(), dados: saida };
-      return saida;
-    } catch (e) { return []; }
-  }
+  /* A leitura da visão geral é do núcleo (`__maestroVisaoGeral`). Havia aqui
+   * uma `comandosDoServidor` com pedido próprio que ninguém chamava. */
 
 
   // Os ataques a chegar NÃO estão de forma fiável no modelo local: ele fica
@@ -19308,21 +19231,21 @@ function makeAlertasModule(opts) {
     const janelaCache = (cfg().segundosEntreConsultas || 55) * 1000;
     if (agoraMs - cacheServidor.t < janelaCache && cacheServidor.dados.length) return cacheServidor.dados;
     try {
-      const url = mUw.location.origin + '/game/town_overviews?town_id=' + Number(townId)
-        + '&action=command_overview&h=' + mUw.Game.csrfToken
-        + '&json=' + encodeURIComponent(JSON.stringify({ town_id: Number(townId), nl_init: true }))
-        + '&_=' + Date.now();
-      const resp = await mUw.fetch(url, { headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include' });
-      if (resp.status === 429) {
-        // Limite de pedidos do servidor: recuar e tentar mais tarde.
-        limitado429 = true;
-        try { mUw.console.log('[ALERTAS] servidor a limitar pedidos (429) — espero.'); } catch (e) { seErroDeCodigo(e, 'Alertas'); }
-        await new Promise((r2) => setTimeout(r2, 3000));
+      /* PELO LEITOR ÚNICO DO NÚCLEO. Trata do 429 (o núcleo pára tudo) e
+       * partilha a cópia com os outros módulos. O `townId` fica só para quem
+       * chama filtrar: a lista traz os comandos de todas as cidades. */
+      const vgF = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroVisaoGeral;
+      const vg = vgF ? await vgF() : { ok: false, razao: 'o núcleo não tem o leitor da visão geral' };
+
+      /* NÃO CONSEGUI LER ≠ NÃO HÁ ATAQUES: guarda-se porquê, para o fim da
+       * passagem o dizer em vez de ficar calado. */
+      if (!vg.ok && vg.razao !== 'sem Administrador') {
+        falhaLeituraAlertas = vg.razao || 'não sei porquê';
+        if (/recusar|limitar/i.test(falhaLeituraAlertas)) limitado429 = true;
+        try { mUw.console.log('[ALERTAS] não consegui ler a visão geral: ' + falhaLeituraAlertas); } catch (e) { seErroDeCodigo(e, 'Alertas'); }
         return [];
       }
-      const r = await resp.json();
-      const erro = r && r.json && r.json.error;
-      if (erro && /administrador|administrator|premium/i.test(String(erro))) {
+      if (!vg.ok) {
         marcarSemAdministrador();
         try { mUw.console.log('[ALERTAS] sem Administrador: uso só os dados locais.'); } catch (e) { seErroDeCodigo(e, 'Alertas'); }
 
@@ -19365,13 +19288,10 @@ function makeAlertasModule(opts) {
 
         return [];
       }
-      /* A lista pode vir em `json.commands` ou em `json.data.commands`: aceitam-se
-       * as duas, como já faziam o reforço, os feitiços e a expansão. Isto só lia a
-       * segunda — e na main, com 50 comandos na visão geral, a esquiva recebia 0
-       * ("o servidor devolveu 0 comando(s), sem razão registada", 11/09). */
-      const dj = (r && r.json) || {};
-      const cmds = dj.commands || (dj.data && dj.data.commands) || [];
-      const saida = cmds.map((c) => ({
+      /* As chaves lê-as o núcleo (confirmado em jogo: a lista vem em
+       * `json.data.commands`). Aqui fica só o que os alertas querem de cada um. */
+      falhasSeguidasAlertas = 0;
+      const saida = vg.comandos.map((c) => ({
         command_id: Number(c.id),
         arrival_at: Number(c.arrival_at),
         started_at: Number(c.started_at),
@@ -19389,7 +19309,11 @@ function makeAlertasModule(opts) {
       })).filter((c) => c.command_id && c.arrival_at);
       cacheServidor = { t: agoraMs, dados: saida };
       return saida;
-    } catch (e) { return []; }
+    } catch (e) {
+      seErroDeCodigo(e, 'Alertas');
+      falhaLeituraAlertas = 'erro: ' + ((e && e.message) || e);
+      return [];
+    }
   }
 
   /* Descobrir o DONO de uma cidade pelo mapa.
@@ -19629,6 +19553,7 @@ function makeAlertasModule(opts) {
     mUw = ctx.uw; mWorld = ctx.WORLD;
     const rotina = ctx.logRotina || ctx.log;
     limitado429 = false;
+    falhaLeituraAlertas = '';
 
     /* Marcar o arranque na primeira passagem: os comandos vistos logo a
      * seguir já vinham a caminho e a viagem deles não se sabe. */
@@ -19715,43 +19640,22 @@ function makeAlertasModule(opts) {
     for (const tid of cidadesEmFalta) {
       try {
         const r = await ataquesDoServidor(tid);
+        if (falhaLeituraAlertas) break;   // a lista é a mesma para todas: falhou, falhou para todas
         r.filter((cc) => Number(cc.target_town_id) === tid).forEach((cc) => movs.push(cc));
         await ctx.sleep(ctx.rand(400, 800));
       } catch (e) { seErroDeCodigo(e, 'Alertas'); }
     }
 
-    if (!movs.length) {
-      /* A visão global depende da cidade por onde se pergunta: com
-       * Administrador, algumas devolvem os comandos todos (24 KB) e outras só
-       * a moldura vazia (1 KB). Tenta-se por algumas antes de desistir. */
-      const candidatas = Array.from(minhas).slice(0, 3);
-      if (mUw.Game && mUw.Game.townId) candidatas.unshift(Number(mUw.Game.townId));
-
-      let todos = [];
-      let qualquer = candidatas[0];
-      for (const cid of candidatas) {
-        const r = await ataquesDoServidor(cid);
-        if (r.length) { todos = r; qualquer = cid; break; }
-        await ctx.sleep(ctx.rand(300, 600));
-      }
-      movs = todos.filter((c) => minhas.has(Number(c.target_town_id)));
-
-      /* Se só vieram comandos de UMA cidade, pode ser porque só essa está a
-       * ser atacada — ou porque o servidor não deu a visão global. Não se
-       * distingue, por isso confirma-se cidade a cidade.
+    if (!movs.length && !falhaLeituraAlertas) {
+      /* UM PEDIDO SÓ, PELO NÚCLEO (e não se repete se já falhou acima).
        *
-       * A mensagem antiga dizia "visão global indisponível", o que alarmava
-       * sem razão: com Administrador e um só ataque, é o caso normal. */
-      const destinos = new Set(todos.map((c) => Number(c.target_town_id)));
-      if (todos.length && destinos.size === 1 && minhas.size > 1) {
-        rotina('Alertas: a confirmar as restantes cidades uma a uma.');
-        for (const id of minhas) {
-          if (Number(id) === Number(qualquer)) continue;
-          await ctx.sleep(ctx.rand(700, 1100));   // respeitar o limite do servidor
-          const cmds = await ataquesDoServidor(id);
-          for (const c of cmds) if (Number(c.target_town_id) === Number(id)) movs.push(c);
-        }
-      }
+       * Tentava-se por várias cidades e, se só viessem comandos de uma,
+       * confirmava-se cidade a cidade — com a ideia de que algumas cidades
+       * devolviam só a moldura vazia. O núcleo pergunta sempre pela mesma
+       * cidade, e essa devolveu a lista toda nos três mundos (espia, 11/09):
+       * perguntar "por outra" dava a mesma lista e só acrescentava pausas. */
+      const todos = await ataquesDoServidor(Number(Array.from(minhas)[0]) || 0);
+      movs = todos.filter((c) => minhas.has(Number(c.target_town_id)));
     }
     const agora = agoraJogo();
     let novos = 0;
@@ -20047,6 +19951,10 @@ function makeAlertasModule(opts) {
       if (limitado429) {
         ctx.log('⚠️ Alertas: o servidor limitou os pedidos (429) — não consegui '
           + 'verificar se há ataques. Vou tentar na próxima passagem.');
+      } else if (falhaLeituraAlertas) {
+        falhasSeguidasAlertas++;
+        (falhasSeguidasAlertas === 1 ? ctx.log : rotina)(`⚠️ Alertas: não consegui ler a visão geral `
+          + `(${falhaLeituraAlertas}) — só vi os ataques que a página já tinha. Tento na próxima passagem.`);
       }
       return;
     }
@@ -23502,26 +23410,30 @@ function makeEsquivaModule(opts) {
 
 
   let ultimaRazaoVazioEsquiva = '';
+  /* A última leitura falhada que não foi 429, e quantas passagens seguidas:
+   * a primeira vai para o ecrã, as seguintes para a rotina. */
+  let leituraFalhadaEsquiva = '';
+  let falhasSeguidasEsquiva = 0;
 
+  /* Devolve a lista; `[]` sem Administrador (como sempre); ou `null` se NÃO
+   * CONSEGUIU LER. E `null` não é "não há ataques": não conta para a
+   * quarentena das desmentidas nem faz dizer "nenhum ataque a chegar". */
   async function comandosDoServidor(townId) {
-    if (semAdministrador()) return [];
+    if (semAdministrador()) { ultimaRazaoVazioEsquiva = 'sem Administrador'; return []; }
     try {
-      const url = mUw.location.origin + '/game/town_overviews?town_id=' + Number(townId)
-        + '&action=command_overview&h=' + mUw.Game.csrfToken
-        + '&json=' + encodeURIComponent(JSON.stringify({ town_id: Number(townId), nl_init: true }))
-        + '&_=' + Date.now();
-      const resp = await mUw.fetch(url, { headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include' });
-      /* 429 = o servidor está a limitar pedidos. Devolver lista vazia seria
-       * indistinguível de "não há ataques" — e a esquiva ficaria calada a
-       * achar que estava tudo bem, quando na verdade está CEGA. */
-      if (resp.status === 429) {
-        limitadoPeloServidor = true;
-        await new Promise((r2) => setTimeout(r2, 3000));
-        return [];
+      /* PELO LEITOR ÚNICO DO NÚCLEO: trata do 429, partilha a cópia de 20 s e
+       * diz sempre porque é que falhou. A `ultimaRazaoVazioEsquiva` nunca era
+       * preenchida — o registo dizia sempre "sem razão registada". */
+      const vgF = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroVisaoGeral;
+      const vg = vgF ? await vgF() : { ok: false, razao: 'o núcleo não tem o leitor da visão geral' };
+      if (!vg.ok && vg.razao !== 'sem Administrador') {
+        ultimaRazaoVazioEsquiva = vg.razao || 'não sei porquê';
+        if (/recusar|limitar/i.test(ultimaRazaoVazioEsquiva)) limitadoPeloServidor = true;
+        else leituraFalhadaEsquiva = ultimaRazaoVazioEsquiva;
+        return null;
       }
-      const r = await resp.json();
-      const erroAdm = r && r.json && r.json.error;
-      if (erroAdm && /administrador|administrator|premium/i.test(String(erroAdm))) {
+      if (!vg.ok) {
+        ultimaRazaoVazioEsquiva = 'o servidor diz que falta o Administrador';
         marcarSemAdministrador();
 
         /* SEM ADMINISTRADOR, PÔR O MODELO LOCAL EM DIA.
@@ -23584,13 +23496,11 @@ function makeEsquivaModule(opts) {
 
         return [];
       }
-      /* A lista pode vir em `json.commands` ou em `json.data.commands`: aceitam-se
-       * as duas, como já faziam o reforço, os feitiços e a expansão. Isto só lia a
-       * segunda — e na main, com 50 comandos na visão geral, a esquiva recebia 0
-       * ("o servidor devolveu 0 comando(s), sem razão registada", 11/09). */
-      const dj = (r && r.json) || {};
-      const cmds = dj.commands || (dj.data && dj.data.commands) || [];
-      return cmds.map((c) => ({
+      /* As chaves lê-as o núcleo (confirmado em jogo: a lista vem em
+       * `json.data.commands`). Aqui fica só o que a esquiva quer de cada um. */
+      falhasSeguidasEsquiva = 0;
+      ultimaRazaoVazioEsquiva = vg.comandos.length ? '' : 'a visão geral veio sem comandos';
+      return vg.comandos.map((c) => ({
         command_id: Number(c.id),
         arrival_at: Number(c.arrival_at),
         started_at: Number(c.started_at),
@@ -23603,7 +23513,12 @@ function makeEsquivaModule(opts) {
         jogador: c.origin_town_player_name || '',
         jogador_id: Number(c.origin_town_player_id) || 0,
       })).filter((c) => c.command_id && c.arrival_at);
-    } catch (e) { return []; }
+    } catch (e) {
+      seErroDeCodigo(e, 'Esquiva');
+      ultimaRazaoVazioEsquiva = 'erro: ' + ((e && e.message) || e);
+      leituraFalhadaEsquiva = ultimaRazaoVazioEsquiva;
+      return null;
+    }
   }
 
 
@@ -23700,98 +23615,8 @@ function makeEsquivaModule(opts) {
     });
   }
 
-  async function ataquesDoServidor(townId) {
-    try {
-      const url = mUw.location.origin + '/game/town_overviews?town_id=' + Number(townId)
-        + '&action=command_overview&h=' + mUw.Game.csrfToken
-        + '&json=' + encodeURIComponent(JSON.stringify({ town_id: Number(townId), nl_init: true }))
-        + '&_=' + Date.now();
-      const resp = await mUw.fetch(url, { headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include' });
-      /* 429 = o servidor está a limitar pedidos. Devolver lista vazia seria
-       * indistinguível de "não há ataques" — e a esquiva ficaria calada a
-       * achar que estava tudo bem, quando na verdade está CEGA. */
-      if (resp.status === 429) {
-        limitadoPeloServidor = true;
-        await new Promise((r2) => setTimeout(r2, 3000));
-        return [];
-      }
-      const r = await resp.json();
-      const erroAdm = r && r.json && r.json.error;
-      if (erroAdm && /administrador|administrator|premium/i.test(String(erroAdm))) {
-        marcarSemAdministrador();
-
-        /* SEM ADMINISTRADOR, PÔR O MODELO LOCAL EM DIA.
-         *
-         * O `command_overview` devolve "Necessita do administrador" e a
-         * esquiva passa a depender do modelo local — que NÃO se actualiza
-         * sozinho.
-         *
-         * Visto em jogo, numa multi: o modelo mostrava um ataque já cancelado
-         * e não mostrava o novo que estava a caminho. A esquiva dizia "nenhum
-         * ataque a chegar" e as birremes ficavam em casa a matar a tropa da
-         * outra conta do grupo.
-         *
-         * O `gpAjax` sobre a vista da cidade obriga o jogo a refrescar os
-         * movimentos — é o mesmo que ele faz quando abres a cidade. */
-        /* ACTUALIZAR **E RELER**.
-         *
-         * Devolver lista vazia depois de refrescar não serve de nada: a
-         * passagem acaba a dizer "nenhum ataque a chegar" e só na seguinte é
-         * que os dados novos seriam usados — se é que chegam.
-         *
-         * Visto em jogo: "1 cidade(s) com ataques que o jogo não trouxe —
-         * pergunto ao servidor" seguido de "nenhum ataque a chegar", em
-         * cada passagem, com um ataque real a caminho.
-         *
-         * Depois de refrescar, lê-se o modelo local e devolve-se o que lá
-         * está. */
-        await actualizarMovimentosLocais(townId);
-
-        try {
-          const mv = mUw.MM.getModels().MovementsUnits || {};
-          const out = [];
-          for (const k of Object.keys(mv)) {
-            const a = mv[k].attributes || {};
-            if (Number(a.target_town_id) !== Number(townId)) continue;
-            if (!/attack/i.test(String(a.type || ''))) continue;
-            if (!a.arrival_at) continue;
-            out.push({
-              command_id: Number(a.id || a.command_id) || 0,
-              arrival_at: Number(a.arrival_at),
-              started_at: Number(a.started_at) || 0,
-              target_town_id: Number(a.target_town_id),
-              home_town_id: Number(a.home_town_id) || 0,
-              type: String(a.type || ''),
-              link_origin: a.link_origin || '',
-              town_name_origin: a.town_name_origin || '',
-            });
-          }
-          return out;
-        } catch (e) { seErroDeCodigo(e, 'Esquiva'); }
-
-        return [];
-      }
-      /* A lista pode vir em `json.commands` ou em `json.data.commands`: aceitam-se
-       * as duas, como já faziam o reforço, os feitiços e a expansão. Isto só lia a
-       * segunda — e na main, com 50 comandos na visão geral, a esquiva recebia 0
-       * ("o servidor devolveu 0 comando(s), sem razão registada", 11/09). */
-      const dj = (r && r.json) || {};
-      const cmds = dj.commands || (dj.data && dj.data.commands) || [];
-      return cmds.map((c) => ({
-        command_id: Number(c.id),
-        arrival_at: Number(c.arrival_at),
-        started_at: Number(c.started_at),
-        home_town_id: Number(c.origin_town_id),
-        target_town_id: Number(c.destination_town_id),
-        type: String(c.type || ''),
-        // Confirmado no jogo: os campos com as coordenadas chamam-se
-        // townurl_base64_origin/destination (não origin_town_link).
-        link_origin: c.townurl_base64_origin || c.origin_town_link || c.link_origin || '',
-        link_destino: c.townurl_base64_destination || '',
-        town_name_origin: c.origin_town_name || c.town_name_origin || '',
-      })).filter((c) => c.command_id && c.arrival_at);
-    } catch (e) { return []; }
-  }
+  /* Havia aqui uma `ataquesDoServidor` com pedido próprio à visão geral que
+   * ninguém chamava. A leitura é a `comandosDoServidor`, pelo núcleo. */
 
   /* QUANTOS ataques o jogo diz que vêm a caminho de cada cidade.
    *
@@ -25042,6 +24867,7 @@ function makeEsquivaModule(opts) {
     mUw = ctx.uw; mWorld = ctx.WORLD;
     const rotina = ctx.logRotina || ctx.log;   // rotina: não vai para o registo
     limitadoPeloServidor = false;
+    leituraFalhadaEsquiva = '';
 
     /* Marcar o arranque na primeira passagem: serve para saber que comandos
      * foram vistos logo a seguir a a página abrir, e cuja hora de partida é
@@ -25155,6 +24981,19 @@ function makeEsquivaModule(opts) {
     for (const tid of emFalta) {
       try {
         const cmds = await comandosDoServidor(tid);
+
+        /* NÃO CONSEGUI LER ≠ O SERVIDOR DESMENTIU.
+         *
+         * Uma leitura falhada contava como desmentido, e ao fim de dez a
+         * cidade ficava 10 min de quarentena — com um ataque verdadeiro a
+         * caminho que só não se tinha conseguido ler. Agora não conta. E como
+         * a lista é a mesma para todas as cidades, não se pergunta pelas
+         * outras. */
+        if (cmds == null) {
+          rotina(`Esquiva: não consegui ler a visão geral (${ultimaRazaoVazioEsquiva}) — `
+            + `${emFalta.length} cidade(s) por confirmar ficam como estão; não conta como desmentido.`);
+          break;
+        }
         cmds.forEach((cd) => doServidor.push(cd));
 
         /* O servidor não confirmou nenhum ataque a esta cidade: a colecção
@@ -25215,18 +25054,14 @@ function makeEsquivaModule(opts) {
     if (!haNoLocal && !emFalta.length) {
       try {
         if (cidades.length) {
+          /* Um pedido só, pelo núcleo. Consultava-se cidade a cidade quando só
+           * vinham comandos de uma, com a ideia de que o servidor não dava a
+           * visão global. O núcleo pergunta sempre pela mesma cidade, e essa
+           * devolveu a lista toda nos três mundos (espia, 11/09): perguntar
+           * "por outra" dava a mesma lista e só acrescentava pausas.
+           * `null` = não consegui ler (o fim da passagem di-lo). */
           const todos = await comandosDoServidor(cidades[0].id);
-          todos.forEach((cd) => doServidor.push(cd));
-
-          // Se só vieram comandos da cidade consultada, o servidor não deu a
-          // visão global — consulta-se cidade a cidade, devagar.
-          const destinos = new Set(todos.map((cd) => Number(cd.target_town_id)));
-          if (todos.length && destinos.size === 1 && cidades.length > 1) {
-            for (const ct of cidades.slice(1)) {
-              await ctx.sleep(ctx.rand(700, 1100));
-              try { (await comandosDoServidor(ct.id)).forEach((cd) => doServidor.push(cd)); } catch (e) { seErroDeCodigo(e, 'Esquiva'); }
-            }
-          }
+          (todos || []).forEach((cd) => doServidor.push(cd));
         }
       } catch (e) { seErroDeCodigo(e, 'Esquiva'); }
     }
@@ -25477,6 +25312,11 @@ function makeEsquivaModule(opts) {
       if (limitadoPeloServidor) {
         log('⚠️ Esquiva: o servidor está a limitar pedidos (429) — NÃO consegui ver '
           + 'se há ataques a chegar. Não é o mesmo que não haver nenhum.');
+      } else if (leituraFalhadaEsquiva) {
+        falhasSeguidasEsquiva++;
+        (falhasSeguidasEsquiva === 1 ? log : rotina)(`⚠️ Esquiva: não consegui ler a visão geral `
+          + `(${leituraFalhadaEsquiva}) — NÃO sei se há ataques além dos que a página já tem. `
+          + 'Não é o mesmo que não haver nenhum.');
       } else {
         /* "Nenhum ataque a chegar" de 45 em 45 segundos enche a caixa e apaga
        * o que interessa — e não diz nada: o normal é não haver ataques.
