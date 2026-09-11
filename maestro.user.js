@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.0300
+// @version      2026.09.12.0400
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1868,7 +1868,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.0300';
+  const MAESTRO_VERSAO = '2026.09.12.0400';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -34237,6 +34237,74 @@ function makeApoioModule(opts) {
     } catch (e) { return false; }
   }
 
+  /* ============ AS REVOLTAS CONTRA MIM, PELOS MODELOS DO JOGO ============
+   *
+   * Não precisam de visão geral (Administrador): são os modelos que o jogo
+   * carrega para as minhas cidades. Confirmado com a espia (11/09) na main,
+   * com quatro revoltas — estavam todas, iguais à visão geral:
+   *
+   *   MovementsRevoltDefender: { revolt_id, target_town_id, town_name,
+   *     player_id, started_at, finished_at, arising }
+   *   Takeover: { command: { id, type: 'revolt' }, origin_town: { player_id,
+   *     player_name } }   — quem revoltou
+   *
+   * `arising` dá a FASE, que a visão geral não dá: nas quatro, todas na R2
+   * ("revolta em curso"), vinha falso. Na R1 é verdadeiro.
+   *
+   * O que decide a saída da lista é o fim da REVOLTA, não o da fase: na R1
+   * soma-se a duração da própria R1 (no pt126 as duas fases têm 7 horas).
+   *
+   * Um modelo que já passou do fim da revolta não conta — o jogo pode
+   * deixá-lo esquecido até a página recarregar.
+   *
+   * Devolve `ok` falso se os modelos não existirem: "não sei" nunca é
+   * "não há revoltas". */
+  function revoltasPelosModelos(agoraS) {
+    const out = { ok: false, lista: [], porId: {} };
+    try {
+      const mm = mUw.MM.getModels() || {};
+      const defs = mm.MovementsRevoltDefender;
+      if (!defs || typeof defs !== 'object') return out;
+      out.ok = true;
+      const eu = Number(mUw.Game.player_id) || 0;
+
+      const quem = {};
+      for (const k of Object.keys(mm.Takeover || {})) {
+        const a = ((mm.Takeover || {})[k] || {}).attributes || {};
+        const cmd = a.command || {};
+        if (!/revolt/i.test(String(cmd.type || ''))) continue;
+        const o = a.origin_town || {};
+        quem[Number(cmd.id)] = { id: Number(o.player_id) || 0, nome: String(o.player_name || '?') };
+      }
+
+      for (const k of Object.keys(defs)) {
+        const a = (defs[k] || {}).attributes || {};
+        const rid = Number(a.revolt_id) || 0;
+        const alvo = Number(a.target_town_id) || 0;
+        const fimFase = Number(a.finished_at) || 0;
+        if (!rid || !alvo || !fimFase) continue;
+        if (eu && Number(a.player_id) && Number(a.player_id) !== eu) continue;
+
+        const ini = Number(a.started_at) || 0;
+        const duracao = (ini && fimFase > ini) ? (fimFase - ini) : 7 * 3600;
+        const r1 = a.arising === true;
+        const fimRevolta = r1 ? fimFase + duracao : fimFase;
+        out.porId[rid] = { r1, fimFase, fimRevolta };
+
+        if (fimRevolta <= Number(agoraS)) continue;          // já acabou: esquecido
+        const q = quem[rid] || { id: 0, nome: '?' };
+        out.lista.push({
+          id: 'revolt_' + rid, type: 'revolt', command_type: 'revolt',
+          destination_town_id: alvo, destination_town_name: String(a.town_name || alvo),
+          destination_town_player_id: eu || Number(a.player_id) || 0,
+          origin_town_player_id: q.id, origin_player_name: q.nome,
+          started_at: ini, finished_at: fimFase, fimRevolta,
+        });
+      }
+    } catch (e) { seErroDeCodigo(e, 'Apoio'); return { ok: false, lista: [], porId: {} }; }
+    return out;
+  }
+
   /* ---------------------- ciclo principal ------------------------------- */
 
   async function run(ctx) {
@@ -34449,19 +34517,44 @@ function makeApoioModule(opts) {
             const d = (resp && resp.json) || {};
             const cmdsLidos = Array.isArray(d.commands) ? d.commands
               : ((d.data && Array.isArray(d.data.commands)) ? d.data.commands : null);
-            const leituraOk = !!resp && !d.error && !!cmdsLidos;
-            const cmds = cmdsLidos || [];
+            const visaoOk = !!resp && !d.error && !!cmdsLidos;
 
-            if (!leituraOk) {
+            /* A FASE VEM DOS MODELOS.
+             *
+             * Com visão geral, ela continua a ser a fonte — mas não diz se a
+             * revolta está na R1 ou na R2, e guardava-se o fim da FASE. Uma
+             * cidade vista só na R1 ficava com o fim da R1 como "fim da
+             * revolta". Os modelos dizem a fase: na R1, o fim guardado passa a
+             * ser o da revolta inteira.
+             *
+             * Sem visão geral, os modelos passam a ser a fonte. */
+            const modelos = revoltasPelosModelos(AGORA);
+            let cmds = [];
+            if (visaoOk) {
+              cmds = cmdsLidos.map((x) => {
+                if (!/revolt/i.test(String(x.type || x.command_type || ''))) return x;
+                const rid = Number(String(x.id || '').replace(/\D+/g, '')) || 0;
+                const m = modelos.porId[rid];
+                return (m && m.r1) ? Object.assign({}, x, { fimRevolta: m.fimRevolta }) : x;
+              });
+            } else if (modelos.ok) {
+              cmds = modelos.lista;
+            }
+            const leituraOk = visaoOk || modelos.ok;
+
+            if (!visaoOk) {
               const K_AVISO = 'grepoApoio_avisoVisaoGeral_v1';
               let ultimoAviso = 0;
               try { ultimoAviso = Number(armazem.getItem(K_AVISO)) || 0; } catch (e) {}
               const porque = !temAdm ? 'esta conta não tem Administrador'
                 : (d.error ? `o jogo respondeu: ${d.error}` : 'o pedido falhou');
               const quantas = Object.keys(lista.revoltasAuto || {}).length;
-              const msg = `⚠️ Revoltas: não consegui ler a visão geral (${porque}). Não detecto revoltas `
-                + 'novas, e as que estão na lista ficam lá até conseguir ler'
-                + (quantas ? ` (${quantas} agora).` : '.');
+              const msg = modelos.ok
+                ? `⚠️ Revoltas: sem visão geral (${porque}) — uso os dados de revolta que o `
+                  + `jogo carrega (${modelos.lista.length} revolta(s) em curso).`
+                : `⚠️ Revoltas: não consegui ler a visão geral (${porque}) nem os dados do jogo. `
+                  + 'Não detecto revoltas novas, e as que estão na lista ficam lá até conseguir ler'
+                  + (quantas ? ` (${quantas} agora).` : '.');
               if (AGORA - ultimoAviso >= 3600) {
                 log(msg);
                 try { armazem.setItem(K_AVISO, String(AGORA)); } catch (e) {}
@@ -34513,7 +34606,9 @@ function makeApoioModule(opts) {
                * depois na mesma cidade. */
               if (x.id) e2.comandos.push(String(x.id));
               if (fim && (!e2.primeira || fim < e2.primeira)) e2.primeira = fim;
-              if (fim > e2.ultima) e2.ultima = fim;
+              /* O fim da AMEAÇA: na R1, o da revolta inteira (dos modelos). */
+              const fimAmeaca = Number(x.fimRevolta) || fim;
+              if (fimAmeaca > e2.ultima) e2.ultima = fimAmeaca;
             }
             const revoltas = Object.keys(porCidade).map((k) => porCidade[k]);
 
