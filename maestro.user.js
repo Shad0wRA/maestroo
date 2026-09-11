@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.1300
+// @version      2026.09.12.1400
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1929,7 +1929,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.1300';
+  const MAESTRO_VERSAO = '2026.09.12.1400';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -33903,12 +33903,25 @@ function makeApoioModule(opts) {
    *
    * O `units_id` identifica o apoio que ESTA conta tem naquela cidade.
    * ==================================================================== */
-  async function mandarParteDeVolta(unitsId, minhaCidade, unidades) {
+  /* RETIRADA PARCIAL — CONFIRMADA COM A ESPIA (11/09), numa multi:
+   *
+   *   POST units_beyond_info?town_id=<ORIGEM>&action=send_back_part
+   *   json={"sword":0,"archer":0,"hoplite":0,"bireme":1,"small_transporter":0,
+   *         "units_id":425240,"town_id":637,"nl_init":true}
+   *   → {"success":"O apoio foi mandado regressar com êxito.",
+   *      "remaining_units":{"id":425240,"sword":200,...,"bireme":82,...}}
+   *
+   * O jogo manda TODAS as unidades do bloco, a zero as que ficam: faz-se
+   * igual (`tiposDoBloco`). A resposta diz o que ficou — devolve-se, para
+   * acertar as contas sem voltar a ler a Ágora. */
+  async function mandarParteDeVolta(unitsId, minhaCidade, unidades, tiposDoBloco) {
     try {
       const url = mUw.location.origin + '/game/units_beyond_info?town_id='
         + Number(minhaCidade) + '&action=send_back_part&h=' + mUw.Game.csrfToken;
 
-      const corpo = Object.assign({}, unidades, {
+      const corpo = {};
+      for (const u of (tiposDoBloco || [])) corpo[u] = 0;
+      Object.assign(corpo, unidades, {
         units_id: Number(unitsId),
         town_id: Number(minhaCidade),
         nl_init: true,
@@ -33923,15 +33936,91 @@ function makeApoioModule(opts) {
       }).then(lerResposta);
 
       const j = (r && r.json) || {};
-      return { ok: !j.error, msg: j.error || j.success || 'ok' };
+      const ok = !j.error && !!(j.success || j.remaining_units);
+      return { ok, msg: j.error || j.success || (ok ? 'ok' : 'o jogo não confirmou'),
+        restantes: j.remaining_units || null };
     } catch (e) { return { ok: false, msg: e.message }; }
   }
 
-  /* O apoio desta conta numa cidade, com o seu `units_id`. */
-  /* As minhas cidades, para distinguir o MEU apoio do de outras contas.
-   * Faltava neste módulo: o `meuApoioEm` rebentava com "minhasCidades is not
-   * defined" e o catch devolvia null sempre — logo os transportes a mais
-   * nunca voltavam para casa. */
+  /* QUE PARTE DE UM BLOCO PODE SAIR, pelas regras do jogo (as tuas, 11/09):
+   *   - navios saem sozinhos;
+   *   - tropa terrestre na MESMA ilha sai sozinha — um bloco sem transportes
+   *     só pode ter ido a pé;
+   *   - noutra ilha, saem com ela os transportes que a levam, e os que ficam
+   *     têm de chegar para a tropa que fica. Sem combinação possível, tira-se
+   *     menos tropa (até não sair nenhuma).
+   * Nunca sai mais do que `excesso`. Devolve as unidades a mandar, ou null. */
+  function planoDeRetirada(b, excesso) {
+    const bu = b.unidades || {};
+    const plano = {};
+    let terra = {};
+    for (const u of Object.keys(excesso || {})) {
+      const n = Math.min(Number(bu[u]) || 0, Number(excesso[u]) || 0);
+      if (n <= 0) continue;
+      if (TERRESTRES.indexOf(u) >= 0) terra[u] = n; else plano[u] = n;
+    }
+    const popDe2 = (o) => Object.keys(o).reduce((s2, u) => s2 + (Number(o[u]) || 0) * popDaUnidade(u), 0);
+    let w = popDe2(terra);
+    if (w > 0) {
+      const s0 = Number(bu.small_transporter) || 0, g0 = Number(bu.big_transporter) || 0;
+      if (!s0 && !g0) {
+        Object.assign(plano, terra);                     // foi a pé: mesma ilha
+      } else {
+        const berth = temBeliche(b.de);
+        const cs = CAPACIDADE.small_transporter[berth ? 'com' : 'sem'];
+        const cg = CAPACIDADE.big_transporter[berth ? 'com' : 'sem'];
+        let popTerraBloco = 0;
+        for (const u of TERRESTRES) popTerraBloco += (Number(bu[u]) || 0) * popDaUnidade(u);
+        let escolha = null;
+        for (let volta = 0; volta < 16 && w > 0 && !escolha; volta++) {
+          const fica = popTerraBloco - w;
+          for (let gW = 0; gW <= g0 && !escolha; gW++) {
+            const sW = Math.max(0, Math.ceil((w - gW * cg) / cs));
+            if (sW > s0) continue;
+            if ((s0 - sW) * cs + (g0 - gW) * cg >= fica) escolha = { sW, gW };
+          }
+          if (!escolha) {
+            const menos = {};
+            for (const u of Object.keys(terra)) { const n = Math.floor(terra[u] * 0.75); if (n > 0) menos[u] = n; }
+            terra = menos; w = popDe2(terra);
+          }
+        }
+        if (escolha && w > 0) {
+          Object.assign(plano, terra);
+          if (escolha.sW) plano.small_transporter = escolha.sW;
+          if (escolha.gW) plano.big_transporter = escolha.gW;
+        }
+      }
+    }
+    return Object.keys(plano).length ? plano : null;
+  }
+
+  /* Acertar a leitura guardada da Ágora com o que o jogo diz que ficou. */
+  function acertarBlocoNaCache(de, alvo, unitsId, restantes, saiu) {
+    try {
+      const cacheF = lerCacheFora();
+      const e3 = cacheF[String(de)];
+      if (!e3 || !Array.isArray(e3.blocos)) return;
+      const i = e3.blocos.findIndex((x) => Number(x.alvoId) === Number(alvo) && Number(x.unitsId) === Number(unitsId));
+      if (i < 0) return;
+      const novas = {};
+      if (restantes) {
+        for (const u of Object.keys(restantes)) {
+          const n = Number(restantes[u]) || 0;
+          if (u !== 'id' && n > 0 && (mUw.GameData.units || {})[u]) novas[u] = n;
+        }
+      } else {
+        const bu = e3.blocos[i].unidades || {};
+        for (const u of Object.keys(bu)) {
+          const n = (Number(bu[u]) || 0) - (Number((saiu || {})[u]) || 0);
+          if (n > 0) novas[u] = n;
+        }
+      }
+      if (Object.keys(novas).length) e3.blocos[i].unidades = novas; else e3.blocos.splice(i, 1);
+      localStorage.setItem('grepoMaestro_apoioFora_v1', JSON.stringify(cacheF));
+    } catch (e) { seErroDeCodigo(e, 'Apoio'); }
+  }
+
   function minhasCidades() {
     try { return new Set(Object.keys(mUw.ITowns.towns).map(Number)); } catch (e) { return new Set(); }
   }
@@ -34505,6 +34594,7 @@ function makeApoioModule(opts) {
       return voltaram;
     }
 
+    const jaForam = new Set();
     try {
       const mods = mUw.MM.getModels().Units || {};
       for (const k of Object.keys(mods)) {
@@ -34519,8 +34609,38 @@ function makeApoioModule(opts) {
         if ((Number(a.colonize_ship) || 0) > 0) continue;
 
         const r = await mandarDeVolta(a.id, casa);
-        if (r) { voltaram++; await ctx.sleep(ctx.rand(700, 1300)); }
+        if (r) { voltaram++; jaForam.add(Number(a.id)); await ctx.sleep(ctx.rand(700, 1300)); }
       }
+    } catch (e) { seErroDeCodigo(e, 'Apoio'); }
+
+    /* E OS QUE OS MODELOS NÃO TÊM.
+     *
+     * Nas multis os modelos `Units` estão incompletos: a espia de 11/09 viu um
+     * bloco (425240) que não estava lá, numa conta com cinco nos modelos. Sem
+     * isto, a tropa desses blocos ficava no alvo depois de ele sair da lista
+     * (fim de revolta incluído). A leitura da Ágora tem-nos: o
+     * `place_units_<id>` é o `support_id`. */
+    try {
+      const cacheF = lerCacheFora();
+      let mudou = false;
+      for (const de of Object.keys(cacheF)) {
+        if (!mUw.ITowns.towns[de]) continue;
+        const e3 = cacheF[de] || {};
+        for (const b of [].concat(e3.blocos || [])) {
+          if (Number(b.alvoId) !== Number(alvoId)) continue;
+          const id = Number(b.unitsId) || 0;
+          if (!id || jaForam.has(id)) continue;
+          if ((Number((b.unidades || {}).colonize_ship) || 0) > 0) continue;
+          const r = await mandarDeVolta(id, Number(de));
+          if (r) {
+            voltaram++; jaForam.add(id);
+            e3.blocos = (e3.blocos || []).filter((x) => Number(x.unitsId) !== id);
+            mudou = true;
+            await ctx.sleep(ctx.rand(700, 1300));
+          }
+        }
+      }
+      if (mudou) localStorage.setItem('grepoMaestro_apoioFora_v1', JSON.stringify(cacheF));
     } catch (e) { seErroDeCodigo(e, 'Apoio'); }
 
     return voltaram;
@@ -35142,7 +35262,8 @@ function makeApoioModule(opts) {
           continue;
         }
 
-        const rv = await mandarParteDeVolta(meu.unitsId, meu.de, { small_transporter: sobram });
+        const rv = await mandarParteDeVolta(meu.unitsId, meu.de, { small_transporter: sobram },
+          Object.keys(meu.unidades || {}));
         if (rv.ok) {
           jaPedidos[String(alvoT)] = Date.now();
           try { armazem.setItem('grepoApoio_transpVolta_v1', JSON.stringify(jaPedidos)); } catch (e) {}
@@ -35694,26 +35815,42 @@ function makeApoioModule(opts) {
           .filter((b) => !((Number((b.unidades || {}).colonize_ship) || 0) > 0))
           .sort((a, b) => popDe(b.unidades) - popDe(a.unidades));
 
+        /* SÓ SAI O QUE ESTÁ ACIMA DA PARTE DESTA CONTA — com a retirada
+         * parcial (confirmada a 11/09), em vez de blocos inteiros. */
+        const excesso = {};
+        for (const u of Object.keys(quota)) {
+          const n = (Number(tenho[u]) || 0) - quota[u];
+          if (n > 0) excesso[u] = n;
+        }
+
         const inf = cacheCidades[alvo] || { nome: '#' + alvo };
         for (const b of blocos) {
-          if (devolvidos >= MAX_DEVOLVER) break;
+          if (devolvidos >= MAX_DEVOLVER || !Object.keys(excesso).length) break;
+          let plano = planoDeRetirada(b, excesso);
           const bu = b.unidades || {};
-
-          /* Sem este bloco, continuo com a minha parte em tudo o que ele leva? */
-          const podeIr = Object.keys(quota).every((u) => {
-            const n = Number(bu[u]) || 0;
-            return !n || ((Number(tenho[u]) || 0) - n) >= quota[u];
-          });
-          const levaAlgoDoObjetivo = Object.keys(quota).some((u) => (Number(bu[u]) || 0) > 0);
-          if (!podeIr || !levaAlgoDoObjetivo) continue;
+          /* Sem parte possível — os transportes não chegariam para a tropa que
+           * ficasse —, volta o bloco inteiro, se sem ele esta conta continuar
+           * com a sua parte em tudo o que ele leva. */
+          let inteiro = false;
+          if (!plano) {
+            inteiro = Object.keys(quota).some((u) => (Number(bu[u]) || 0) > 0)
+              && Object.keys(quota).every((u) => {
+                const n = Number(bu[u]) || 0;
+                return !n || ((Number(tenho[u]) || 0) - n) >= quota[u];
+              });
+            if (!inteiro) continue;
+            plano = Object.assign({}, bu);
+          }
 
           const sid = supportIdDe(b.de, alvo, b.unitsId);
           if (!sid) continue;
 
-          const ok = await mandarDeVolta(sid, b.de);
-          if (!ok) {
-            rotina(`Apoio: não consegui mandar de volta o bloco de ${b.de} em ${inf.nome} `
-              + '— não volto a tentar este alvo durante uma hora.');
+          const rv = inteiro
+            ? { ok: await mandarDeVolta(sid, b.de), msg: 'regresso do bloco inteiro', restantes: {} }
+            : await mandarParteDeVolta(sid, b.de, plano, Object.keys(bu));
+          if (!rv.ok) {
+            rotina(`Apoio: não consegui mandar parte do bloco de ${b.de} em ${inf.nome} de volta `
+              + `(${rv.msg}) — não volto a tentar este alvo durante uma hora.`);
             try {
               const K = 'grepoApoio_retiradaFalhou_v1';
               const rf = JSON.parse(armazem.getItem(K) || '{}');
@@ -35724,24 +35861,18 @@ function makeApoioModule(opts) {
           }
 
           devolvidos++;
-          for (const u of Object.keys(bu)) tenho[u] = (Number(tenho[u]) || 0) - (Number(bu[u]) || 0);
-
-          /* Tirar o bloco da leitura guardada e do registo: senão a passagem
-           * seguinte contava-o outra vez, até a Ágora ser relida. */
-          try {
-            const cacheF = lerCacheFora();
-            const e3 = cacheF[String(b.de)];
-            if (e3 && Array.isArray(e3.blocos)) {
-              e3.blocos = e3.blocos.filter((x) => !(Number(x.alvoId) === Number(alvo)
-                && Number(x.unitsId) === Number(b.unitsId)));
-              localStorage.setItem('grepoMaestro_apoioFora_v1', JSON.stringify(cacheF));
-            }
-          } catch (e) { seErroDeCodigo(e, 'Apoio'); }
-          delete reg[chavePar(b.de, alvo)];
-          gravarRegisto(reg);
+          for (const u of Object.keys(plano)) {
+            tenho[u] = (Number(tenho[u]) || 0) - plano[u];
+            if (excesso[u] != null) { excesso[u] -= plano[u]; if (excesso[u] <= 0) delete excesso[u]; }
+          }
+          acertarBlocoNaCache(b.de, alvo, b.unitsId, rv.restantes, plano);
+          if (rv.restantes && !Object.keys(rv.restantes).some((u) => u !== 'id' && Number(rv.restantes[u]) > 0)) {
+            delete reg[chavePar(b.de, alvo)];
+            gravarRegisto(reg);
+          }
 
           log(`↩️ ${inf.nome}: tropa a mais volta para casa — `
-            + Object.keys(bu).map((u) => `${bu[u]} ${u}`).join(', ')
+            + Object.keys(plano).map((u) => `${plano[u]} ${u}`).join(', ')
             + ` (esta conta fica com ${Object.keys(quota).map((u) => Math.max(0, tenho[u] || 0)).join('/')}; `
             + `a parte dela é ${Object.keys(quota).map((u) => quota[u]).join('/')}).`);
           await ctx.sleep(ctx.rand(900, 1600));
