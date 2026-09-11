@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.0500
+// @version      2026.09.12.0600
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1868,7 +1868,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.0500';
+  const MAESTRO_VERSAO = '2026.09.12.0600';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -2426,6 +2426,7 @@
     'grepoFundacao_recemFundadas_v1',    // ilhas onde ESTA conta acabou de fundar
     'grepoApoio_transpVolta_v1',         // transportes que ESTA conta já mandou vir
     'grepoAldeias_captcha_v1',           // captcha visto NESTA conta
+    'grepoAldeias_captchaMostrado_v1',   // quando ESTA conta abriu a recolha para mostrar o captcha
     'grepoAlertas_reforco_v1',           // reforços que ESTA conta pediu
     'grepoAlertas_ultimaPassagem_v1',    // quando ESTA conta olhou pela última vez
     'grepoApoio_cacheAlvos_v1',          // os alvos como ESTA conta os leu
@@ -17320,7 +17321,11 @@ function makeAldeiasModule(opts) {
       aplicarNotificacoes(r);
       const j = r && r.json;
       const erro = j && j.error;
-      return { ok: !erro, msg: erro || (j && j.success) || 'ok' };
+      /* VERIFICAÇÃO DE BOT: o jogo responde `backend_requested_verification`
+       * — o sinal que o Tique e as Missões já usam (visto em jogo). A recolha
+       * não olhava para ele: o `captcha` nunca vinha preenchido. */
+      const captcha = !!erro && /verification|captcha|bot_protection/i.test(String(erro));
+      return { ok: !erro, msg: erro || (j && j.success) || 'ok', captcha };
     } catch (e) { return { ok: false, msg: e.message }; }
   }
 
@@ -17344,7 +17349,11 @@ function makeAldeiasModule(opts) {
       aplicarNotificacoes(r);
       const j = r && r.json;
       const erro = j && j.error;
-      return { ok: !erro, msg: erro || (j && j.success) || 'ok' };
+      /* VERIFICAÇÃO DE BOT: o jogo responde `backend_requested_verification`
+       * — o sinal que o Tique e as Missões já usam (visto em jogo). A recolha
+       * não olhava para ele: o `captcha` nunca vinha preenchido. */
+      const captcha = !!erro && /verification|captcha|bot_protection/i.test(String(erro));
+      return { ok: !erro, msg: erro || (j && j.success) || 'ok', captcha };
     } catch (e) { return { ok: false, msg: e.message }; }
   }
 
@@ -17893,6 +17902,99 @@ function makeAldeiasModule(opts) {
   }
 
   /* =========================================================================
+   *  MOSTRAR O CAPTCHA NO ECRÃ — abrir a recolha e carregar no botão.
+   *
+   *  Os pedidos do maestro não passam pelo tratamento do próprio jogo: quando
+   *  o servidor pede verificação, responde `backend_requested_verification` e
+   *  mais nada — nenhuma janela abre. Um clique no botão do jogo passa por
+   *  esse tratamento, e é o jogo que abre o captcha. Pedido teu (11/09).
+   *
+   *  Tudo confirmado com a espia (11/09, main):
+   *    com Capitão:  FarmTownOverviewWindowFactory.openFarmTownOverview()
+   *                  → `a.checkbox.select_all` → `#fto_claim_button`
+   *    sem Capitão:  FarmTownWindowFactory.openWindow(<aldeia>)
+   *                  → `.action_card .card_click_area` ("Recolher", opção 1)
+   *    armazém cheio (nos dois): confirmação → `.btn_confirm` ("Sim")
+   *  Clica-se no elemento mais fundo que tu clicaste: o clique sobe aos pais,
+   *  e o que o jogo escuta está num deles.
+   *
+   *  Uma vez por suspensão. Não se toca no captcha: resolves tu.
+   * ====================================================================== */
+  const CAPTCHA_MOSTRADO_KEY = 'grepoAldeias_captchaMostrado_v1';
+
+  async function mostrarCaptchaPelaRecolha(ctx, farmTownId) {
+    const log = ctx.log;
+    try {
+      const antes = Number(armazem.getItem(CAPTCHA_MOSTRADO_KEY) || 0);
+      if (Date.now() - antes < 30 * 60 * 1000) return;
+      armazem.setItem(CAPTCHA_MOSTRADO_KEY, String(Date.now()));
+    } catch (e) { seErroDeCodigo(e, 'Aldeias'); }
+
+    const visivel = (el) => {
+      try {
+        if (!el || el.isConnected === false) return false;
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+      } catch (e) { return false; }
+    };
+    const esperar = async (sel, ms) => {
+      const ate = Date.now() + ms;
+      while (Date.now() < ate) {
+        const els = document.querySelectorAll(sel);
+        for (const el of els) if (visivel(el)) return el;
+        await ctx.sleep(250);
+      }
+      return null;
+    };
+    const clicar = (el, fundo) => {
+      const alvo = (fundo && el.querySelector(fundo)) || el;
+      alvo.click();
+    };
+
+    try {
+      const capitao = temCapitao();
+      const fto = mUw.FarmTownOverviewWindowFactory;
+      const ftw = mUw.FarmTownWindowFactory;
+
+      if (capitao && fto && typeof fto.openFarmTownOverview === 'function') {
+        fto.openFarmTownOverview();
+        const todas = await esperar('#fto_town_wrapper a.checkbox.select_all', 10000);
+        if (!todas) { log('⚠️ Captcha: abri a recolha, mas a lista das cidades não apareceu.'); return; }
+        clicar(todas);
+        await ctx.sleep(2500);                     // o jogo carrega as aldeias de todas
+        const btn = await esperar('#fto_claim_button', 5000);
+        if (!btn) { log('⚠️ Captcha: não encontrei o botão Recolher na janela.'); return; }
+        clicar(btn, '.caption span, .caption');
+      } else if (farmTownId && ftw && typeof ftw.openWindow === 'function') {
+        ftw.openWindow(Number(farmTownId));
+        const cartao = await esperar('.farm_towns .action_card .card_click_area', 10000);
+        if (!cartao) { log('⚠️ Captcha: abri a aldeia, mas o cartão Recolher não apareceu.'); return; }
+        clicar(cartao);
+      } else {
+        log('⚠️ Captcha: não consegui abrir a janela da recolha — resolve-o à mão '
+          + '(abre uma aldeia e recolhe).');
+        return;
+      }
+
+      /* Armazém cheio: o jogo pergunta antes de recolher. */
+      const sim = await esperar('.confirmation .btn_confirm', 3000);
+      if (sim) clicar(sim, '.caption span, .caption');
+
+      /* O captcha apareceu? */
+      const ha = mUw.__maestroHaCaptcha;
+      let viu = false;
+      for (let i = 0; i < 20 && !viu; i++) {
+        await ctx.sleep(500);
+        try { viu = !!(ha && ha()); } catch (e) { viu = false; }
+      }
+      log(viu
+        ? '🧩 Captcha no ecrã: abri a recolha e carreguei em recolher. Resolve-o.'
+        : '⚠️ Abri a recolha e carreguei em recolher, mas o captcha não apareceu. '
+          + 'Resolve-o à mão (abre uma aldeia e recolhe).');
+    } catch (e) { seErroDeCodigo(e, 'Aldeias'); }
+  }
+
+  /* =========================================================================
    *  LIMPEZA DE NOTIFICAÇÕES acumuladas.
    *  NUNCA apaga o aviso de verificação de bot — esse tens de o ver.
    * ====================================================================== */
@@ -18081,6 +18183,12 @@ function makeAldeiasModule(opts) {
       // UM pedido para todas as cidades — muito mais leve que aldeia a aldeia.
       const ids = towns.map((t) => t.id);
       const r = await recolherEmMassa(ids, ids[0]);
+      if (r.captcha) {
+        (ctx.logRotina || log)(`Recolha em massa: o jogo pediu verificação (${r.msg}).`);
+        await tratarCaptcha(ctx, 'recolha em massa');
+        await mostrarCaptchaPelaRecolha(ctx, null);
+        return;
+      }
       if (r.ok) {
         const total = prontas.reduce((s, p) => s + (p.rende || 0), 0);
         log(`🌾 Recolha em massa em ${ids.length} cidade(s): ${prontas.length} aldeia(s) prontas (~${total} recursos).`);
@@ -18172,7 +18280,20 @@ function makeAldeiasModule(opts) {
       const townId = cidadePorAldeia[p.farmTownId];
       if (!townId) continue; // aldeia sem cidade minha na ilha
       const r = await recolherAldeia(p.relationId, p.farmTownId, townId);
-      if (r.captcha) { await tratarCaptcha(ctx, 'recolha'); return; }
+      if (r.captcha) {
+        (ctx.logRotina || log)(`Recolha: o jogo pediu verificação (${r.msg}).`);
+        await tratarCaptcha(ctx, 'recolha');
+        /* Para o clique, uma aldeia da cidade que está aberta no jogo: é por
+         * ela que o jogo recolhe. Sem nenhuma, serve a que falhou. */
+        let aldeia = p.farmTownId;
+        try {
+          const atual = Number(mUw.Game.townId) || 0;
+          const daAtual = prontas.find((p3) => Number(cidadePorAldeia[p3.farmTownId]) === atual);
+          if (daAtual) aldeia = daAtual.farmTownId;
+        } catch (e) { seErroDeCodigo(e, 'Aldeias'); }
+        await mostrarCaptchaPelaRecolha(ctx, aldeia);
+        return;
+      }
       if (r.ok) { n++; recursos += p.rende || 0; }
       else {
         /* O LIMITE DIÁRIO não é erro — é o normal ao fim do dia, e enchia o
