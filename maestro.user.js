@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.2000
+// @version      2026.09.12.2100
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2107,7 +2107,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.2000';
+  const MAESTRO_VERSAO = '2026.09.12.2100';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -19275,7 +19275,7 @@ function makeAlertasModule(opts) {
             out.push({
               command_id: Number(a.id || a.command_id) || 0,
               arrival_at: Number(a.arrival_at),
-              started_at: Number(a.started_at) || 0,
+              started_at: Number(a.started_at) || null,   // nulo nos recebidos, como nos modelos
               target_town_id: Number(a.target_town_id),
               home_town_id: Number(a.home_town_id) || 0,
               type: String(a.type || ''),
@@ -19294,7 +19294,7 @@ function makeAlertasModule(opts) {
       const saida = vg.comandos.map((c) => ({
         command_id: Number(c.id),
         arrival_at: Number(c.arrival_at),
-        started_at: Number(c.started_at),
+        started_at: Number(c.started_at) || null,   // 0 = comando de outro (espia, 11/09): é "não se sabe", não é um número
         home_town_id: Number(c.origin_town_id),
         target_town_id: Number(c.destination_town_id),
         type: String(c.type || ''),
@@ -19779,12 +19779,27 @@ function makeAlertasModule(opts) {
       return { a, origem, alvo, falta, dist, vel, cls };
     }
 
+    /* O MESMO ATAQUE PELAS DUAS FONTES.
+     *
+     * Com os ataques da visão geral a contar, o mesmo pode vir pelos modelos e
+     * pelo servidor. Partilham o número (espia, 11/09: 3 em 3 no 126), mas no
+     * modelo tanto pode estar no `id` como no `command_id` — e os feitiços já
+     * viram o mesmo ataque com números diferentes. Conta como visto por
+     * qualquer dos números, e também por destino + origem + minuto de chegada. */
+    const chavesAtaque = (a) => {
+      const k = [a.command_id, a.id].filter((x) => Number(x) > 0).map((x) => String(Number(x)));
+      const origem = Number(a.home_town_id) || 0;
+      if (origem && a.arrival_at) {
+        k.push(`${Number(a.target_town_id)}|${origem}|${Math.round(Number(a.arrival_at) / 60)}`);
+      }
+      return k;
+    };
     const jaVistos = new Set();
     const novosAtaques = [];
     for (const a of movs) {
-      const idUnico = String(a.command_id || a.id);
-      if (jaVistos.has(idUnico)) continue;   // pode vir das duas fontes
-      jaVistos.add(idUnico);
+      const chaves = chavesAtaque(a);
+      if (chaves.some((k) => jaVistos.has(k))) continue;   // pode vir das duas fontes
+      chaves.forEach((k) => jaVistos.add(k));
       const tipo = String(a.type || '');
       const ehAtaque = /attack|revolt|conquer/i.test(tipo);
       if (!ehAtaque && !(c.avisarApoios && /support/i.test(tipo))) continue;
@@ -19799,9 +19814,12 @@ function makeAlertasModule(opts) {
       const origemId = Number(a.home_town_id) || 0;
       if (a.started_at != null || (origemId && minhas.has(origemId))) continue;
       const cid = String(a.command_id || a.id);
-      if (vistos[cid]) continue;                                 // já avisado
+      /* Já avisado por qualquer das chaves: um ataque avisado pelo modelo não
+       * volta a sair quando aparece pelo servidor com o outro número. */
+      if (vistos[cid] || chaves.some((k) => vistos[k])) continue;   // já avisado
 
       vistos[cid] = agora;
+      for (const k of chaves) vistos[k] = agora;
       novos++;
       novosAtaques.push(a);
     }
@@ -23483,7 +23501,7 @@ function makeEsquivaModule(opts) {
             out.push({
               command_id: Number(a.id || a.command_id) || 0,
               arrival_at: Number(a.arrival_at),
-              started_at: Number(a.started_at) || 0,
+              started_at: Number(a.started_at) || null,   // nulo nos recebidos, como nos modelos
               target_town_id: Number(a.target_town_id),
               home_town_id: Number(a.home_town_id) || 0,
               type: String(a.type || ''),
@@ -23503,7 +23521,7 @@ function makeEsquivaModule(opts) {
       return vg.comandos.map((c) => ({
         command_id: Number(c.id),
         arrival_at: Number(c.arrival_at),
-        started_at: Number(c.started_at),
+        started_at: Number(c.started_at) || null,   // 0 = comando de outro (espia, 11/09): é "não se sabe", não é um número
         target_town_id: Number(c.destination_town_id),
         home_town_id: Number(c.origin_town_id),
         type: String(c.type || ''),
@@ -25069,10 +25087,25 @@ function makeEsquivaModule(opts) {
     // agrupar os ataques a chegar por cidade
     const porCidade = {};
     const vistos = new Set();
+    /* O MESMO ATAQUE PELAS DUAS FONTES.
+     *
+     * Com os ataques da visão geral a contar, o mesmo pode vir pelos modelos e
+     * pelo servidor. Partilham o número (espia, 11/09: 3 em 3 no 126), mas no
+     * modelo tanto pode estar no `id` como no `command_id` — e os feitiços já
+     * viram o mesmo ataque com números diferentes. Conta como visto por
+     * qualquer dos números, e também por destino + origem + minuto de chegada. */
+    const chavesAtaque = (a) => {
+      const k = [a.command_id, a.id].filter((x) => Number(x) > 0).map((x) => String(Number(x)));
+      const origem = Number(a.home_town_id) || 0;
+      if (origem && a.arrival_at) {
+        k.push(`${Number(a.target_town_id)}|${origem}|${Math.round(Number(a.arrival_at) / 60)}`);
+      }
+      return k;
+    };
     for (const a of movimentos().concat(doServidor)) {
-      const uid = String(a.command_id || a.id);
-      if (vistos.has(uid)) continue;
-      vistos.add(uid);
+      const chaves = chavesAtaque(a);
+      if (chaves.some((k) => vistos.has(k))) continue;
+      chaves.forEach((k) => vistos.add(k));
       if (!/attack|revolt|conquer/i.test(String(a.type || ''))) continue;
       const alvoId = Number(a.target_town_id);
       if (!minhas.has(alvoId)) continue;
