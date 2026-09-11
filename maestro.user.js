@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.1400
+// @version      2026.09.12.1500
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1929,7 +1929,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.1400';
+  const MAESTRO_VERSAO = '2026.09.12.1500';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -27851,19 +27851,25 @@ function makeEncaixeModule(opts) {
        *
        * Daí o "não consegui ler a chegada" e o "não encontrei o comando para
        * cancelar" — com tropa a sair sem confirmação. */
-      if (jr.id) r.__commandId = Number(jr.id);
+      /* O `id` DO TOPO NÃO SERVE PARA CANCELAR — visto em jogo (11/09):
+       * "não consegui cancelar (O comando não existe.)", três vezes, com a
+       * tropa a chegar 14 a 22 s fora. Até à 0700 esse `id` nunca era lido e o
+       * cancelamento usava o `command_id` do movimento — que é o que o jogo
+       * cancela. Guarda-se o do topo só para o diagnóstico. */
+      if (jr.id) r.__idDaResposta = Number(jr.id);
 
-      /* A HORA DE CHEGADA vem nas notificações, e com ela não é preciso
-       * perguntar nada ao servidor: dá para calcular o desvio no instante. */
+      /* A HORA DE CHEGADA e o `command_id` vêm nas notificações (o movimento
+       * acabado de criar). Sem `command_id` lá, fica por preencher e o módulo
+       * procura o comando pelo caminho de sempre. */
       const notas = jr.notifications || [];
       for (const n of notas) {
         const txt = String(n.param_str || '');
-        if (!r.__commandId) {
-          const mi = txt.match(/"Commands?"\s*:\s*\{[^}]*"id"\s*:\s*(\d+)/);
-          if (mi) r.__commandId = Number(mi[1]);
-        }
         const ma = txt.match(/"arrival_at"\s*:\s*(\d+)/);
-        if (ma) { r.__arrivalAt = Number(ma[1]); break; }
+        if (!ma) continue;
+        r.__arrivalAt = Number(ma[1]);
+        const mc = txt.match(/"command_id"\s*:\s*(\d+)/);
+        if (mc) r.__commandId = Number(mc[1]);
+        break;
       }
     } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
 
@@ -28264,6 +28270,7 @@ function makeEncaixeModule(opts) {
       // Folga aprendida em rajadas anteriores: assim não se repete o mesmo
       // tropeço todas as vezes (40% das tentativas chegaram a ser perdidas).
       let folgaExtra = 0;
+      let cancelouEm = 0;   // último cancelamento bem feito nesta rajada
       /* Tecto de 400 ms: com 900 os ciclos passavam de 350 para 1100 e a rajada
      * fazia seis tentativas em vez de trinta. Mais vale perder uma tentativa
      * por tropa em viagem do que perder metade delas à espera. */
@@ -28318,6 +28325,16 @@ function makeEncaixeModule(opts) {
           // "Não há unidades suficientes" logo a seguir a um cancelamento
           // costuma significar que as tropas ainda vêm a caminho de casa:
           // esperar um pouco e repetir, em vez de desistir do encaixe.
+          /* SÓ DEPOIS DE UM CANCELAMENTO. Sem nenhum há pouco, a tropa não
+           * está na cidade e não vai aparecer em segundos — visto (11/09): 35
+           * tentativas seguidas, 15 s, com a tropa fora por envios anteriores. */
+          const aVoltarParaCasa = cancelouEm && (Date.now() - cancelouEm) < 15000;
+          if (/unidades|units/i.test(String(r.msg)) && !aVoltarParaCasa) {
+            anotarRajada(`sem tropa na cidade: ${r.msg}`);
+            log(`⚠️ Encaixe: "${r.msg}" sem nenhum cancelamento antes — a tropa do plano não está `
+              + `na cidade ${plano.origemId} (saiu noutro envio?). Paro, sem mais tentativas.`);
+            return;
+          }
           if (/unidades|units/i.test(String(r.msg)) && tentativa < c.maxTentativas) {
             // Se isto acontece, a folga está curta: aumentamo-la para as
             // tentativas seguintes, para não desperdiçar mais nenhuma.
@@ -28535,6 +28552,7 @@ function makeEncaixeModule(opts) {
           log(`   tentativa ${tentativa}: ${desvio >= 0 ? '+' : ''}${desvio}s (ciclo ${cicloMs} ms)`);
 
         const cr = await cancelar(cmd.command_id, plano.origemId);
+        if (cr.ok) cancelouEm = Date.now();
         if (!cr.ok) {
           /* GUARDAR ISTO: um cancelamento falhado deixa o comando a caminho
            * com o desvio errado, e é a explicação mais provável quando um
