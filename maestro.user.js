@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.1800
+// @version      2026.09.12.1900
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1440,6 +1440,184 @@
 
   try { uw.__maestroLerResposta = lerRespostaComum; } catch (e) {}
 
+  /* ============ A VISÃO GERAL DOS COMANDOS, LIDA NUM SÍTIO SÓ ==========
+   *
+   * Eram 15 pedidos à visão geral em 9 módulos, cada um com a sua leitura.
+   * Foi assim que três ficaram cegos (liam só `json.data.commands`) e que
+   * "não consegui ler" passou por "não há nada" — no reforço, isso trazia de
+   * volta tropa de cidades com outro ataque a caminho. E cada pedido a mais
+   * pesa no risco de captcha.
+   *
+   *   const vg = await uw.__maestroVisaoGeral();                  // pode vir da cópia
+   *   const vg = await uw.__maestroVisaoGeral({ fresca: true });  // pedido novo
+   *   → { ok, comandos, razao, quando, daCopia }
+   *
+   * REGRA: `ok: false` NÃO É LISTA VAZIA. Quem o recebe não sabe o que há —
+   * não traz tropa, não tira alvos, não conclui "nenhum ataque". Por isso,
+   * sem `ok`, `comandos` vem a `null` e não a `[]`: quem se esquecer de olhar
+   * para o `ok` rebenta, em vez de decidir sobre uma lista que não existe.
+   *
+   * • Sem Administrador não se pede — o servidor recusa. Se o modelo das
+   *   assinaturas ainda não carregou, pede-se e decide o servidor; se ele
+   *   disser que falta, fica marcado 30 min.
+   * • A lista vem em `json.commands` ou em `json.data.commands`: lêem-se as
+   *   duas. Resposta sem nenhuma das duas é leitura falhada, não lista vazia.
+   * • Cópia partilhada de 20 s, e quem pede ao mesmo tempo espera pelo mesmo
+   *   pedido. `fresca: true` pede sempre de novo (a seguir a um envio
+   *   próprio, colonizadores em viagem).
+   * • `uw.__maestroVisaoGeralEsquecer()` deita a cópia fora. Chama-se depois
+   *   de QUALQUER envio (send_units, colonizar, retirar, cancelar). Um envio
+   *   novo que se escreva tem de o chamar também.
+   * • Cada módulo recebe a sua cópia da lista: pode mexer nela à vontade.
+   * • NÃO se substitui o `fetch` da página: no Firefox do VPS pode partir o
+   *   jogo. É uma função que cada módulo chama.
+   *
+   * Na consola: __maestroVisaoGeralEstado() — pedidos feitos, servidos da
+   * cópia, falhas e a última razão.
+   * ==================================================================== */
+  const VG_COPIA_MS = 20 * 1000;
+  let vgCopia = null;        // { comandos, quando, geracao }
+  let vgEmCurso = null;      // { promessa, geracao }
+  let vgGeracao = 0;         // sobe a cada "esquecer"
+  let vgSemAdmAte = 0;       // o servidor disse que falta o Administrador
+  const vgConta = {
+    pedidos: 0, daCopia: 0, partilhados: 0, falhas: 0, ultimaRazao: '', ultimaFalha: 0,
+  };
+
+  /* true / false — ou null se o modelo das assinaturas ainda não carregou:
+   * aí não se sabe, e pergunta-se ao servidor. */
+  function vgTemAdministrador() {
+    try {
+      const col = uw.MM && uw.MM.getModels && uw.MM.getModels().PremiumFeatures;
+      if (!col || !Object.keys(col).length) return null;
+    } catch (e) { return null; }
+    return temAdministrador();
+  }
+
+  function vgFalhou(razao, calada) {
+    vgConta.falhas++;
+    vgConta.ultimaRazao = String(razao || 'não sei porquê');
+    vgConta.ultimaFalha = Date.now();
+    /* Para a caixa da rotina: o que vai para o ecrã decide-o o módulo que
+     * pediu. "Sem Administrador" nas multis é o normal — fica calado. */
+    if (!calada) {
+      try { guardarNaCaixa('core', `visão geral: ${vgConta.ultimaRazao}`, true); } catch (e) {}
+    }
+    return { ok: false, comandos: null, razao: vgConta.ultimaRazao, quando: Date.now(), daCopia: false };
+  }
+
+  function vgEntregar(comandos, quando, daCopia) {
+    let copia;
+    try { copia = JSON.parse(JSON.stringify(comandos)); } catch (e) { copia = comandos.slice(); }
+    return { ok: true, comandos: copia, razao: '', quando, daCopia: !!daCopia };
+  }
+
+  async function vgPedir(geracao) {
+    vgConta.pedidos++;
+    /* Qualquer cidade minha serve: a visão geral traz os comandos de TODAS
+     * (confirmado em jogo). A primeira, como já faziam os módulos. */
+    let townId = 0;
+    try { townId = Number(Object.keys((uw.ITowns && uw.ITowns.towns) || {})[0]) || 0; } catch (e) {}
+    if (!townId) { try { townId = Number(uw.Game && uw.Game.townId) || 0; } catch (e) {} }
+    if (!townId) return { ok: false, razao: 'não sei nenhuma cidade desta conta' };
+
+    let r = null;
+    try {
+      const url = uw.location.origin + '/game/town_overviews?town_id=' + townId
+        + '&action=command_overview&h=' + uw.Game.csrfToken
+        + '&json=' + encodeURIComponent(JSON.stringify({ town_id: townId, nl_init: true }))
+        + '&_=' + Date.now();
+      const resp = await uw.fetch(url, {
+        headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
+      });
+      r = await lerRespostaComum(resp);      // trata do 429 e das páginas de erro
+    } catch (e) {
+      return { ok: false, razao: 'o pedido falhou: ' + ((e && e.message) || e) };
+    }
+
+    const j = (r && r.json) || {};
+    if (j.error) {
+      const erro = String(j.error);
+      if (/administrador|administrator|premium/i.test(erro)) {
+        vgSemAdmAte = Date.now() + 30 * 60 * 1000;
+        return { ok: false, razao: 'sem Administrador', calada: true };
+      }
+      if (/verification|captcha|bot_protection/i.test(erro)) {
+        try { avisarCaptcha('visão geral dos comandos'); } catch (e) {}
+        return { ok: false, razao: 'verificação de bot por resolver' };
+      }
+      return { ok: false, razao: erro.slice(0, 120) };
+    }
+
+    const lista = Array.isArray(j.commands) ? j.commands
+      : ((j.data && Array.isArray(j.data.commands)) ? j.data.commands : null);
+    if (!lista) {
+      return { ok: false, razao: 'a resposta não traz a lista de comandos (chaves: '
+        + (Object.keys(j).join(', ').slice(0, 80) || 'nenhuma') + ')' };
+    }
+
+    const quando = Date.now();
+    /* Se alguém mandou tropa enquanto isto vinha, a lista pode já não ter
+     * esse envio: serve a quem pediu, mas não fica como cópia. */
+    if (geracao === vgGeracao) vgCopia = { comandos: lista, quando, geracao };
+    return { ok: true, comandos: lista, quando };
+  }
+
+  async function visaoGeral(opcoes) {
+    const fresca = !!(opcoes && opcoes.fresca);
+    try {
+      if (vgTemAdministrador() === false || Date.now() < vgSemAdmAte) {
+        return vgFalhou('sem Administrador', true);
+      }
+      if (!fresca && vgCopia && vgCopia.geracao === vgGeracao
+          && Date.now() - vgCopia.quando < VG_COPIA_MS) {
+        vgConta.daCopia++;
+        return vgEntregar(vgCopia.comandos, vgCopia.quando, true);
+      }
+      let pedido = (!fresca && vgEmCurso && vgEmCurso.geracao === vgGeracao) ? vgEmCurso : null;
+      const partilhado = !!pedido;
+      if (partilhado) {
+        vgConta.partilhados++;
+      } else {
+        if (servidorTravado()) return vgFalhou('o servidor está a limitar os pedidos', true);
+        const geracao = vgGeracao;
+        const meu = { promessa: vgPedir(geracao), geracao };
+        const largar = () => { if (vgEmCurso === meu) vgEmCurso = null; };
+        meu.promessa.then(largar, largar);
+        vgEmCurso = meu;
+        pedido = meu;
+      }
+      const r = await pedido.promessa;
+      if (!r || !r.ok) return vgFalhou((r && r.razao) || 'sem resposta', !!(r && r.calada));
+      return vgEntregar(r.comandos, r.quando, partilhado);
+    } catch (e) {
+      seErroDeCodigo(e, 'núcleo');
+      return vgFalhou('erro: ' + ((e && e.message) || e));
+    }
+  }
+
+  function esquecerVisaoGeral() {
+    vgGeracao++;
+    vgCopia = null;
+  }
+
+  try {
+    uw.__maestroVisaoGeral = visaoGeral;
+    uw.__maestroVisaoGeralEsquecer = esquecerVisaoGeral;
+    uw.__maestroVisaoGeralEstado = () => {
+      const adm = vgTemAdministrador();
+      return Object.assign({}, vgConta, {
+        ultimaFalha: vgConta.ultimaFalha ? new Date(vgConta.ultimaFalha).toLocaleTimeString() : '',
+        copia: vgCopia
+          ? `${vgCopia.comandos.length} comando(s), de há ${Math.round((Date.now() - vgCopia.quando) / 1000)} s`
+          : 'nenhuma',
+        administrador: adm === null ? 'modelo por carregar' : (adm ? 'sim' : 'não'),
+        semAdmMarcadoPeloServidor: Date.now() < vgSemAdmAte,
+      });
+    };
+  } catch (e) { seErroDeCodigo(e, 'núcleo'); }
+
+
   /* ============ AVISO DE VERIFICAÇÃO DE BOT, PARA QUALQUER MÓDULO ======
    *
    * Só o módulo das aldeias avisava. Os outros — o Tique, a esquiva, o
@@ -1929,7 +2107,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.1800';
+  const MAESTRO_VERSAO = '2026.09.12.1900';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -14131,6 +14309,10 @@ function makeBandidosModule(opts) {
           nl_init: true,
         })),
       }).then(lerResposta);
+      try {   // mudou a visão geral: a cópia partilhada do núcleo deixa de valer
+        const vgE = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroVisaoGeralEsquecer;
+        if (vgE) vgE();
+      } catch (e) {}
       const j = r && r.json;
       const erro = j && j.error;
       return { ok: !erro, msg: erro || (j && j.success) || 'ok', dados: j };
@@ -14600,6 +14782,10 @@ function makeSentinelasModule(opts) {
         credentials: 'include',
         body: 'json=' + encodeURIComponent(JSON.stringify(corpo)),
       }).then(lerResposta);
+      try {   // mudou a visão geral: a cópia partilhada do núcleo deixa de valer
+        const vgE = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroVisaoGeralEsquecer;
+        if (vgE) vgE();
+      } catch (e) {}
 
       const j = r && r.json;
       const erro = j && j.error;
@@ -16311,6 +16497,10 @@ function makeFeiticosModule(opts) {
    * O pedido ao servidor só se faz quando o painel é aberto — a lista é para
    * escolheres à mão, e não vale a pena gastar um pedido de cinco em cinco
    * minutos por uma lista que ninguém está a ver. */
+  /* Porque é que a visão geral não veio, para o painel não dizer "nenhum
+   * ataque" quando só não conseguiu ler. Vazio = leu bem. */
+  let razaoVisaoGeral = '';
+
   async function ataquesContraMim() {
     /* SEM REPETIDOS, MAS PELO QUE O ATAQUE É.
      *
@@ -16351,21 +16541,16 @@ function makeFeiticosModule(opts) {
       }
     } catch (e) { seErroDeCodigo(e, 'Feiticos'); }
 
-    /* 2) O servidor, que sabe o que a página ainda não carregou. */
+    /* 2) O servidor, que sabe o que a página ainda não carregou — pelo leitor
+     *    único do núcleo. Se a leitura falhar ficam só os modelos, e guarda-se
+     *    a razão para o painel a dizer. */
+    razaoVisaoGeral = '';
     try {
-      const base = Object.keys(mUw.ITowns.towns || {})[0];
-      if (base) {
-        const url = mUw.location.origin + '/game/town_overviews?town_id=' + Number(base)
-          + '&action=command_overview&h=' + mUw.Game.csrfToken
-          + '&json=' + encodeURIComponent(JSON.stringify({ town_id: Number(base), nl_init: true }))
-          + '&_=' + Date.now();
-        const r = await mUw.fetch(url, {
-          headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
-        }).then((x) => x.json()).catch(() => null);
-
-        const d = (r && r.json) || {};
-        const cmds = d.commands || (d.data && d.data.commands) || [];
-        for (const x of cmds) {
+      const vgF = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroVisaoGeral;
+      const vg = vgF ? await vgF() : { ok: false, razao: 'o núcleo não tem o leitor da visão geral' };
+      if (!vg.ok) razaoVisaoGeral = vg.razao || 'não sei porquê';
+      if (vg.ok) {
+        for (const x of vg.comandos) {
           if (!/attack/i.test(String(x.type || ''))) continue;
           if (x.return === true || x.cmd_return === true) continue;
           if (!minhas.has(Number(x.destination_town_id))) continue;
@@ -17042,7 +17227,11 @@ function makeFeiticosModule(opts) {
       try {
         const vindos = await ataquesContraMim();
         if (!vindos.length) {
-          alvo.innerHTML = '<div style="opacity:.55;font-size:12px">Nenhum ataque a caminho de ti.</div>';
+          /* Com a leitura falhada, "nenhum ataque" seria mentira. */
+          alvo.innerHTML = razaoVisaoGeral
+            ? `<div style="opacity:.55;font-size:12px">Não consegui ler a visão geral (${esc(razaoVisaoGeral)}), `
+              + 'e a página não tem ataques carregados.</div>'
+            : '<div style="opacity:.55;font-size:12px">Nenhum ataque a caminho de ti.</div>';
           return;
         }
 
@@ -21719,6 +21908,10 @@ function makeDeusesModule(opts) {
   /* O que aconteceu ao último aviso — para o registo dizer se foi publicado. */
   let avisoPublicado = null;
 
+  /* Leituras da visão geral falhadas seguidas, no farm: a primeira vai para
+   * o ecrã, as seguintes para a rotina. */
+  let farmFalhasVisao = 0;
+
   async function enviarAtaque(origemId, alvoId, quantos, escudo) {
     avisoPublicado = null;
     const url = mUw.location.origin + '/game/town_info?town_id=' + Number(origemId)
@@ -21737,6 +21930,10 @@ function makeDeusesModule(opts) {
         credentials: 'include',
         body: 'json=' + encodeURIComponent(JSON.stringify(payload)),
       }).then(lerResposta);
+      try {   // mudou a visão geral: a cópia partilhada do núcleo deixa de valer
+        const vgE = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroVisaoGeralEsquecer;
+        if (vgE) vgE();
+      } catch (e) {}
       aplicarNotificacoes(r);
       const j = r && r.json;
       const erro = j && j.error;
@@ -21839,6 +22036,7 @@ function makeDeusesModule(opts) {
      * estão de regresso já entregaram o favor e contam no número actual. O
      * deus é o da cidade que mandou o ataque, que é quem recebe. */
     const aCaminhoPorDeus = {};
+    let leituraFalhou = '';
     try {
       /* OS MOVIMENTOS NÃO TRAZEM AS UNIDADES.
        *
@@ -21851,22 +22049,14 @@ function makeDeusesModule(opts) {
        * Quem traz as unidades é a visão geral dos comandos, a mesma que os
        * alertas e a detecção de revoltas já usam. Custa um pedido por
        * passagem. */
-      const base0 = (ctx.getMyTowns() || [])[0];
-      if (base0) {
-        const url0 = mUw.location.origin + '/game/town_overviews?town_id=' + Number(base0.id)
-          + '&action=command_overview&h=' + mUw.Game.csrfToken
-          + '&json=' + encodeURIComponent(JSON.stringify({ town_id: Number(base0.id), nl_init: true }))
-          + '&_=' + Date.now();
-
-        const resp0 = await mUw.fetch(url0, {
-          headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
-        }).then((r) => r.json()).catch(() => null);
-
-        const d0 = (resp0 && resp0.json) || {};
-        const cmds0 = d0.commands || (d0.data && d0.data.commands) || [];
+      /* Pelo leitor único do núcleo (cópia partilhada de 20 s). */
+      const vgF = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroVisaoGeral;
+      const vg0 = vgF ? await vgF() : { ok: false, razao: 'o núcleo não tem o leitor da visão geral' };
+      if (!vg0.ok && vg0.razao !== 'sem Administrador') leituraFalhou = vg0.razao || 'não sei porquê';
+      if (vg0.ok) {
         const minhas0 = new Set((ctx.getMyTowns() || []).map((t) => Number(t.id)));
 
-        for (const x of cmds0) {
+        for (const x of vg0.comandos) {
           if (x.return === true || x.cmd_return === true) continue;   // já entregou
           const nEnv = Number(x.godsent) || 0;
           if (nEnv <= 0) continue;
@@ -21877,7 +22067,10 @@ function makeDeusesModule(opts) {
           aCaminhoPorDeus[d2] = (aCaminhoPorDeus[d2] || 0) + nEnv * porEnviado;
         }
       }
-    } catch (e) { seErroDeCodigo(e, 'Deuses'); }
+    } catch (e) {
+      seErroDeCodigo(e, 'Deuses');
+      leituraFalhou = 'erro: ' + ((e && e.message) || e);
+    }
 
     try {
       const resumo = Object.keys(aCaminhoPorDeus)
@@ -21911,6 +22104,20 @@ function makeDeusesModule(opts) {
         }
       } catch (e) { seErroDeCodigo(e, 'Deuses'); }
     } catch (e) {}
+
+    /* NÃO CONSEGUI LER ≠ NADA A CAMINHO.
+     *
+     * Com a leitura falhada o favor a caminho contava zero — e voltava o
+     * problema de cima: duas vagas calculadas contra o mesmo favor. Espera-se
+     * pela passagem seguinte. Sem Administrador fica como sempre esteve: não
+     * há outra fonte para os enviados a caminho. */
+    if (leituraFalhou) {
+      farmFalhasVisao++;
+      (farmFalhasVisao === 1 ? log : (ctx.logRotina || log))(`Farm: não consegui ler a visão `
+        + `geral (${leituraFalhou}) — sem saber o favor que vem a caminho, não ataco nesta passagem.`);
+      return;
+    }
+    farmFalhasVisao = 0;
 
     /* Primeiro as cidades dos deuses que alguém pediu, e dentro dessas as de
      * pedido maior. O resto fica pela ordem do costume. */
@@ -24093,6 +24300,10 @@ function makeEsquivaModule(opts) {
         credentials: 'include',
         body: 'json=' + encodeURIComponent(JSON.stringify(payload)),
       }).then(lerResposta);
+      try {   // mudou a visão geral: a cópia partilhada do núcleo deixa de valer
+        const vgE = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroVisaoGeralEsquecer;
+        if (vgE) vgE();
+      } catch (e) {}
       aplicarNotificacoes(r);
       const j = r && r.json;
       return { ok: !(j && j.error), msg: (j && (j.error || j.success)) || 'ok', raw: r };
@@ -27801,6 +28012,10 @@ function makeEncaixeModule(opts) {
       credentials: 'include',
       body: 'json=' + encodeURIComponent(JSON.stringify(payload)),
     }).then(lerResposta);
+    try {   // mudou a visão geral: a cópia partilhada do núcleo deixa de valer
+      const vgE = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroVisaoGeralEsquecer;
+      if (vgE) vgE();
+    } catch (e) {}
     aplicarNotificacoes(r);
     const j = r && r.json;
     return { ok: !(j && j.error), msg: (j && (j.error || j.success)) || 'ok', raw: r };
@@ -30836,6 +31051,12 @@ function makeMissoesModule(opts) {
           arguments: args || {}, town_id: Number(townId), nl_init: true,
         })),
       }).then(lerResposta);
+      if (acao === 'sendUnits' || acao === 'challenge') {
+        try {   // mudou a visão geral: a cópia partilhada do núcleo deixa de valer
+          const vgE = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroVisaoGeralEsquecer;
+          if (vgE) vgE();
+        } catch (e) {}
+      }
       aplicarNotificacoes(r);
       const j = r && r.json;
       const erro = j && j.error;
@@ -32470,6 +32691,10 @@ function makeColonosModule(opts) {
         credentials: 'include',
         body: 'json=' + encodeURIComponent(JSON.stringify(payload)),
       }).then(lerResposta);
+      try {   // mudou a visão geral: a cópia partilhada do núcleo deixa de valer
+        const vgE = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroVisaoGeralEsquecer;
+        if (vgE) vgE();
+      } catch (e) {}
       aplicarNotificacoes(r);
       const j = r && r.json;
       return { ok: !(j && j.error), msg: (j && (j.error || j.success)) || 'ok' };
@@ -33952,6 +34177,10 @@ function makeApoioModule(opts) {
         credentials: 'include',
         body: 'json=' + encodeURIComponent(JSON.stringify(corpo)),
       }).then(lerResposta);
+      try {   // mudou a visão geral: a cópia partilhada do núcleo deixa de valer
+        const vgE = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroVisaoGeralEsquecer;
+        if (vgE) vgE();
+      } catch (e) {}
 
       const j = (r && r.json) || {};
       const ok = !j.error && !!(j.success || j.remaining_units);
@@ -34547,6 +34776,10 @@ function makeApoioModule(opts) {
         credentials: 'include',
         body: 'json=' + encodeURIComponent(JSON.stringify(payload)),
       }).then(lerResposta);
+      try {   // mudou a visão geral: a cópia partilhada do núcleo deixa de valer
+        const vgE = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroVisaoGeralEsquecer;
+        if (vgE) vgE();
+      } catch (e) {}
       const j = r && r.json;
 
       /* A HORA DE CHEGADA vem nas notificações da própria resposta — a mesma
@@ -34684,6 +34917,10 @@ function makeApoioModule(opts) {
           support_id: Number(supportId), town_id: Number(origemId), nl_init: true,
         })),
       }).then(lerResposta);
+      try {   // mudou a visão geral: a cópia partilhada do núcleo deixa de valer
+        const vgE = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroVisaoGeralEsquecer;
+        if (vgE) vgE();
+      } catch (e) {}
       return !(r && r.json && r.json.error);
     } catch (e) { return false; }
   }
@@ -34703,6 +34940,10 @@ function makeApoioModule(opts) {
           town_id: Number(mov.home_town_id), nl_init: true,
         })),
       }).then(lerResposta);
+      try {   // mudou a visão geral: a cópia partilhada do núcleo deixa de valer
+        const vgE = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroVisaoGeralEsquecer;
+        if (vgE) vgE();
+      } catch (e) {}
       return !(r && r.json && r.json.error);
     } catch (e) { return false; }
   }
@@ -36730,6 +36971,10 @@ function makeFundacaoModule(opts) {
           town_id: Number(townId), nl_init: true,
         })),
       }).then(lerResposta);
+      try {   // mudou a visão geral: a cópia partilhada do núcleo deixa de valer
+        const vgE = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroVisaoGeralEsquecer;
+        if (vgE) vgE();
+      } catch (e) {}
       aplicarNotificacoes(r);
       const j = r && r.json;
       return { ok: !(j && j.error), msg: (j && (j.error || j.success)) || 'ok' };
@@ -39390,6 +39635,10 @@ function makeFecharIlhaModule(opts) {
       const lr = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window)
         .__maestroLerResposta;
       const d = lr ? await lr(r) : await r.json();
+      try {   // mudou a visão geral: a cópia partilhada do núcleo deixa de valer
+        const vgE = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroVisaoGeralEsquecer;
+        if (vgE) vgE();
+      } catch (e) {}
       const j = (d && d.json) || {};
       return { ok: !j.error, msg: j.error || j.success || 'ok', travou: !!(d && d.travou) };
     } catch (e) { return { ok: false, msg: e.message }; }
@@ -40627,6 +40876,14 @@ function makeReforcoModule(opts) {
   /* As duas fontes, como no painel dos feitiços: nenhuma está completa
    * sozinha. Os modelos têm o que a página carregou; a visão geral tem o que o
    * servidor sabe agora. Sem repetidos, comparados pelo conteúdo. */
+  /* Porque é que a última leitura falhou (vazio = leu bem), e quantas
+   * seguidas: a primeira vai para o ecrã, as seguintes para a rotina. */
+  let razaoLeitura = '';
+  let falhasLeitura = 0;
+
+  /* Devolve a lista, ou `null` se não conseguiu ler — nunca lista vazia por
+   * falha: vazia, o passo 1 do `run` trazia de volta a tropa de uma cidade
+   * com outro ataque a caminho que só não se tinha conseguido ler. */
   async function ataquesContraMim() {
     const out = new Map();
     const minhas = new Set(Object.keys(mUw.ITowns.towns || {}).map(Number));
@@ -40648,33 +40905,26 @@ function makeReforcoModule(opts) {
        * passa a ser a única usada. */
     } catch (e) { seErroDeCodigo(e, 'Reforco'); }
 
+    /* Pelo leitor único do núcleo: trata do 429 e da cópia partilhada. */
+    razaoLeitura = '';
     try {
-      const base = Object.keys(mUw.ITowns.towns || {})[0];
-      if (base) {
-        const url = mUw.location.origin + '/game/town_overviews?town_id=' + Number(base)
-          + '&action=command_overview&h=' + mUw.Game.csrfToken
-          + '&json=' + encodeURIComponent(JSON.stringify({ town_id: Number(base), nl_init: true }))
-          + '&_=' + Date.now();
-        /* Pelo leitor comum: o 429 avisa o núcleo. */
-        const lr = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window)
-          .__maestroLerResposta;
-        const rr = await mUw.fetch(url, {
-          headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
-        }).catch(() => null);
-        const r = rr ? (lr ? await lr(rr) : await rr.json().catch(() => null)) : null;
-
-        const d = (r && r.json) || {};
-        for (const x of (d.commands || (d.data && d.data.commands) || [])) {
-          if (!/attack/i.test(String(x.type || ''))) continue;
-          if (x.return === true || x.cmd_return === true) continue;
-          const alvo = Number(x.destination_town_id);
-          if (!minhas.has(alvo)) continue;
-          const chega = Number(x.arrival_at) || 0;
-          const k = chaveDe(x.origin_town_id, alvo, chega);
-          if (!out.has(k)) out.set(k, { alvo, chega });
-        }
+      const vgF = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroVisaoGeral;
+      const vg = vgF ? await vgF() : { ok: false, razao: 'o núcleo não tem o leitor da visão geral' };
+      if (!vg.ok) { razaoLeitura = vg.razao || 'não sei porquê'; return null; }
+      for (const x of vg.comandos) {
+        if (!/attack/i.test(String(x.type || ''))) continue;
+        if (x.return === true || x.cmd_return === true) continue;
+        const alvo = Number(x.destination_town_id);
+        if (!minhas.has(alvo)) continue;
+        const chega = Number(x.arrival_at) || 0;
+        const k = chaveDe(x.origin_town_id, alvo, chega);
+        if (!out.has(k)) out.set(k, { alvo, chega });
       }
-    } catch (e) { seErroDeCodigo(e, 'Reforco'); }
+    } catch (e) {
+      seErroDeCodigo(e, 'Reforco');
+      razaoLeitura = 'erro: ' + ((e && e.message) || e);
+      return null;
+    }
 
     return [...out.values()].filter((a) => a.chega > agora()).sort((a, b) => a.chega - b.chega);
   }
@@ -40906,6 +41156,10 @@ function makeReforcoModule(opts) {
       const lr = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window)
         .__maestroLerResposta;
       const d = lr ? await lr(r) : { json: {} };
+      try {   // mudou a visão geral: a cópia partilhada do núcleo deixa de valer
+        const vgE = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroVisaoGeralEsquecer;
+        if (vgE) vgE();
+      } catch (e) {}
       const j = d.json || {};
 
       /* A RESPOSTA DIZ A QUE HORAS CHEGA — não é preciso acreditar na fórmula.
@@ -40998,6 +41252,10 @@ function makeReforcoModule(opts) {
       const lr = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window)
         .__maestroLerResposta;
       const d = lr ? await lr(r) : { json: {} };
+      try {   // mudou a visão geral: a cópia partilhada do núcleo deixa de valer
+        const vgE = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroVisaoGeralEsquecer;
+        if (vgE) vgE();
+      } catch (e) {}
       const j = d.json || {};
 
       /* SÓ É SUCESSO SE O JOGO O DISSER.
@@ -41033,6 +41291,20 @@ function makeReforcoModule(opts) {
     if (!c.ativo) { rotina('Reforço: está desligado.'); return; }
 
     const ataques = await ataquesContraMim();
+
+    /* NÃO CONSEGUI LER ≠ NÃO HÁ ATAQUES.
+     *
+     * Sem a lista não se sabe se ainda vem ataque: trazer a tropa de volta
+     * seria às cegas, e mandar também. Fica tudo como está até à passagem
+     * seguinte. */
+    if (ataques == null) {
+      falhasLeitura++;
+      (falhasLeitura === 1 ? log : rotina)(`⚠️ Reforço: não consegui ler a visão geral `
+        + `(${razaoLeitura}) — não trago nem mando tropa até conseguir.`);
+      return;
+    }
+    falhasLeitura = 0;
+
     const envios = lerEnvios();
 
     /* ATAQUES JÁ RESOLVIDOS NÃO SE VOLTAM A AVALIAR.
@@ -41428,11 +41700,13 @@ function makeReforcoModule(opts) {
     (async () => {
       const alvo = container.querySelector('#rf-estado');
       if (!alvo) return;
-      const ataques = await ataquesContraMim();
+      const lidos = await ataquesContraMim();
+      const ataques = lidos || [];
       const ajudantes = cidadesDosGrupos(cfg().grupos, ctx);
       const envios = lerEnvios();
       alvo.innerHTML = `
-        <div>${ataques.length} ataque(s) a caminho · ${ajudantes.length} cidade(s) nos grupos</div>
+        <div>${lidos ? `${ataques.length} ataque(s) a caminho`
+          : `não consegui ler a visão geral (${esc(razaoLeitura)})`} · ${ajudantes.length} cidade(s) nos grupos</div>
         ${ataques.slice(0, 6).map((a) => {
           let nome = a.alvo;
           try { nome = mUw.ITowns.getTown(Number(a.alvo)).getName(); } catch (e) {}
