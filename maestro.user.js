@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.1700
+// @version      2026.09.12.1800
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1929,7 +1929,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.1700';
+  const MAESTRO_VERSAO = '2026.09.12.1800';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -34814,7 +34814,34 @@ function makeApoioModule(opts) {
       const api = mUw.__maestroApoioFora;
       if (api && api.candidatas) {
         const meus = (ctx.getMyTowns() || []).map((t) => Number(t.id));
-        const lidas = await api.refrescar(api.candidatas(meus), 2);
+        /* PRIMEIRO AS QUE TÊM ENVIOS JÁ CHEGADOS POR VER.
+         *
+         * Um envio só deixa de contar como "a caminho" quando a Ágora da
+         * cidade que o mandou é lida DEPOIS da chegada. A releitura só pegava
+         * em leituras com mais de 30 min, e só nas candidatas — nas multis,
+         * com os modelos incompletos, a cidade podia nem o ser. Visto (11/09):
+         * "1752 — há envios meus que a Ágora ainda não mostra" durante mais de
+         * meia hora, com a retirada do excesso bloqueada. Essas cidades passam
+         * à frente, sem esperar pelos 30 min. */
+        const cacheU = lerCacheFora();
+        const regU = lerRegisto();          // o `reg` do run só é criado mais abaixo
+        const urgentes = [];
+        const agoraU = Date.now();
+        for (const k of Object.keys(regU || {})) {
+          const mm = k.match(/^(\d+)->(\d+)$/);
+          if (!mm) continue;
+          const e = regU[k] || {};
+          if (!Number(e.chega) || agoraU < Number(e.chega) * 1000 + MARGEM_CHEGADA_MS) continue;
+          if (!envioAindaPorVer(mm[1], e, cacheU)) continue;
+          if (urgentes.indexOf(Number(mm[1])) < 0) urgentes.push(Number(mm[1]));
+        }
+        if (urgentes.length) {
+          for (const id of urgentes) if (cacheU[id]) cacheU[id].quando = 0;
+          try { localStorage.setItem('grepoMaestro_apoioFora_v1', JSON.stringify(cacheU)); } catch (e) {}
+          rotina(`Apoio: releio primeiro ${urgentes.length} cidade(s) com envios já chegados por ver.`);
+        }
+        const lidas = await api.refrescar(
+          Array.from(new Set(urgentes.concat(api.candidatas(meus) || []))), 2);
     /* ZERO NÃO É FALHA.
      *
      * As leituras valem 30 minutos. Se estiverem todas frescas, não há nada a
