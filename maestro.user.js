@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.1100
+// @version      2026.09.12.1200
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1900,7 +1900,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.1100';
+  const MAESTRO_VERSAO = '2026.09.12.1200';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -18991,7 +18991,12 @@ function makeAlertasModule(opts) {
 
         return [];
       }
-      const cmds = ((r && r.json && r.json.data) || {}).commands || [];
+      /* A lista pode vir em `json.commands` ou em `json.data.commands`: aceitam-se
+       * as duas, como já faziam o reforço, os feitiços e a expansão. Isto só lia a
+       * segunda — e na main, com 50 comandos na visão geral, a esquiva recebia 0
+       * ("o servidor devolveu 0 comando(s), sem razão registada", 11/09). */
+      const dj = (r && r.json) || {};
+      const cmds = dj.commands || (dj.data && dj.data.commands) || [];
       const saida = cmds.map((c) => ({
         command_id: Number(c.id),
         arrival_at: Number(c.arrival_at),
@@ -19092,7 +19097,12 @@ function makeAlertasModule(opts) {
 
         return [];
       }
-      const cmds = ((r && r.json && r.json.data) || {}).commands || [];
+      /* A lista pode vir em `json.commands` ou em `json.data.commands`: aceitam-se
+       * as duas, como já faziam o reforço, os feitiços e a expansão. Isto só lia a
+       * segunda — e na main, com 50 comandos na visão geral, a esquiva recebia 0
+       * ("o servidor devolveu 0 comando(s), sem razão registada", 11/09). */
+      const dj = (r && r.json) || {};
+      const cmds = dj.commands || (dj.data && dj.data.commands) || [];
       const saida = cmds.map((c) => ({
         command_id: Number(c.id),
         arrival_at: Number(c.arrival_at),
@@ -23288,7 +23298,12 @@ function makeEsquivaModule(opts) {
 
         return [];
       }
-      const cmds = ((r && r.json && r.json.data) || {}).commands || [];
+      /* A lista pode vir em `json.commands` ou em `json.data.commands`: aceitam-se
+       * as duas, como já faziam o reforço, os feitiços e a expansão. Isto só lia a
+       * segunda — e na main, com 50 comandos na visão geral, a esquiva recebia 0
+       * ("o servidor devolveu 0 comando(s), sem razão registada", 11/09). */
+      const dj = (r && r.json) || {};
+      const cmds = dj.commands || (dj.data && dj.data.commands) || [];
       return cmds.map((c) => ({
         command_id: Number(c.id),
         arrival_at: Number(c.arrival_at),
@@ -23470,7 +23485,12 @@ function makeEsquivaModule(opts) {
 
         return [];
       }
-      const cmds = ((r && r.json && r.json.data) || {}).commands || [];
+      /* A lista pode vir em `json.commands` ou em `json.data.commands`: aceitam-se
+       * as duas, como já faziam o reforço, os feitiços e a expansão. Isto só lia a
+       * segunda — e na main, com 50 comandos na visão geral, a esquiva recebia 0
+       * ("o servidor devolveu 0 comando(s), sem razão registada", 11/09). */
+      const dj = (r && r.json) || {};
+      const cmds = dj.commands || (dj.data && dj.data.commands) || [];
       return cmds.map((c) => ({
         command_id: Number(c.id),
         arrival_at: Number(c.arrival_at),
@@ -27871,7 +27891,12 @@ function makeEncaixeModule(opts) {
       }
       if (erroAdm) { ultimaRazaoVazio = `o jogo respondeu: ${erroAdm}`; return []; }
 
-      const cmds = ((r && r.json && r.json.data) || {}).commands || [];
+      /* A lista pode vir em `json.commands` ou em `json.data.commands`: aceitam-se
+       * as duas, como já faziam o reforço, os feitiços e a expansão. Isto só lia a
+       * segunda — e na main, com 50 comandos na visão geral, a esquiva recebia 0
+       * ("o servidor devolveu 0 comando(s), sem razão registada", 11/09). */
+      const dj = (r && r.json) || {};
+      const cmds = dj.commands || (dj.data && dj.data.commands) || [];
       if (!cmds.length) {
         ultimaRazaoVazio = (r && r.json)
           ? `resposta sem comandos (chaves: ${Object.keys(r.json).join(', ').slice(0, 80)})`
