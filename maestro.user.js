@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.0900
+// @version      2026.09.12.1100
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1546,9 +1546,34 @@
     ok: 0x4fc7a1,           // verde — tudo bem
   };
 
+  /* UM AVISO QUE NÃO SAI TEM DE SE VER.
+   *
+   * Sem canal para o tipo, isto calava-se: um captcha numa conta sem canal
+   * configurado não chegava a lado nenhum, e ninguém sabia (visto 11/09). E um
+   * "não" do Discord (canal apagado, limite de envios) contava como enviado.
+   *
+   * Agora diz-se no registo — uma vez por hora e por tipo. Captcha e
+   * colonizador a caminho aparecem no ecrã; os outros vão para a rotina. */
+  const avisoDiscordFalhou = {};
+  function registarAvisoPerdido(tipo, porque, causa) {
+    const agora = Date.now();
+    const k = `${tipo}|${causa || ''}`;
+    if (avisoDiscordFalhou[k] && agora - avisoDiscordFalhou[k] < 3600 * 1000) return;
+    avisoDiscordFalhou[k] = agora;
+    const msg = `📭 Discord: o aviso de "${tipo}" não saiu — ${porque}.`;
+    try {
+      if (tipo === 'captcha' || tipo === 'ataqueNC') log('core', msg);
+      else console.log('[MAESTRO/rotina]', 'core', msg);
+    } catch (e) {}
+  }
+
   async function avisarDiscord(tipo, conteudo) {
     const url = webhooks()[tipo];
-    if (!url) return false;
+    if (!url) {
+      registarAvisoPerdido(tipo, `não há canal configurado para ${chaveWebhooks()} `
+        + '(painel do Maestro → Discord)', 'sem canal');
+      return false;
+    }
 
     /* Com 20 contas no mesmo canal, uma mensagem sem dizer de quem é não serve
      * de nada. */
@@ -1585,13 +1610,20 @@
     }
 
     try {
-      await uw.fetch(url, {
+      const r = await uw.fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(corpo),
       });
+      if (r && r.ok === false) {
+        registarAvisoPerdido(tipo, `o Discord recusou (HTTP ${r.status})`, 'recusa');
+        return false;
+      }
       return true;
-    } catch (e) { return false; }
+    } catch (e) {
+      registarAvisoPerdido(tipo, `o envio falhou (${e && e.message ? e.message : e})`, 'falha');
+      return false;
+    }
   }
 
   // ---- semáforo (coordena com scripts externos como o GPT; entre módulos não é preciso) ----
@@ -1868,7 +1900,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.0900';
+  const MAESTRO_VERSAO = '2026.09.12.1100';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -38873,7 +38905,17 @@ function makeFecharIlhaModule(opts) {
   const DISP_REFRESCAR_S = 10 * 60;    // quem está disponível repete de 10 em 10 min
   const dispPublicada = {};            // chave → o último que ESTA conta escreveu
 
+  function meuPerfil() {
+    try { return String((JSON.parse(localStorage.getItem('grepoMaestro_modulos_v1') || '{}') || {}).perfil || ''); }
+    catch (e) { return ''; }
+  }
+
   function minhaDisponibilidade(ctx, plano) {
+    /* SÓ AS MULTIS: um plano marcado assim não conta com a main — nem para
+     * os lugares, nem para substituir quem falhe. */
+    if (plano.apenasPerfil && meuPerfil() !== plano.apenasPerfil) {
+      return { pode: false, porque: `este plano é só para o perfil ${plano.apenasPerfil}` };
+    }
     const cidade = tenhoColonizador();
     if (!cidade) return { pode: false, porque: 'sem colonizador' };
     const vaga = vagaParaCidade();
@@ -38962,7 +39004,7 @@ function makeFecharIlhaModule(opts) {
 
   /* ---------------------- criar o plano (conta principal) --------------- */
 
-  async function criarPlano(ctx, x, y) {
+  async function criarPlano(ctx, x, y, soMultis) {
     const towns = ctx.getMyTowns() || [];
     if (!towns.length) return { ok: false, msg: 'sem cidades' };
 
@@ -38977,6 +39019,7 @@ function makeFecharIlhaModule(opts) {
     const plano = {
       chave: `${x}:${y}`, x: Number(x), y: Number(y),
       criadoPor: meuNome(), alianca: minhaAlianca(),
+      apenasPerfil: soMultis ? 'multi' : null,
       quando: Math.floor(Date.now() / 1000),
       estado: 'preparar',
       atribuicoes: {}, prontos: {}, enviados: {},
@@ -39335,9 +39378,9 @@ function makeFecharIlhaModule(opts) {
     container.innerHTML = `
       <div class="mCaixa" style="margin-bottom:8px">
         <div style="font-size:12px;opacity:.75">
-          Marca uma ilha e as contas todas fundam nela ao mesmo tempo, cada uma
-          num lugar. Se alguém de fora ocupar um lugar entretanto, aborta; se
-          for um aliado, segue com menos uma conta.
+          Marca uma ilha. Quando houver contas com colonizador e vaga para
+          todos os lugares livres, fundam todas ao mesmo tempo, cada uma num
+          lugar. Se uma falhar à partida, o lugar passa para outra disponível.
         </div>
       </div>
 
@@ -39346,6 +39389,10 @@ function makeFecharIlhaModule(opts) {
         <input id="fi-x" placeholder="x" style="width:70px" value="${esc(c.ultimoX || '')}">
         <input id="fi-y" placeholder="y" style="width:70px" value="${esc(c.ultimoY || '')}">
         <button id="fi-criar">Fechar esta ilha</button>
+        <label style="font-size:12px;display:flex;gap:4px;align-items:center"
+          title="A main não entra neste plano — nem para os lugares, nem para substituir quem falhe">
+          <input type="checkbox" id="fi-so-multis" ${meuPerfil() === 'multi' ? 'checked' : ''}> só as multis
+        </label>
       </div>
 
       <div id="fi-estado" style="font-size:12px;opacity:.7">a ler o plano…</div>
@@ -39360,9 +39407,11 @@ function makeFecharIlhaModule(opts) {
       if (!x || !y) { ctx.log('Fechar ilha: escreve as coordenadas da ilha.'); return; }
       guardarCfg(Object.assign({}, cfg(), { ultimoX: x, ultimoY: y }));
       ctx.log('Fechar ilha: a preparar o plano…');
-      const r = await criarPlano(ctx, x, y);
+      const soMultis = !!(container.querySelector('#fi-so-multis') || {}).checked;
+      const r = await criarPlano(ctx, x, y, soMultis);
       if (!r.ok) { ctx.log(`Fechar ilha: ${r.msg}.`); return; }
       ctx.log(`Fechar ilha ${r.plano.chave}: plano criado`
+        + (r.plano.apenasPerfil ? ' só com as multis' : '')
         + (r.posicao > 1 ? ` (${r.posicao}.º na fila)` : '')
         + ' — a partida dá-se quando houver contas com colonizador e vaga para todos os lugares livres.');
       painel(container, ctx);
@@ -39403,7 +39452,7 @@ function makeFecharIlhaModule(opts) {
       if (p && p.estado === 'preparar' && !Object.keys(p.atribuicoes || {}).length) {
         const ct = p.ultimaContagem || {};
         alvo.innerHTML = htmlFila + `
-          <div style="margin-bottom:4px">Ilha <b>${esc(p.chave)}</b> · à espera de contas</div>
+          <div style="margin-bottom:4px">Ilha <b>${esc(p.chave)}</b> · à espera de contas${p.apenasPerfil ? ' · só multis' : ''}</div>
           <div style="font-size:12px;opacity:.8">`
           + (ct.livres != null
             ? `${ct.disponiveis} conta(s) com colonizador e vaga para ${ct.livres} lugar(es) livre(s). `
