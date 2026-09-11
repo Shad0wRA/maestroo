@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.0400
+// @version      2026.09.12.0500
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1868,7 +1868,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.0400';
+  const MAESTRO_VERSAO = '2026.09.12.0500';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -32826,11 +32826,12 @@ function makeApoioModule(opts) {
      * número de cidades. */
     objetivoRevolta: { sword: 4500, archer: 4500, hoplite: 4500, bireme: 2750 },
     objetivoPadrao: {},
-    /* Folga depois de a última revolta de uma cidade sair da visão geral.
+    /* Folga depois de a última revolta de uma cidade acabar.
      *
-     * Confirmado em jogo (11/09): a visão geral mostra as DUAS fases — a R1 a
-     * azul e, quando ela acaba, a R2 ("revolta em curso"), cujo fim é o fim da
-     * revolta. Quando uma cidade deixa de ter qualquer revolta lá, acabou.
+     * Confirmado em jogo (11/09): cada revolta é UMA entrada na visão geral,
+     * da R1 ao fim da R2, sempre com os tempos da R2 — `started_at` é o fim da
+     * R1 (quando o colonizador pode entrar) e `finished_at` é o fim da
+     * revolta. Quando a entrada desaparece, a revolta acabou.
      *
      * Antes esperava-se mais 7 horas (`horasDeR2`), na ideia de que só a R1
      * aparecia — a tropa ficava sete horas a mais em cidades já sem perigo.
@@ -34248,11 +34249,15 @@ function makeApoioModule(opts) {
    *   Takeover: { command: { id, type: 'revolt' }, origin_town: { player_id,
    *     player_name } }   — quem revoltou
    *
-   * `arising` dá a FASE, que a visão geral não dá: nas quatro, todas na R2
-   * ("revolta em curso"), vinha falso. Na R1 é verdadeiro.
+   * OS TEMPOS SÃO SEMPRE OS DA R2 (confirmado 11/09, 55.20 na R1):
+   *   started_at  = fim da R1 — quando o colonizador pode entrar;
+   *   finished_at = fim da revolta.
+   * Nas duas fases. Na R1 a barra azul acabava às 16:35:26 do servidor, que
+   * era exactamente o `started_at`. `arising` diz a fase: verdadeiro na R1
+   * (antes do `started_at`), falso na R2.
    *
-   * O que decide a saída da lista é o fim da REVOLTA, não o da fase: na R1
-   * soma-se a duração da própria R1 (no pt126 as duas fases têm 7 horas).
+   * (A 0400 somava a duração da R1 ao `finished_at` na R1, por pensar que era
+   * o fim da R1 — a cidade ficava sete horas a mais na lista.)
    *
    * Um modelo que já passou do fim da revolta não conta — o jogo pode
    * deixá-lo esquecido até a página recarregar.
@@ -34286,19 +34291,17 @@ function makeApoioModule(opts) {
         if (eu && Number(a.player_id) && Number(a.player_id) !== eu) continue;
 
         const ini = Number(a.started_at) || 0;
-        const duracao = (ini && fimFase > ini) ? (fimFase - ini) : 7 * 3600;
         const r1 = a.arising === true;
-        const fimRevolta = r1 ? fimFase + duracao : fimFase;
-        out.porId[rid] = { r1, fimFase, fimRevolta };
+        out.porId[rid] = { r1, inicioR2: ini, fim: fimFase };
 
-        if (fimRevolta <= Number(agoraS)) continue;          // já acabou: esquecido
+        if (fimFase <= Number(agoraS)) continue;             // já acabou: esquecido
         const q = quem[rid] || { id: 0, nome: '?' };
         out.lista.push({
           id: 'revolt_' + rid, type: 'revolt', command_type: 'revolt',
           destination_town_id: alvo, destination_town_name: String(a.town_name || alvo),
           destination_town_player_id: eu || Number(a.player_id) || 0,
           origin_town_player_id: q.id, origin_player_name: q.nome,
-          started_at: ini, finished_at: fimFase, fimRevolta,
+          started_at: ini, finished_at: fimFase, emR1: r1,
         });
       }
     } catch (e) { seErroDeCodigo(e, 'Apoio'); return { ok: false, lista: [], porId: {} }; }
@@ -34496,10 +34499,9 @@ function makeApoioModule(opts) {
              *
              * A visão geral só existe com Administrador. Sem ele — ou com um
              * erro, um corte, uma verificação de bot — a resposta vinha sem
-             * comandos e lia-se como "nenhuma revolta". Com a folga curta no
-             * fim da revolta, isso tirava da lista uma cidade vista na R1 logo
-             * na troca para a R2 — a tropa saía quando o colonizador já podia
-             * entrar.
+             * comandos e lia-se como "nenhuma revolta": não entravam revoltas
+             * novas, e uma cidade com uma revolta nova ainda por registar podia
+             * sair da lista pelo fim da antiga.
              *
              * Agora uma leitura falhada não tira nada da lista (nem põe), e
              * avisa-se no ecrã, no máximo de hora a hora. */
@@ -34519,13 +34521,13 @@ function makeApoioModule(opts) {
               : ((d.data && Array.isArray(d.data.commands)) ? d.data.commands : null);
             const visaoOk = !!resp && !d.error && !!cmdsLidos;
 
-            /* A FASE VEM DOS MODELOS.
+            /* A FASE: R1 ANTES DO `started_at`, R2 DEPOIS.
              *
-             * Com visão geral, ela continua a ser a fonte — mas não diz se a
-             * revolta está na R1 ou na R2, e guardava-se o fim da FASE. Uma
-             * cidade vista só na R1 ficava com o fim da R1 como "fim da
-             * revolta". Os modelos dizem a fase: na R1, o fim guardado passa a
-             * ser o da revolta inteira.
+             * Nas duas fases a entrada traz os tempos da R2 — o `finished_at`
+             * é sempre o fim da revolta, e é esse que decide a saída da lista.
+             * A fase só serve para o aviso: na R1 o que importa é quando o
+             * colonizador pode entrar. Vem do `arising` dos modelos, ou, sem
+             * eles, de o `started_at` ainda não ter chegado.
              *
              * Sem visão geral, os modelos passam a ser a fonte. */
             const modelos = revoltasPelosModelos(AGORA);
@@ -34535,7 +34537,8 @@ function makeApoioModule(opts) {
                 if (!/revolt/i.test(String(x.type || x.command_type || ''))) return x;
                 const rid = Number(String(x.id || '').replace(/\D+/g, '')) || 0;
                 const m = modelos.porId[rid];
-                return (m && m.r1) ? Object.assign({}, x, { fimRevolta: m.fimRevolta }) : x;
+                const emR1 = m ? !!m.r1 : (Number(x.started_at) || 0) > AGORA;
+                return Object.assign({}, x, { emR1 });
               });
             } else if (modelos.ok) {
               cmds = modelos.lista;
@@ -34606,9 +34609,13 @@ function makeApoioModule(opts) {
                * depois na mesma cidade. */
               if (x.id) e2.comandos.push(String(x.id));
               if (fim && (!e2.primeira || fim < e2.primeira)) e2.primeira = fim;
-              /* O fim da AMEAÇA: na R1, o da revolta inteira (dos modelos). */
-              const fimAmeaca = Number(x.fimRevolta) || fim;
-              if (fimAmeaca > e2.ultima) e2.ultima = fimAmeaca;
+              if (fim > e2.ultima) e2.ultima = fim;
+              /* Na R1: quando o colonizador pode entrar (o mais cedo). */
+              if (x.emR1) {
+                const ini2 = Number(x.started_at) || 0;
+                e2.emR1 = true;
+                if (ini2 && (!e2.entraColonizador || ini2 < e2.entraColonizador)) e2.entraColonizador = ini2;
+              }
             }
             const revoltas = Object.keys(porCidade).map((k) => porCidade[k]);
 
@@ -34617,10 +34624,10 @@ function makeApoioModule(opts) {
 
             /* SAIR DA LISTA quando a ameaça acabar de vez.
              *
-             * A cidade fica enquanto tiver alguma revolta na visão geral. A R2
-             * aparece lá, e o fim dela é o fim da revolta (confirmado em jogo,
-             * 11/09) — por isso sai logo que a última desaparece, com uma folga
-             * curta para a passagem da R1 para a R2.
+             * A cidade fica enquanto tiver alguma revolta em curso. O fim
+             * guardado é o `finished_at`, que é o fim da revolta nas duas fases
+             * (confirmado em jogo, 11/09) — por isso sai logo a seguir, com uma
+             * folga curta.
              *
              * Só saem as que ENTRARAM sozinhas: um alvo que puseste à mão
              * fica onde está. */
@@ -34667,7 +34674,19 @@ function makeApoioModule(opts) {
               return !todosTirados;
             });
 
-            if (novos.length || aRetirar.length) {
+            /* O FIM GUARDADO TEM DE ACOMPANHAR O JOGO.
+             *
+             * A lista só se gravava quando entrava ou saía uma cidade. Um fim
+             * guardado errado — como as sete horas a mais da 0400 — ficava lá
+             * até ao fim, e é por ele que a cidade sai. Se o fim de uma revolta
+             * em curso não bate com o guardado, grava-se, sem avisos. */
+            const guardadas = lista.revoltasAuto || {};
+            const corrigidos = revoltas.filter((r) => {
+              const g0 = guardadas[String(r.id)];
+              return g0 && Number(g0.ultima) !== Number(r.ultima);
+            });
+
+            if (novos.length || aRetirar.length || corrigidos.length) {
               const ficam = [].concat([...jaLa], novos.map((r) => r.id))
                 .filter((id) => aRetirar.indexOf(Number(id)) < 0);
 
@@ -34697,25 +34716,31 @@ function makeApoioModule(opts) {
               const rr = await escreverLista(copia);
               if (rr.ok) {
                 lista = copia;
+                for (const r of corrigidos) {
+                  (ctx.logRotina || log)(`Apoio: ${r.nome} — fim da revolta acertado para `
+                    + `${new Date(r.ultima * 1000).toLocaleString('pt-PT')}.`);
+                }
                 for (const r of novos) {
-                  const faltam = r.primeira ? Math.round((r.primeira - AGORA) / 60) : 0;
+                  /* Na R1, o que importa é quando o colonizador pode entrar (o
+                   * `started_at`); na R2, quando a revolta acaba. O aviso dizia
+                   * "esta fase acaba" com o fim da revolta, mesmo na R1. */
+                  const alvoT = r.emR1 ? r.entraColonizador : r.ultima;
+                  const faltam = alvoT ? Math.max(0, Math.round((alvoT - AGORA) / 60)) : 0;
+                  const quando = !faltam ? ''
+                    : (r.emR1 ? `o colonizador pode entrar daqui a ${faltam} min (fim da R1)`
+                      : `a revolta acaba daqui a ${faltam} min`);
                   const quantas = r.quem.length;
                   log(`🚨 ${r.nome} em REVOLTA por ${r.quem.join(', ')} — entrou na lista de `
                     + 'apoio (10 cidades por conta)'
-                    + (faltam ? `; esta fase acaba daqui a ${faltam} min` : '')
+                    + (quando ? `; ${quando}` : '')
                     + (quantas > 1 ? ` · ${quantas} revoltas nesta cidade` : '') + '.');
                   if (ctx.avisarDiscord) {
                     ctx.avisarDiscord('ataque', {
                       titulo: '🚨 Cidade em revolta',
                       descricao: `**${r.nome}** está em revolta por **${r.quem.join(', ')}**.`
-                        /* NÃO SE AFIRMA QUE É A R1.
-                     *
-                     * O jogo dá o mesmo formato para as duas fases, e sete
-                     * horas entre o início e o fim tanto podem ser uma R1 como
-                     * uma R2. Dizer "a primeira R1 acaba" numa revolta que já
-                     * ia na R2 dá a entender que há catorze horas quando
-                     * podem faltar duas. */
-                    + (faltam ? ` Esta fase acaba daqui a ${faltam} min.` : '')
+                        /* A fase já se sabe: R1 antes do `started_at`, R2 depois
+                         * (confirmado 11/09). */
+                        + (quando ? ` ${quando.charAt(0).toUpperCase()}${quando.slice(1)}.` : '')
                         + (quantas > 1 ? ` São ${quantas} revoltas na mesma cidade.` : '')
                         + '\nEntrou na lista de apoio — as multis começam a mandar já.',
                     });
