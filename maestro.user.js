@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.3800
+// @version      2026.09.12.3900
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2140,7 +2140,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.3800';
+  const MAESTRO_VERSAO = '2026.09.12.3900';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -37491,6 +37491,15 @@ function makeFundacaoModule(opts) {
     const rotina = ctx.logRotina || ctx.log;
     mUw = ctx.uw; mWorld = ctx.WORLD;
     const log = ctx.log;
+
+    /* OS BOTÕES DA JANELA DA ILHA NÃO PODEM ESPERAR PELO PAINEL.
+     *
+     * O vigia da janela só se ligava ao desenhar o painel do módulo — ou
+     * seja, era preciso abrir o painel uma vez em cada aba e a seguir a cada
+     * recarregamento para os botões aparecerem. Liga-se aqui também, que é o
+     * que corre sozinho. */
+    try { vigiarJanelaDeIlha(ctx); } catch (e) { seErroDeCodigo(e, 'Fundacao'); }
+
     const c = cfg();
     /* O visto do painel manda sobre o `ativo` do módulo: quem liga ali
      * quer o módulo a trabalhar. */
@@ -40522,7 +40531,13 @@ function makeFecharIlhaModule(opts) {
            *
            * Os lugares que as outras contas já usaram estão nas chaves delas
            * (`fecharIlhaEnvios`), que o `lerPlano` juntou ao plano. */
-          let lugar = meuLugar;
+          /* OS LUGARES DOS PLANOS ANTIGOS NÃO VALEM.
+           *
+           * Até à 3800 o dono repartia lugares lidos do MAPA, e o mapa
+           * engana-se: numa ilha de 20 lugares chegavam a sair números que
+           * não existem. Um plano criado antes disso tem lugares a mais e as
+           * contas iam falhar um a um. Peça-se sempre ao jogo. */
+          let lugar = -1;
           if (!(Number(lugar) >= 0)) {
             const usados = new Set(Object.keys(plano.atribuicoes)
               .map((n) => Number(plano.atribuicoes[n])).filter((n) => n >= 0));
@@ -40577,8 +40592,8 @@ function makeFecharIlhaModule(opts) {
                 + 'Vê o painel do módulo para encerrar ou recomeçar o plano.');
             } else if (alternativa == null) {
               await registarMeu(plano, eu, { falhou: 'sem lugares livres' });
-              log(`⚠️ Fechar ilha: o lugar ${meuLugar} foi ocupado e a ilha `
-                + `${plano.chave} já não tem nenhum livre — desisto.`);
+              log(`⚠️ Fechar ilha: a ilha ${plano.chave} já não tem lugar livre `
+                + 'que outra conta não vá usar — desisto.');
             } else {
               log(`Fechar ilha ${plano.chave}: tento o lugar ${alternativa}.`);
               r = await enviarColonizador(cidade, plano.x, plano.y, alternativa);
@@ -40734,6 +40749,11 @@ function makeFecharIlhaModule(opts) {
     const escolhidas = prontas.slice(0, faltam);
     const atribuicoes = {};
     escolhidas.forEach((n) => { atribuicoes[n] = -1; });
+    /* Um plano criado antes da 3800 pode ter mais contas do que vagas: o
+     * mapa dava lugares a mais. Fica-se pelas vagas que o jogo diz. */
+    if (Object.keys(atribuicoes).length > faltam) {
+      for (const n of Object.keys(atribuicoes).slice(faltam)) delete atribuicoes[n];
+    }
     plano.atribuicoes = atribuicoes;
     plano.estado = 'lancar';
     plano.lancadoEm = agoraS;
