@@ -29,10 +29,15 @@ function montar(propostas, formato) {
           town_list: Array.from({ length: 9 }, (_, i) => ({ id: i, name: 'C' + i })) } };
       /* O jogo devolve isto de duas maneiras: em models, ou dentro das
        * notificações, em texto escapado. */
+      /* As três formas vistas em jogo (12/09). */
       const corpo = formato === 'notificacao'
         ? JSON.stringify({ json: { t_token: 1, notifications: [{ type: 'backbone',
           param_str: JSON.stringify({ Colonization: dados }) }] } })
-        : JSON.stringify({ json: { models: { Colonization: { data: dados } } } });
+        : formato === 'notificacao_data'
+          ? JSON.stringify({ json: { t_token: 1, notifications: [
+            { type: 'outra', param_str: '{}' },
+            { type: 'backbone', param_str: JSON.stringify({ Colonization: { data: dados } }) }] } })
+          : JSON.stringify({ json: { models: { Colonization: { data: dados } } } });
       return { status: 200, text: async () => corpo, json: async () => JSON.parse(corpo) };
     },
   };
@@ -45,7 +50,7 @@ function montar(propostas, formato) {
 }
 
 (async () => {
-  for (const f of ['models', 'notificacao']) {
+  for (const f of ['models', 'notificacao', 'notificacao_data']) {
     const m = montar([14], f);
     const v = await m.api.vagas(111, 381, 470);
     t.verifica(`resposta em ${f}: 11 vagas, 9 cidades, lugar 14`, v.ok && v.vagas === 11
