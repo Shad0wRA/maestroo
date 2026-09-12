@@ -29,6 +29,7 @@ falha sem ela (estragar o código de propósito e ver a falha).
 | `teste-colonizadores-revoltas.js` | Apoio (revoltas), Fundação e Expansão: sem saber que colonizadores vão a caminho, não sai nenhum. |
 | `teste-apoio-transportes.js` | O Apoio só junta transportes quando o alvo está noutra ilha; na mesma ilha a tropa vai a pé. |
 | `teste-fechar-ilha.js` | Cada conta escreve só a sua chave (enviei, falhei, desisti, lugar); quem lê o plano junta tudo; o dono ganha nas atribuições. |
+| `teste-relatorios.js` | Lê um relatório: tropa e perdas de cada lado, espionagem, quem ataca quem; guarda a maior força já vista por jogador. |
 | `teste-captcha.js` | Com um captcha no ecrã o ciclo pára **e** o núcleo avisa no Discord (logo, e de meia em meia hora). |
 
 ## Formatos confirmados em jogo (espia, 11/09)
@@ -40,6 +41,7 @@ falha sem ela (estragar o código de propósito e ver a falha).
 - Revoltas: `started_at` = fim da R1.
 - Colonizadores: `id` em texto (`colonization_5120`), `island_x`, `island_y`, `number_on_island`.
 - Modelos e visão geral partilham o número do comando.
+- Relatórios: o HTML vem em `plain.html` (topo da resposta, fora de `json`); tropas em `data-unit_id`/`data-unit_count`; lado em `report_side_attacker_unit`/`report_side_defender_unit`; espionagem em blocos ` spy `; perdas em `report_losts`; assunto em `<span class="subject">`; cidade e jogador em base64 nos links.
 
 ## Acrescentar um teste
 
