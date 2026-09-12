@@ -34,6 +34,8 @@ falha sem ela (estragar o código de propósito e ver a falha).
 | `teste-cancelamento.js` | Um `command_deleted: false` não passa por cancelado (Encaixe, Esquiva, Apoio); sem o campo, fica como estava. |
 | `teste-apoio-painel.js` | O botão "actualizar" pede os nomes em lote (um pedido, não um por alvo); o total por alvo soma as contas vivas. |
 | `teste-aldeias-vazias.js` | Aldeias prontas que não rendem nada em duas passagens seguidas: suspende, avisa e mostra o captcha. |
+| `teste-fechar-ilha-mapa.js` | A ilha lê-se na grelha de 20; cidades acima do lugar 20 contam; leitura falhada não é ilha vazia. |
+| `teste-fechar-ilha-vagas.js` | As vagas e o lugar vêm do jogo (`forceUpdate`), não do mapa; duas contas não pedem o mesmo lugar. |
 | `teste-captcha.js` | Com um captcha no ecrã o ciclo pára **e** o núcleo avisa no Discord (logo, e de meia em meia hora). |
 
 ## Formatos confirmados em jogo (espia, 11/09)
@@ -46,6 +48,8 @@ falha sem ela (estragar o código de propósito e ver a falha).
 - Colonizadores: `id` em texto (`colonization_5120`), `island_x`, `island_y`, `number_on_island`.
 - Modelos e visão geral partilham o número do comando.
 - Acções: `send_units`, `cancelCommand` (com `command_deleted`), `cast`, `buildUp`, `trade` e o `frontend_bridge` confirmam com `success`/`error`; o `build` do recrutamento não devolve nem um nem outro.
+- Vagas de uma ilha: `forceUpdate` da colonização → `island_info.uninhabited_place_count` e um `target_number_on_island` livre, diferente a cada pedido. O jogo aceita fundar em qualquer lugar livre. As ilhas têm 20 lugares.
+- Mapa: a grelha do `get_chunks` é de 20 (com 10 vem outro pedaço, sem cidades). Numa ilha há cidades acima do lugar 20 (vistas no 23) e entradas com `nr` nulo, que são aldeias.
 - Relatórios: o HTML vem em `plain.html` (topo da resposta, fora de `json`); tropas em `data-unit_id`/`data-unit_count`; lado em `report_side_attacker_unit`/`report_side_defender_unit`; espionagem em blocos ` spy `; perdas em `report_losts`; assunto em `<span class="subject">`; cidade e jogador em base64 nos links.
 
 ## Acrescentar um teste
