@@ -36,6 +36,7 @@ falha sem ela (estragar o código de propósito e ver a falha).
 | `teste-aldeias-vazias.js` | Aldeias prontas que não rendem nada em duas passagens seguidas: suspende, avisa e mostra o captcha. |
 | `teste-fechar-ilha-mapa.js` | A ilha lê-se na grelha de 20; cidades acima do lugar 20 contam; leitura falhada não é ilha vazia. |
 | `teste-fechar-ilha-vagas.js` | As vagas e o lugar vêm do jogo (`forceUpdate`), não do mapa; duas contas não pedem o mesmo lugar. |
+| `teste-vigia-mudo.js` | Correr não é fazer: o núcleo marca a hora de cada linha de ecrã e o vigia avisa quando um módulo vigiado passa horas sem produzir nada. |
 | `teste-captcha.js` | Com um captcha no ecrã o ciclo pára **e** o núcleo avisa no Discord (logo, e de meia em meia hora). |
 
 ## Formatos confirmados em jogo (espia, 11/09)
