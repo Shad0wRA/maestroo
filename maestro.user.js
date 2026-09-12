@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.2600
+// @version      2026.09.12.2700
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2107,7 +2107,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.2600';
+  const MAESTRO_VERSAO = '2026.09.12.2700';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -38180,6 +38180,8 @@ function makeRelatoriosModule(opts) {
     transportes: false,        // apagar transportes de recursos
     porLote: 30,               // quantos por pedido
     maxPorPassagem: 90,        // limite por passagem, para não abusar
+    ler: false,                // ler os relatórios de ataque e espionagem
+    lerMax: 5,                 // quantos ler por passagem (cada um é um pedido)
   };
 
   const armazem = (() => {
@@ -38342,6 +38344,210 @@ function makeRelatoriosModule(opts) {
     } catch (e) { return { ok: false, msg: e.message }; }
   }
 
+
+  /* ============ LER OS RELATÓRIOS ANTES DE OS APAGAR =================
+   *
+   * O que o jogo diz em cada relatório (confirmado em jogo, 11/09):
+   *   • o HTML vem em `plain.html`, no TOPO da resposta — não em `json`;
+   *   • cada tropa é `data-unit_id="rider" data-unit_count="35"`;
+   *   • o lado está na classe do bloco à volta: `report_side_attacker_unit`
+   *     ou `report_side_defender_unit`; numa espionagem bem sucedida os
+   *     blocos são ` spy ` e é a tropa que a cidade tinha;
+   *   • as perdas vêm logo a seguir, em `report_losts` (`-35`);
+   *   • o assunto está em `<span class="subject">`;
+   *   • os nomes e ids de cidade e jogador vêm em base64 nos links.
+   *
+   * Guarda-se por jogador: a maior força que ele trouxe a atacar, o que
+   * costuma trazer, e o que se lhe viu na cidade. Os Alertas e o Reforço
+   * podem usá-lo depois — este módulo só lê e guarda.
+   *
+   * Só na main: as multis geram poucos relatórios úteis e cada pedido é mais
+   * risco de captcha. Poucos por passagem, pela mesma razão. */
+  const LIDOS_KEY = 'grepoRelatorios_lidos_v1';
+  const INIMIGOS_KEY = 'grepoRelatorios_inimigos_v1';
+  const MAX_LIDOS = 400;      // ids já vistos que se guardam
+  const MAX_INIMIGOS = 60;    // jogadores guardados
+
+  function lerJSON(chave, porOmissao) {
+    try { return JSON.parse(armazem.getItem(chave) || 'null') || porOmissao; }
+    catch (e) { return porOmissao; }
+  }
+  function gravarJSON(chave, v) {
+    try { armazem.setItem(chave, JSON.stringify(v)); } catch (e) { seErroDeCodigo(e, 'Relatorios'); }
+  }
+
+  /* Os links trazem `#<base64>` com `{name, id}` ou `{id, ix, iy, name}`. */
+  function doLink(txt) {
+    try {
+      const m = String(txt || '').match(/href="#([A-Za-z0-9+/=]{8,})"/);
+      if (!m) return null;
+      return JSON.parse(decodeURIComponent(escape(atob(m[1]))));
+    } catch (e) { return null; }
+  }
+
+  /* O HTML de um relatório → o que interessa. */
+  function lerRelatorio(html) {
+    const h = String(html || '').replace(/\s+/g, ' ');
+    const out = {
+      assunto: (h.match(/class="subject">([^<]{0,160})/) || [])[1] || '',
+      atacante: {}, perdasAtacante: {}, defensor: {}, perdasDefensor: {}, espiada: {},
+      jogadorOrigem: '', cidadeOrigem: 0, jogadorDestino: '',
+    };
+    const re = /data-unit_id="([a-z_]+)" data-unit_count="(\d+)"/g;
+    let m;
+    while ((m = re.exec(h))) {
+      const antes = h.slice(Math.max(0, m.index - 300), m.index);
+      const dep = h.slice(m.index, m.index + 400);
+      const u = m[1];
+      const n = Number(m[2]) || 0;
+      const perdeu = Number((dep.match(/report_losts">\s*-?(\d+)/) || [])[1]) || 0;
+
+      /* O LADO É O MARCADOR MAIS PRÓXIMO, não o primeiro que aparece.
+       *
+       * Os blocos vêm seguidos, e nos 300 caracteres anteriores cabe o fim do
+       * bloco de cima: a primeira tropa do defensor ia parar ao atacante
+       * (visto no teste com o relatório real do 11/09 — 3110 birremes do
+       * defensor contadas como do atacante). */
+      const qual = [['atacante', antes.lastIndexOf('report_side_attacker')],
+        ['defensor', antes.lastIndexOf('report_side_defender')],
+        ['espiada', antes.lastIndexOf(' spy ')]]
+        .filter((x) => x[1] >= 0).sort((a, b) => b[1] - a[1])[0];
+      const lado = qual ? qual[0] : '';
+      if (lado === 'atacante') {
+        out.atacante[u] = (out.atacante[u] || 0) + n;
+        if (perdeu) out.perdasAtacante[u] = (out.perdasAtacante[u] || 0) + perdeu;
+      } else if (lado === 'defensor') {
+        out.defensor[u] = (out.defensor[u] || 0) + n;
+        if (perdeu) out.perdasDefensor[u] = (out.perdasDefensor[u] || 0) + perdeu;
+      } else if (lado === 'espiada') {
+        out.espiada[u] = (out.espiada[u] || 0) + n;
+      }
+    }
+    /* O primeiro bloco de cabeçalho é a cidade de origem, o segundo o destino. */
+    const cab = h.split('report_sending_town');
+    const o = doLink(cab[1] ? cab[1].slice(0, 3000) : '');
+    const d = doLink(h.split('report_receiving_town')[1] ? h.split('report_receiving_town')[1].slice(0, 3000) : '');
+    const jogO = (cab[1] || '').match(/gp_player_link">([^<]{1,40})/);
+    const jogD = ((h.split('report_receiving_town')[1] || '')).match(/gp_player_link">([^<]{1,40})/);
+    out.jogadorOrigem = (jogO && jogO[1]) || (o && o.name) || '';
+    out.jogadorDestino = (jogD && jogD[1]) || (d && d.name) || '';
+    out.cidadeOrigem = (o && Number(o.id)) || 0;
+    return out;
+  }
+
+  const vazio = (o) => !Object.keys(o || {}).length;
+
+  /* Guardar o que se aprendeu sobre um jogador. */
+  function anotar(jogador, campo, tropas, quando) {
+    if (!jogador || vazio(tropas)) return false;
+    const todos = lerJSON(INIMIGOS_KEY, {});
+    const j = todos[jogador] || (todos[jogador] = {});
+    const antes = j[campo] || {};
+    const somaA = Object.keys(antes).reduce((s, u) => s + (Number(antes[u]) || 0), 0);
+    const somaN = Object.keys(tropas).reduce((s, u) => s + (Number(tropas[u]) || 0), 0);
+    /* Guarda-se o MAIOR que já se viu: é o que diz do que ele é capaz. */
+    if (somaN >= somaA) { j[campo] = tropas; j[campo + 'Quando'] = quando; }
+    j.ultimo = quando;
+    j.vezes = (Number(j.vezes) || 0) + 1;
+    const nomes = Object.keys(todos);
+    if (nomes.length > MAX_INIMIGOS) {
+      nomes.sort((a, b) => (Number(todos[a].ultimo) || 0) - (Number(todos[b].ultimo) || 0));
+      for (const n of nomes.slice(0, nomes.length - MAX_INIMIGOS)) delete todos[n];
+    }
+    gravarJSON(INIMIGOS_KEY, todos);
+    return true;
+  }
+
+  /* Um relatório: pedir e ler. Devolve `null` se não deu. */
+  async function verRelatorio(townId, id) {
+    try {
+      const url = mUw.location.origin + '/game/report?town_id=' + Number(townId)
+        + '&action=view&h=' + mUw.Game.csrfToken;
+      const r = await mUw.fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+          'x-requested-with': 'XMLHttpRequest' },
+        credentials: 'include',
+        body: 'json=' + encodeURIComponent(JSON.stringify({ id: String(id), town_id: Number(townId), nl_init: true })),
+      });
+      const bruto = await r.text();
+      let topo = {};
+      try { topo = JSON.parse(bruto); } catch (e) { return null; }
+      const html = (topo.plain && topo.plain.html) || '';
+      if (!html) return null;
+      return lerRelatorio(html);
+    } catch (e) { seErroDeCodigo(e, 'Relatorios'); return null; }
+  }
+
+  /* A lista de um tipo, com o assunto de cada um. */
+  async function listarComAssunto(filtro, townId) {
+    const out = [];
+    try {
+      const url = mUw.location.origin + '/game/report?town_id=' + Number(townId)
+        + '&action=index&h=' + mUw.Game.csrfToken
+        + '&json=' + encodeURIComponent(JSON.stringify({
+          filter_type: filtro, folder_id: 0, town_id: Number(townId), nl_init: true }))
+        + '&_=' + Date.now();
+      const bruto = await (await mUw.fetch(url, {
+        headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include' })).text();
+      const re = /data-reportid=\\?\\?"?(\d+)([\s\S]{0,500}?)report_subject_header\\?"?>([\s\S]{0,200}?)<\\?\/span>/g;
+      let m;
+      while ((m = re.exec(bruto)) !== null) {
+        const id = Number(m[1]);
+        if (id && !out.some((x) => x.id === id)) out.push({ id, assunto: normalizar(m[3] || '') });
+      }
+    } catch (e) { seErroDeCodigo(e, 'Relatorios'); }
+    return out;
+  }
+
+  async function lerNovos(ctx, c) {
+    const log = ctx.log;
+    const rotina = ctx.logRotina || ctx.log;
+    const towns = ctx.getMyTowns() || [];
+    if (!towns.length) return;
+    const base = towns[0].id;
+
+    let lidos = lerJSON(LIDOS_KEY, []);
+    const jaLi = new Set(lidos.map(Number));
+    const porVer = [];
+    for (const f of ['attack', 'espionage']) {
+      for (const r of await listarComAssunto(f, base)) {
+        if (!jaLi.has(r.id)) porVer.push(Object.assign({ tipo: f }, r));
+      }
+      if (porVer.length >= c.lerMax) break;
+    }
+    if (!porVer.length) { rotina('Relatórios: nada de novo para ler.'); return; }
+
+    const agora = Math.floor(Date.now() / 1000);
+    let lidosAgora = 0;
+    let aprendi = 0;
+    for (const r of porVer.slice(0, c.lerMax)) {
+      const d = await verRelatorio(base, r.id);
+      lidos.push(r.id);
+      lidosAgora++;
+      if (d) {
+        /* Um ataque que não é meu: o atacante é o outro. Um ataque meu tem a
+         * minha conta na origem — aí o que interessa é o que ele tinha a
+         * defender. */
+        const euSou = String(mUw.Game.player_name || '');
+        if (!vazio(d.atacante) && d.jogadorOrigem && d.jogadorOrigem !== euSou) {
+          if (anotar(d.jogadorOrigem, 'atacou', d.atacante, agora)) aprendi++;
+        }
+        if (!vazio(d.defensor) && d.jogadorDestino && d.jogadorDestino !== euSou) {
+          if (anotar(d.jogadorDestino, 'defendeu', d.defensor, agora)) aprendi++;
+        }
+        if (!vazio(d.espiada) && d.jogadorDestino && d.jogadorDestino !== euSou) {
+          if (anotar(d.jogadorDestino, 'espiado', d.espiada, agora)) aprendi++;
+        }
+      }
+      await ctx.sleep(ctx.rand(900, 1600));
+    }
+    if (lidos.length > MAX_LIDOS) lidos = lidos.slice(-MAX_LIDOS);
+    gravarJSON(LIDOS_KEY, lidos);
+    (aprendi ? log : rotina)(`Relatórios: li ${lidosAgora} relatório(s)`
+      + (aprendi ? `, ${aprendi} com tropas anotadas.` : ' (sem tropas para anotar).'));
+  }
+
   async function run(ctx) {
     mUw = ctx.uw; mWorld = ctx.WORLD;
     const log = ctx.log;
@@ -38359,7 +38565,13 @@ function makeRelatoriosModule(opts) {
       }
     } catch (e) { seErroDeCodigo(e, 'Relatorios'); }
 
-    if (!c.ativo) { rotina('Relatórios: está desligado.'); return; }
+    /* LER ANTES DE APAGAR: o apagar não se desfaz, e o leitor precisa de os
+     * encontrar. Corre mesmo com o apagar desligado. */
+    if (c.ler) {
+      try { await lerNovos(ctx, c); } catch (e) { seErroDeCodigo(e, 'Relatorios'); }
+    }
+
+    if (!c.ativo) { rotina('Relatórios: o apagar está desligado.'); return; }
 
     const tipos = [];
     if (c.apoios) tipos.push({ f: 'support', nome: 'apoio' });
@@ -38429,6 +38641,19 @@ function makeRelatoriosModule(opts) {
           
 
         <div style="background:var(--mSurf);padding:6px 8px;border-radius:4px;margin-bottom:6px">
+          <label><input type="checkbox" id="rel-ler"${c.ler ? ' checked' : ''}>
+            <b>Ler</b> os relatórios de ataque e espionagem antes de apagar</label>
+          <div style="opacity:.6;font-size:12px;margin:1px 0 3px 18px">
+            Guarda por jogador a tropa que trouxe a atacar e a que se lhe viu na
+            cidade. Cada relatório é um pedido — ler até
+            <input type="number" id="rel-ler-max" min="1" max="20"
+              value="${Number(c.lerMax) || 5}" style="width:44px"> por passagem.
+            Só faz sentido na conta principal.
+          </div>
+          <div id="rel-inimigos" style="font-size:12px;opacity:.75;margin-left:18px"></div>
+        </div>
+
+        <div style="background:var(--mSurf);padding:6px 8px;border-radius:4px;margin-bottom:6px">
           Apagar até <input type="number" id="rel-max" min="10" max="500"
             value="${Number(c.maxPorPassagem) || 90}" style="width:56px"> por passagem,
           em lotes de <input type="number" id="rel-lote" min="5" max="100"
@@ -38460,6 +38685,38 @@ function makeRelatoriosModule(opts) {
     const ag = container.querySelector('#rel-agora');
     if (ag) ag.onclick = async () => {
       ag.disabled = true; ag.textContent = 'a apagar...';
+      const elLer = container.querySelector('#rel-ler');
+      const elLerMax = container.querySelector('#rel-ler-max');
+      if (elLer) {
+        elLer.onchange = () => { const a = cfg(); a.ler = elLer.checked; guardarCfg(a); };
+      }
+      if (elLerMax) {
+        elLerMax.onchange = () => {
+          const a = cfg();
+          a.lerMax = Math.max(1, Math.min(20, Number(elLerMax.value) || 5));
+          guardarCfg(a);
+        };
+      }
+      /* O que já se aprendeu, do mais recente para o mais antigo. */
+      try {
+        const alvo = container.querySelector('#rel-inimigos');
+        if (alvo) {
+          const todos = lerJSON(INIMIGOS_KEY, {});
+          const nomes = Object.keys(todos).sort((a, b) => (todos[b].ultimo || 0) - (todos[a].ultimo || 0));
+          alvo.innerHTML = nomes.length
+            ? nomes.slice(0, 8).map((n) => {
+              const j = todos[n];
+              const soma = (o) => Object.keys(o || {}).reduce((s, u) => s + (Number(o[u]) || 0), 0);
+              const p = [];
+              if (soma(j.atacou)) p.push(`atacou com ${soma(j.atacou)}`);
+              if (soma(j.espiado)) p.push(`tinha ${soma(j.espiado)} em casa`);
+              if (soma(j.defendeu)) p.push(`defendeu com ${soma(j.defendeu)}`);
+              return `<div>${n}: ${p.join(' · ') || 'sem tropas'}</div>`;
+            }).join('') + (nomes.length > 8 ? `<div>… e mais ${nomes.length - 8}.</div>` : '')
+            : '<div style="opacity:.6">Ainda não li nenhum relatório.</div>';
+        }
+      } catch (e) { seErroDeCodigo(e, 'Relatorios'); }
+
       const antes = cfg();
       guardarCfg(Object.assign({}, antes, { ativo: true }));
       try { await run(ctx); } catch (e) { ctx.log('Relatórios: erro — ' + e.message); }
@@ -38470,6 +38727,12 @@ function makeRelatoriosModule(opts) {
 
   /* O maestro precisa de `id`, `nome` e `intervaloMin` para registar o módulo.
    * Sem isso, o painel mostrava "undefined" e nem abria. */
+  /* Para os Alertas e o Reforço usarem depois — sem terem de ler nada. */
+  try {
+    (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroInimigos =
+      () => lerJSON(INIMIGOS_KEY, {});
+  } catch (e) { seErroDeCodigo(e, 'Relatorios'); }
+
   return {
     id: 'relatorios',
     nome: 'Limpar relatórios',
