@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.2500
+// @version      2026.09.12.2600
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2107,7 +2107,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.2500';
+  const MAESTRO_VERSAO = '2026.09.12.2600';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -39362,7 +39362,67 @@ function makeFecharIlhaModule(opts) {
   async function lerPlano() {
     filaEmMemoria = await lerFila();
     if (filaEmMemoria.parada) return null;
-    return planoActivo(filaEmMemoria);
+    const p = planoActivo(filaEmMemoria);
+    if (p) await juntarRegistosDasContas(p);
+    return p;
+  }
+
+  /* ============ O QUE CADA CONTA FEZ — CADA UMA NA SUA CHAVE ===========
+   *
+   * As contas gravavam o que lhes acontecia (enviei, falhei, desisti, mudei
+   * de lugar) no plano partilhado: liam a fila inteira, mexiam na sua parte e
+   * gravavam-na inteira. Vinte contas a fazer isto à partida, e ganha a última
+   * a gravar — o envio de uma perdia-se, ou a mudança de estado que o dono
+   * acabara de gravar voltava para trás.
+   *
+   * Agora cada conta escreve só a sua chave, como já fazia com a
+   * disponibilidade:
+   *   fecharIlhaEnvios/<mundo>/<plano>/<conta> = { conta, enviado, falhou,
+   *                                               abortado, tentativas, lugar }
+   * e quem lê o plano junta tudo. O plano partilhado fica só com o dono a
+   * escrever. */
+  let registosContas = { chave: '', dados: {} };
+  const caminhoEnvios = (plano) => `fecharIlhaEnvios/${mWorld}/${chaveSegura(plano.chave)}`;
+
+  async function juntarRegistosDasContas(p) {
+    const f = fb();
+    if (!f || !p) return;
+    let dados = {};
+    try { dados = (await f.ler(caminhoEnvios(p))) || {}; } catch (e) { return; }
+    registosContas = { chave: p.chave, dados };
+    for (const k of Object.keys(dados)) {
+      const r = dados[k] || {};
+      const conta = String(r.conta || k);
+      if (r.enviado) { p.enviados = p.enviados || {}; if (!p.enviados[conta]) p.enviados[conta] = Number(r.enviado); }
+      if (r.falhou) { p.falhados = p.falhados || {}; if (!p.falhados[conta]) p.falhados[conta] = String(r.falhou); }
+      if (r.abortado) { p.abortado = p.abortado || {}; if (!p.abortado[conta]) p.abortado[conta] = String(r.abortado); }
+      if (r.tentativas) {
+        p.tentativas = p.tentativas || {};
+        p.tentativas[conta] = Math.max(Number(p.tentativas[conta]) || 0, Number(r.tentativas) || 0);
+      }
+      /* O lugar que a conta acabou por usar — mas só se o dono ainda lho
+       * tiver atribuído: se o passou a outra, a decisão do dono ganha. */
+      if (r.lugar != null && p.atribuicoes && p.atribuicoes[conta] != null) p.atribuicoes[conta] = Number(r.lugar);
+    }
+  }
+
+  /* Gravar o que me aconteceu: no plano desta passagem, e na minha chave. */
+  async function registarMeu(plano, eu, campos) {
+    if (campos.enviado) { plano.enviados = plano.enviados || {}; plano.enviados[eu] = campos.enviado; }
+    if (campos.falhou) { plano.falhados = plano.falhados || {}; plano.falhados[eu] = campos.falhou; }
+    if (campos.abortado) { plano.abortado = plano.abortado || {}; plano.abortado[eu] = campos.abortado; }
+    if (campos.tentativas != null) { plano.tentativas = plano.tentativas || {}; plano.tentativas[eu] = campos.tentativas; }
+    if (campos.lugar != null && plano.atribuicoes) plano.atribuicoes[eu] = campos.lugar;
+    const f = fb();
+    if (!f) return { ok: false, msg: 'sem Firebase' };
+    const k = chaveSegura(eu);
+    const antes = (registosContas.chave === plano.chave && registosContas.dados[k]) || {};
+    const rec = Object.assign({}, antes, campos, { conta: eu, quando: Math.floor(Date.now() / 1000) });
+    try {
+      const r = await f.escrever(`${caminhoEnvios(plano)}/${k}`, rec);
+      if (registosContas.chave === plano.chave) registosContas.dados[k] = rec;
+      return r;
+    } catch (e) { return { ok: false, msg: e.message }; }
   }
 
   async function gravarPlano(p) {
@@ -39670,8 +39730,7 @@ function makeFecharIlhaModule(opts) {
     /* O registo partilhado perdeu o meu envio? Repõe-se a partir do local. */
     const enviei = jaEnvieiPara(plano.chave);
     if (enviei && plano.atribuicoes[eu] != null && !plano.enviados[eu]) {
-      plano.enviados[eu] = enviei;
-      await gravarPlano(plano);
+      await registarMeu(plano, eu, { enviado: enviei });
       rotina(`Fechar ilha ${plano.chave}: o registo do meu envio tinha-se perdido — reposto.`);
     }
 
@@ -39714,9 +39773,8 @@ function makeFecharIlhaModule(opts) {
          * outra fundação desta mesma conta. */
         const vagaAgora = vagaParaCidade();
         if (!vagaAgora.pode) {
-          plano.falhados = plano.falhados || {};
-          plano.falhados[eu] = `sem vaga (${vagaAgora.tenho}+${vagaAgora.aCaminho}/${vagaAgora.limite})`;
-          await gravarPlano(plano);
+          await registarMeu(plano, eu, {
+            falhou: `sem vaga (${vagaAgora.tenho}+${vagaAgora.aCaminho}/${vagaAgora.limite})` });
           log(`⚠️ Fechar ilha: era a minha vez em ${plano.chave} mas já não tenho vaga `
             + `para outra cidade — ${vagaAgora.tenho} cidades e ${vagaAgora.aCaminho} a caminho, `
             + `limite ${vagaAgora.limite}.`);
@@ -39743,9 +39801,7 @@ function makeFecharIlhaModule(opts) {
 
         if (!podeIr.pode) {
           log(`⛔ Fechar ilha ${plano.chave}: não envio — ${podeIr.porque}.`);
-          plano.abortado = plano.abortado || {};
-          plano.abortado[eu] = podeIr.porque;
-          await gravarPlano(plano);
+          await registarMeu(plano, eu, { abortado: podeIr.porque });
           return;
         }
 
@@ -39779,21 +39835,20 @@ function makeFecharIlhaModule(opts) {
             /* Quantas vezes já se tentou. Sem um tecto, uma recusa que não se
              * resolve com outro lugar repetia-se para sempre. */
             plano.tentativas = plano.tentativas || {};
-            plano.tentativas[eu] = (Number(plano.tentativas[eu]) || 0) + 1;
+            const tentativasAgora = (Number(plano.tentativas[eu]) || 0) + 1;
+            /* Guarda-se já: sem isto só ficava gravada quando algo mais se
+             * gravava, e o tecto de quatro podia nunca chegar. */
+            await registarMeu(plano, eu, { tentativas: tentativasAgora });
 
             log(`Fechar ilha: lugares livres em ${plano.chave}: `
               + `${ilha2.livres.join(', ') || 'nenhum'} (tentativa ${plano.tentativas[eu]}).`);
 
             if (plano.tentativas[eu] >= 4) {
-              plano.falhados = plano.falhados || {};
-              plano.falhados[eu] = `4 tentativas sem sucesso (${r.msg})`;
-              await gravarPlano(plano);
+              await registarMeu(plano, eu, { falhou: `4 tentativas sem sucesso (${r.msg})` });
               log(`⚠️ Fechar ilha: quatro lugares recusados em ${plano.chave} — desisto. `
                 + 'Vê o painel do módulo para encerrar ou recomeçar o plano.');
             } else if (alternativa == null) {
-              plano.falhados = plano.falhados || {};
-              plano.falhados[eu] = 'sem lugares livres';
-              await gravarPlano(plano);
+              await registarMeu(plano, eu, { falhou: 'sem lugares livres' });
               log(`⚠️ Fechar ilha: o lugar ${meuLugar} foi ocupado e a ilha `
                 + `${plano.chave} já não tem nenhum livre — desisto.`);
             } else {
@@ -39806,8 +39861,8 @@ function makeFecharIlhaModule(opts) {
 
           if (r.ok) {
             marcarEnviei(plano.chave);
-            plano.enviados[eu] = Math.floor(Date.now() / 1000);
-            await gravarPlano(plano);
+            const usado = meuLugarUsado != null ? meuLugarUsado : meuLugar;
+            await registarMeu(plano, eu, { enviado: Math.floor(Date.now() / 1000), lugar: usado });
             log(`🏛️ Fechar ilha: colonizador a caminho de ${plano.chave}, `
               + `lugar ${meuLugarUsado != null ? meuLugarUsado : meuLugar}.`);
           } else if (!plano.falhados || !plano.falhados[eu]) {
@@ -40009,6 +40064,8 @@ function makeFecharIlhaModule(opts) {
       if (!alvo) return;
 
       const fila = await lerFila();
+      /* O que cada conta fez está na chave dela: junta-se ao plano activo. */
+      try { const pa = planoActivo(fila); if (pa) await juntarRegistosDasContas(pa); } catch (e) { seErroDeCodigo(e, 'Expansao'); }
       const emCurso = (fila.planos || []).filter((x) => x && x.estado !== 'feito' && x.estado !== 'abortado');
 
       /* A FILA, com o activo em primeiro. */
