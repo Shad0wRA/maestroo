@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.3100
+// @version      2026.09.12.3200
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2110,7 +2110,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.3100';
+  const MAESTRO_VERSAO = '2026.09.12.3200';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -18550,6 +18550,9 @@ function makeAldeiasModule(opts) {
      * vezes menos pedidos do que a de 5. */
   }
 
+  /* Passagens seguidas em que as aldeias prontas não renderam nada. */
+  let vaziasSeguidas = 0;
+
   async function fazerRecolha(ctx, towns) {
     const log = ctx.log;
 
@@ -18585,6 +18588,36 @@ function makeAldeiasModule(opts) {
 
     const prontas = relacoesProntas();
     if (!prontas.length) { log('Recolha: nenhuma aldeia pronta.'); return; }
+
+    /* RECOLHER MUITO E NÃO RENDER NADA É O SINAL DA VERIFICAÇÃO.
+     *
+     * Visto em jogo (12/09, conta sem Capitão): "Recolhidas 126 aldeia(s)
+     * (~0 recursos)" de passagem em passagem durante mais de uma hora. O jogo
+     * aceita o pedido, responde sem erro, e não dá nada — a recusa
+     * `backend_requested_verification` nunca chega, por isso nada disto era
+     * detectado e ninguém foi avisado.
+     *
+     * Uma aldeia pronta rende sempre mais do que zero. Zero em todas as
+     * prontas não é uma recolha: é o servidor a ignorar-nos.
+     *
+     * Exige-se DUAS passagens seguidas antes de suspender: uma leitura dos
+     * modelos a meio de uma actualização podia dar zero por um instante, e
+     * suspender a recolha à toa custa mais do que esperar uma passagem. */
+    const rendeTotal = prontas.reduce((s, p) => s + (Number(p.rende) || 0), 0);
+    if (rendeTotal <= 0) {
+      vaziasSeguidas++;
+      if (vaziasSeguidas >= 2) {
+        (ctx.logRotina || log)(`Recolha: ${prontas.length} aldeia(s) prontas e nenhuma rende nada, `
+          + `${vaziasSeguidas} passagens seguidas — trato isto como verificação por resolver.`);
+        await tratarCaptcha(ctx, 'recolha sem render nada');
+        await mostrarCaptchaPelaRecolha(ctx, aldeiaParaMostrarCaptcha(ctx, prontas, null));
+        return;
+      }
+      (ctx.logRotina || log)(`Recolha: ${prontas.length} aldeia(s) prontas e nenhuma rende nada — `
+        + 'confirmo na passagem seguinte antes de parar.');
+    } else {
+      vaziasSeguidas = 0;
+    }
 
     if (temCapitao()) {
       // UM pedido para todas as cidades — muito mais leve que aldeia a aldeia.
