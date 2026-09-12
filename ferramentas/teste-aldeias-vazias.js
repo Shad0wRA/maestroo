@@ -1,9 +1,10 @@
-/* ALDEIAS — recolher muito e não render nada é o sinal da verificação.
+/* ALDEIAS — recolher muito e não render nada: pergunta-se ao jogo.
  *
  * Visto em jogo (12/09, conta sem Capitão): "Recolhidas 126 aldeia(s)
- * (~0 recursos)" durante mais de uma hora. O jogo aceita o pedido, responde
- * sem erro e não dá nada: a recusa `backend_requested_verification` nunca
- * chega. O código REAL da recolha, com os modelos simulados.
+ * (~0 recursos)" durante mais de uma hora. Por pedido directo o servidor
+ * aceita e não dá nada, sem recusa nenhuma. Então abre-se uma aldeia e
+ * carrega-se em Recolher: se houver verificação, o jogo mostra-a. Só aí se
+ * suspende. O código REAL da recolha, com os modelos simulados.
  *
  *   node ferramentas/teste-aldeias-vazias.js maestro.user.js
  */
@@ -13,53 +14,73 @@ const SRC = S.ficheiroDoMaestro();
 const t = S.verificador('ALDEIAS — RECOLHA VAZIA');
 const AL = 'function makeAldeiasModule(opts)';
 
-/* `rende` de cada aldeia pronta; o resto é só o que a função toca. */
-function montar(rende) {
-  const chamadas = { tratou: [], mostrou: 0, individual: 0, massa: 0 };
+/* `rende` de cada aldeia pronta; `apareceu` = o captcha aparece ao clicar. */
+function montar(rende, apareceu) {
+  const chamadas = { tratou: [], mostrou: 0, individual: 0 };
   const ctx = {
     mUw: { Game: { player_name: 'MultiX' } }, mWorld: 'pt126', seErroDeCodigo: () => {}, console,
     relacoesProntas: () => Array.from({ length: 126 }, (_, i) => ({ relationId: i, farmTownId: 900 + i, rende })),
     temCapitao: () => false,
     recolhaIndividual: async () => { chamadas.individual++; },
-    recolherEmMassa: async () => { chamadas.massa++; return { ok: true }; },
+    recolherEmMassa: async () => ({ ok: true }),
     tratarCaptcha: async (c, onde) => { chamadas.tratou.push(onde); },
-    mostrarCaptchaPelaRecolha: async () => { chamadas.mostrou++; },
+    mostrarCaptchaPelaRecolha: async () => { chamadas.mostrou++; return !!apareceu; },
     aldeiaParaMostrarCaptcha: () => ({ farmTownId: 900, townId: 111 }),
   };
   vm.createContext(ctx);
-  const txt = tira(SRC, '  /* Passagens seguidas em que as aldeias prontas não renderam nada. */', '\n  }\n', AL)
-    + '\n({ recolha: fazerRecolha, vazias: () => vaziasSeguidas })';
-  const api = vm.runInContext(txt, ctx);
+  const txt = funcao(SRC, '  async function fazerRecolha(ctx, towns) {', AL) + '\nfazerRecolha';
+  const f = vm.runInContext(txt, ctx);
   const reg = { ecra: [], rotina: [] };
   const c = { log: (m) => reg.ecra.push(String(m)), logRotina: (m) => reg.rotina.push(String(m)),
     sleep: async () => {}, rand: () => 0 };
-  return { api, reg, chamadas, correr: () => api.recolha(c, [{ id: 111 }]) };
+  return { reg, chamadas, correr: () => f(c, [{ id: 111 }]) };
 }
 
 (async () => {
   {
-    const m = montar(1800);
+    const m = montar(1800, false);
     await m.correr();
-    t.verifica('aldeias que rendem: recolhe como sempre', m.chamadas.individual === 1
-      && !m.chamadas.tratou.length, m.chamadas);
+    t.verifica('aldeias que rendem: recolhe como sempre, sem abrir nada',
+      m.chamadas.individual === 1 && m.chamadas.mostrou === 0, m.chamadas);
   }
   {
-    const m = montar(0);
+    const m = montar(0, true);
     await m.correr();
-    t.verifica('primeira passagem a zero: ainda recolhe, mas avisa na rotina', m.chamadas.individual === 1
-      && !m.chamadas.tratou.length && m.reg.rotina.some((x) => /confirmo na passagem seguinte/.test(x)), m.reg.rotina);
-    await m.correr();
-    t.verifica('segunda passagem a zero: suspende e mostra o captcha', m.chamadas.tratou.length === 1
-      && /sem render nada/.test(m.chamadas.tratou[0]) && m.chamadas.mostrou === 1, m.chamadas);
-    t.verifica('... e não faz a recolha nessa passagem', m.chamadas.individual === 1, m.chamadas);
+    t.verifica('a zero: abre a aldeia e carrega em Recolher', m.chamadas.mostrou === 1, m.chamadas);
+    t.verifica('... o captcha aparece: suspende e avisa', m.chamadas.tratou.length === 1
+      && /render zero/.test(m.chamadas.tratou[0]), m.chamadas);
+    t.verifica('... e não faz a recolha nessa passagem', m.chamadas.individual === 0, m.chamadas);
   }
   {
-    const m = montar(0);
+    const m = montar(0, false);
     await m.correr();
-    const m2 = montar(1800);
-    await m2.correr();
-    t.verifica('uma passagem a zero seguida de uma boa: o contador volta a zero', m2.api.vazias() === 0
-      && !m2.chamadas.tratou.length, { v: m2.api.vazias(), c: m2.chamadas });
+    t.verifica('a zero mas sem captcha: NÃO suspende', !m.chamadas.tratou.length, m.chamadas);
+    t.verifica('... e a recolha segue na mesma', m.chamadas.individual === 1, m.chamadas);
+    t.verifica('... com a razão na rotina', m.reg.rotina.some((x) => /nenhuma rende nada/.test(x)), m.reg.rotina);
+  }
+  /* A SUSPENSÃO: enquanto houver verificação, e não meia hora fixa. */
+  {
+    const suspensao = (haCaptcha, hMin) => {
+      const loja = { 'grepoAldeias_captcha_v1': String(Date.now() - hMin * 60000) };
+      const ctx = {
+        armazem: { getItem: (k) => loja[k] || null, setItem: (k, v2) => { loja[k] = v2; },
+          removeItem: (k) => { delete loja[k]; } },
+        agoraServidorMs: () => Date.now(),
+        window: { __maestroHaCaptcha: () => haCaptcha },
+        CAPTCHA_KEY: 'grepoAldeias_captcha_v1',
+        seErroDeCodigo: () => {},
+      };
+      vm.createContext(ctx);
+      const f = vm.runInContext(funcao(SRC, '  function captchaAtivo() {', AL) + '\ncaptchaAtivo', ctx);
+      return { activo: f(), marca: () => loja['grepoAldeias_captcha_v1'] };
+    };
+    const a = suspensao(true, 2);
+    t.verifica('captcha ainda no ecrã: continua suspenso', a.activo === true);
+    const b = suspensao(false, 2);
+    t.verifica('resolvido ao fim de 2 min: retoma já', b.activo === false, b.activo);
+    t.verifica('... e apaga a marca', !b.marca(), b.marca());
+    const c2 = suspensao(true, 45);
+    t.verifica('tecto de 30 min: não fica suspenso para sempre', c2.activo === false);
   }
   t.fim();
 })().catch((e) => { console.error('O TESTE REBENTOU:', e); process.exit(2); });
