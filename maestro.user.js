@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.3600
+// @version      2026.09.12.3700
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2025,7 +2025,17 @@
 
     return {
       uw, WORLD, sleep: sleepDoModulo, rand,
-      log: (msg) => log(modId, msg),
+      /* CORRER NÃO É FAZER.
+       *
+       * A frota já diz quando cada módulo correu pela última vez, mas um
+       * módulo pode correr de dez em dez minutos durante horas sem fazer
+       * nada — foi o que aconteceu com a recolha a render zero e com o
+       * fechar ilha a ver vagas a mais (12/09), e ninguém deu por nada.
+       *
+       * O registo de ecrã é exactamente a fronteira: as linhas de rotina
+       * ("nada a fazer agora") vão para a caixa, as do ecrã são o que o
+       * módulo FEZ. Marca-se a hora de cada uma. */
+      log: (msg) => { marcarFeito(modId); log(modId, msg); },
       logRotina: rotina,
       getMyTowns, switchToTown, actualizarNumeros,
       /* Pedir uma passagem antecipada (segundos). Só antecipa, nunca adia. */
@@ -2041,6 +2051,26 @@
       ligado: () => !!(modState[modId] && modState[modId].ativo) && !!maestroTimer,
     };
   }
+
+  /* A última vez que cada módulo fez alguma coisa (não apenas correu). */
+  const FEITO_KEY = 'grepoMaestro_ultimoFeito_v1';
+  let ultimoFeito = (() => {
+    try { return JSON.parse(localStorage.getItem(FEITO_KEY) || '{}') || {}; } catch (e) { return {}; }
+  })();
+  let feitoPorGravar = false;
+  function marcarFeito(modId) {
+    try {
+      ultimoFeito[modId] = Date.now();
+      feitoPorGravar = true;
+    } catch (e) {}
+  }
+  /* Grava-se de meio em meio minuto, não a cada linha. */
+  setInterval(() => {
+    if (!feitoPorGravar) return;
+    feitoPorGravar = false;
+    try { localStorage.setItem(FEITO_KEY, JSON.stringify(ultimoFeito)); } catch (e) {}
+  }, 30000);
+  try { uw.__maestroUltimoFeito = () => Object.assign({}, ultimoFeito); } catch (e) {}
 
   /* --------------------------- registo de módulos ------------------------ */
   const MODULES = [];
@@ -2110,7 +2140,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.3600';
+  const MAESTRO_VERSAO = '2026.09.12.3700';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -39056,12 +39086,16 @@ function makeFrotaModule(opts) {
     const w = janela();
 
     const modulos = {};
+    let feitos = {};
+    try { feitos = (w.__maestroUltimoFeito && w.__maestroUltimoFeito()) || {}; } catch (e) {}
     try {
       const est = (w.__maestroEstadoModulos && w.__maestroEstadoModulos()) || {};
       for (const id of Object.keys(est)) {
         modulos[id] = {
           a: est[id].ativo ? 1 : 0,
           u: Math.floor((Number(est[id].ultima) || 0) / 1000),
+          /* `f` = a última vez que FEZ alguma coisa (correr não é fazer). */
+          f: Math.floor((Number(feitos[id]) || 0) / 1000),
         };
       }
     } catch (e) { seErroDeCodigo(e, 'Frota'); }
@@ -39358,6 +39392,17 @@ function makeFrotaModule(opts) {
     } catch (e) { return false; }
   }
 
+  /* Módulos onde silêncio prolongado é sinal de avaria, e quanto tempo se
+   * espera antes de avisar. Os que passam dias sem ter o que fazer (expansão,
+   * fechar ilha, esquiva) ficam de fora de propósito: avisar sobre eles era
+   * ruído. */
+  const VIGIADOS = {
+    aldeias: 3 * 3600,       // recolhe de 10 em 10 min: 3 h calado é avaria
+    tique: 6 * 3600,
+    construcao: 12 * 3600,
+    recrutamento: 12 * 3600,
+  };
+
   async function vigiarFrota(ctx, w, fb) {
     if (!souMainPrincipal()) return;
     if (Date.now() - vigiaUltima < 5 * 60 * 1000) return;
@@ -39387,14 +39432,39 @@ function makeFrotaModule(opts) {
       const quando = Number(x.quando) || 0;
       if (!quando || agora - quando > 24 * 3600) continue;            // conta retirada
       const calada = agora - quando > SEM_SINAL;
+      /* CORRE MAS NÃO FAZ NADA.
+       *
+       * Um módulo ligado, que correu há pouco e que não FAZ nada há horas,
+       * está avariado ou travado — a recolha a render zero e o fechar ilha a
+       * ver vagas a mais passaram horas assim sem ninguém dar por nada.
+       *
+       * Só se vigiam os módulos onde silêncio prolongado é mesmo sinal de
+       * avaria. Os outros (expansão, fechar ilha, esquiva) passam dias sem
+       * ter o que fazer, e avisar sobre eles seria ruído. */
+      const parados = [];
+      try {
+        for (const id of Object.keys(VIGIADOS)) {
+          const m = (x.modulos || {})[id];
+          if (!m || !m.a) continue;                         // desligado
+          if (!m.u || agora - Number(m.u) > 3600) continue; // nem sequer está a correr
+          /* Nunca fez nada: pode ser uma conta acabada de instalar. Não se
+           * avisa sobre o que nunca se viu funcionar. */
+          if (!Number(m.f)) continue;
+          if (agora - Number(m.f) < VIGIADOS[id]) continue;
+          parados.push(id);
+        }
+      } catch (e) { seErroDeCodigo(e, 'Frota'); }
+
       const problemas = {
         calada,
+        mudo: !calada && parados.length > 0,
         captcha: !calada && Number(x.captcha) === 1,
         versao: !calada && versaoAssente && !!minha && String(x.versao || '') < minha,
         paradas: !calada && ((x.jogo || {}).cheio || 0) >= 85 && ((x.jogo || {}).paradas || 0) > 0,
       };
       const antes = estado[nome] || {};
       const depois = {};
+      x.__parados = parados;
       for (const p of Object.keys(problemas)) {
         if (problemas[p]) {
           depois[p] = antes[p] || agora;
@@ -39408,10 +39478,15 @@ function makeFrotaModule(opts) {
     try { armazem.setItem(VIGIA_KEY, JSON.stringify(estado)); } catch (e) {}
     if (!novos.length && !resolvidos.length) return;
 
-    const TXT = { calada: 'calada', captcha: 'captcha por resolver', versao: 'versão antiga',
+    const TXT = { calada: 'calada', mudo: 'módulo a correr sem fazer nada',
+      captcha: 'captcha por resolver', versao: 'versão antiga',
       paradas: 'cidades paradas com o armazém cheio' };
     const linhaNovo = (n) => {
       if (n.p === 'calada') return `🔇 **${n.nome}** — sem sinal há ${Math.round(n.desde / 60)} min`;
+      if (n.p === 'mudo') {
+        return `😶 **${n.nome}** — ${(n.x.__parados || []).join(', ')} corre(m) mas não faz(em) nada `
+          + 'há horas';
+      }
       if (n.p === 'captcha') return `🛑 **${n.nome}** — captcha por resolver`;
       if (n.p === 'versao') return `🕰️ **${n.nome}** — ainda na ${n.x.versao || '?'} (a main está na ${minha})`;
       return `🧱 **${n.nome}** — ${(n.x.jogo || {}).paradas} cidade(s) parada(s) com o armazém cheio`;
