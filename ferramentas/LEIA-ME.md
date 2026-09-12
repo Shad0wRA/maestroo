@@ -32,6 +32,7 @@ falha sem ela (estragar o código de propósito e ver a falha).
 | `teste-relatorios.js` | Lê um relatório: tropa e perdas de cada lado, espionagem, quem ataca quem; guarda a maior força já vista por jogador. |
 | `teste-painel-relatorios.js` | O botão Guardar do painel não rebenta por faltar um campo, e guarda o que lá está. |
 | `teste-cancelamento.js` | Um `command_deleted: false` não passa por cancelado (Encaixe, Esquiva, Apoio); sem o campo, fica como estava. |
+| `teste-apoio-painel.js` | O botão "actualizar" pede os nomes em lote (um pedido, não um por alvo); o total por alvo soma as contas vivas. |
 | `teste-captcha.js` | Com um captcha no ecrã o ciclo pára **e** o núcleo avisa no Discord (logo, e de meia em meia hora). |
 
 ## Formatos confirmados em jogo (espia, 11/09)
