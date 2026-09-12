@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.2900
+// @version      2026.09.12.3000
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -510,6 +510,9 @@
   try {
     uw.__maestroTravado = servidorTravado;
     uw.__maestroTravar = marcarTravado;
+    /* Para os painéis: um botão que faça vários pedidos deve parar quando o
+     * servidor começa a recusar, em vez de insistir. */
+    uw.__maestroServidorTravado = servidorTravado;
   } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ É COLONIZADOR? — UMA MEDIÇÃO SÓ =========================
@@ -2107,7 +2110,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.2900';
+  const MAESTRO_VERSAO = '2026.09.12.3000';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -33555,6 +33558,13 @@ function makeApoioModule(opts) {
    * e a primeira escrita passa a lista para lá. Não é preciso fazer nada. */
   const fbCaminhoApoio = () => `apoio/${mWorld}`;
 
+  function servidorTravadoAgora() {
+    try {
+      const f = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroServidorTravado;
+      return f ? !!f() : false;
+    } catch (e) { return false; }
+  }
+
   /* PEDIDOS QUE VIAJAM ENTRE CONTAS.
    *
    * O pedido é feito UMA VEZ na principal e todas as contas o vêem. Mas cada
@@ -33977,6 +33987,61 @@ function makeApoioModule(opts) {
       }
     }
     return out;
+  }
+
+  /* OS NOMES DE MUITOS ALVOS NUM PEDIDO SÓ.
+   *
+   * O botão "actualizar" procurava o nome de cada alvo à vez, um pedido ao
+   * mapa por alvo, sem pausa: com uma lista grande o servidor respondia 429 —
+   * e o 429 trava o maestro inteiro, não só o botão.
+   *
+   * O `get_chunks` aceita uma LISTA de blocos. Vinte alvos cabem quase sempre
+   * em dois ou três blocos do mapa, por isso vão num pedido só. Devolve
+   * quantos nomes se descobriram. */
+  async function nomesEmLote(ids, townIdBase) {
+    const blocos = new Map();
+    for (const id of ids) {
+      if (cacheCidades[Number(id)]) continue;
+      const co = coordenadasPorMovimentos(Number(id));
+      if (!co) continue;                       // sem coordenadas: fica para o modo lento
+      const cx = Math.floor(co.x / CHUNK);
+      const cy = Math.floor(co.y / CHUNK);
+      blocos.set(`${cx}:${cy}`, { x: cx, y: cy, timestamp: 0 });
+    }
+    if (!blocos.size) return 0;
+
+    let achados = 0;
+    const todos = [...blocos.values()];
+    /* Poucos blocos por pedido: um pedido gigante também é recusado. */
+    for (let i = 0; i < todos.length; i += 6) {
+      const lote = todos.slice(i, i + 6);
+      try {
+        const base = Number(townIdBase) || Number(Object.keys(mUw.ITowns.towns)[0]);
+        const url = mUw.location.origin + '/game/map_data?town_id=' + base
+          + '&action=get_chunks&h=' + mUw.Game.csrfToken
+          + '&json=' + encodeURIComponent(JSON.stringify({ chunks: lote, town_id: base, nl_init: true }));
+        const r = await mUw.fetch(url, {
+          headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
+        }).then(lerResposta);
+        const d = (r && r.json && r.json.data) || {};
+        for (const k of Object.keys(d)) {
+          const towns = (d[k] || {}).towns || {};
+          for (const k2 of Object.keys(towns)) {
+            const x = towns[k2];
+            if (!x || !x.id || cacheCidades[x.id]) continue;
+            cacheCidades[x.id] = {
+              nome: x.name, jogador: x.player_name || '(sem dono)', minha: !!mUw.ITowns.towns[x.id],
+              ilha: { x: Number(x.island_x) || 0, y: Number(x.island_y) || 0 },
+              visto: Math.floor(Date.now() / 1000),
+            };
+            achados++;
+          }
+        }
+      } catch (e) { seErroDeCodigo(e, 'Apoio'); break; }
+      if (i + 6 < todos.length) await new Promise((res) => setTimeout(res, 1200));
+    }
+    gravarNomes();
+    return achados;
   }
 
   /* O `support_id` de um bloco, pelos modelos `Units`.
@@ -34694,6 +34759,37 @@ function makeApoioModule(opts) {
     }
     return { detalhe: total, total: n, cidades: Object.keys(reg || {})
       .filter((k) => { const m = k.match(/^(\d+)->(\d+)$/); return m && Number(m[2]) === Number(alvoId); }).length };
+  }
+
+  /* QUANTA TROPA ESTÁ NAQUELA CIDADE, SOMANDO AS CONTAS TODAS.
+   *
+   * Cada conta publica na frota o apoio que tem parado em cada alvo; o ciclo
+   * de envio já soma isso para saber o que falta. O painel mostrava só o que
+   * ESTA conta mandou — e o que interessa a olhar para um alvo é o total que
+   * lá está.
+   *
+   * Uma leitura do Firebase serve a lista inteira. Só conta quem deu sinal na
+   * última meia hora: uma conta parada há dias não diz nada do presente. */
+  async function totaisNosAlvos() {
+    const out = { porAlvo: {}, contas: 0, ok: false };
+    try {
+      if (typeof fbLerM !== 'function' || !fbUrlM || !fbUrlM()) return out;
+      const d = (await fbLerM(`frota/${mWorld}`)) || {};
+      const agoraS = Math.floor(Date.now() / 1000);
+      for (const k of Object.keys(d)) {
+        const x = d[k] || {};
+        if (!x.quando || (agoraS - Number(x.quando)) > 1800) continue;
+        out.contas++;
+        const alvosDela = (x.apoio || {}).alvos || {};
+        for (const id of Object.keys(alvosDela)) {
+          const u = (alvosDela[id] || {}).u || {};
+          const acc = out.porAlvo[id] = out.porAlvo[id] || {};
+          for (const un of Object.keys(u)) acc[un] = (acc[un] || 0) + (Number(u[un]) || 0);
+        }
+      }
+      out.ok = true;
+    } catch (e) { seErroDeCodigo(e, 'Apoio'); }
+    return out;
   }
 
   /* ---------------------- envio ----------------------------------------- */
@@ -36225,7 +36321,8 @@ function makeApoioModule(opts) {
       return `<tr data-alvo="${id}">
         <td style="padding:2px 3px">${esc(info.nome)}</td>
         <td style="padding:2px 3px;opacity:.75">${esc(info.jogador)}</td>
-        <td style="padding:2px 3px;opacity:.85">${t.total ? esc(det) + ` <span style="opacity:.6">(${t.cidades} cidade(s))</span>` : '<span style="opacity:.5">nada ainda</span>'}</td>
+        <td style="padding:2px 3px;opacity:.85" data-total="${id}">${
+          t.total ? `<span style="opacity:.6">eu: ${esc(det)}</span>` : '<span style="opacity:.5">a somar…</span>'}</td>
         <td style="padding:2px 3px;text-align:right;white-space:nowrap">
           <button data-reforcar="${id}" title="mandar mais envios para este alvo"
             style="cursor:pointer;font-size:12px;background:#364;color:#dfd;border:none;border-radius:3px;padding:2px 5px">reforçar</button>
@@ -36318,7 +36415,7 @@ function makeApoioModule(opts) {
         </div>
         <div style="max-height:180px;overflow-y:auto">
           <table style="width:100%;border-collapse:collapse;font-size:13px">
-            <tr style="opacity:.6"><td>cidade</td><td>jogador</td><td>tropas minhas lá</td><td></td></tr>
+            <tr style="opacity:.6"><td>cidade</td><td>jogador</td><td>tropa total lá (todas as contas)</td><td></td></tr>
             ${linhas}
           </table>
         </div>
@@ -36605,6 +36702,31 @@ function makeApoioModule(opts) {
       comRolamento(() => painel(container, ctx));
     };
 
+    /* OS TOTAIS ENTRAM DEPOIS.
+     *
+     * Uma leitura do Firebase para a lista toda, sem atrasar o desenho do
+     * painel. Sem Firebase, ou sem sinais recentes, fica o que esta conta
+     * mandou — que é o que se sabe. */
+    (async () => {
+      try {
+        const tt = await totaisNosAlvos();
+        if (!tt.ok) return;
+        for (const id of alvos) {
+          const cel = container.querySelector(`[data-total="${id}"]`);
+          if (!cel) continue;
+          const u = tt.porAlvo[String(id)] || {};
+          const soma = Object.keys(u).reduce((s2, k2) => s2 + (Number(u[k2]) || 0), 0);
+          const det2 = Object.keys(u).filter((k2) => Number(u[k2]) > 0)
+            .map((k2) => `${u[k2]} ${(mUw.GameData.units[k2] || {}).name || k2}`).join(', ');
+          const meu = tropasEnviadasPara(id, reg);
+          cel.innerHTML = soma
+            ? `<b>${soma}</b> <span style="opacity:.75">${esc(det2)}</span>`
+              + (meu.total ? `<span style="opacity:.5"> · meus ${meu.total}</span>` : '')
+            : '<span style="opacity:.5">nada lá</span>';
+        }
+      } catch (e) { seErroDeCodigo(e, 'Apoio'); }
+    })();
+
     const btN = container.querySelector('#ap-nomes');
     if (btN) btN.onclick = async () => {
       /* TRAZER A LISTA PRIMEIRO.
@@ -36640,8 +36762,27 @@ function makeApoioModule(opts) {
       } catch (e) { seErroDeCodigo(e, 'Apoio'); }
 
       const towns = ctx.getMyTowns();
+      const base = towns.length ? towns[0].id : null;
+
+      /* 1) A tropa que já lá está diz o nome e o dono, sem pedido nenhum. */
+      try { nomesPelasTropas(); } catch (e) { seErroDeCodigo(e, 'Apoio'); }
+
+      /* 2) O resto num pedido só (ou dois), em vez de um por alvo. */
+      await nomesEmLote(atuais, base);
+
+      /* 3) O que sobrar vai devagar, e pára se o servidor começar a recusar. */
+      let feitos = 0;
       for (const id of atuais) {
-        await infoDaCidade(id, towns.length ? towns[0].id : null);
+        if (cacheCidades[Number(id)]) continue;
+        if (servidorTravadoAgora()) {
+          ctx.log('Apoio: o servidor começou a recusar pedidos — parei de procurar nomes. '
+            + 'Carrega outra vez daqui a bocado; o que já descobri fica guardado.');
+          break;
+        }
+        try { await infoDaCidade(id, base); } catch (e) { seErroDeCodigo(e, 'Apoio'); break; }
+        feitos++;
+        btN.textContent = `a actualizar... ${feitos}`;
+        await ctx.sleep(ctx.rand(800, 1400));
       }
 
       btN.disabled = false;
