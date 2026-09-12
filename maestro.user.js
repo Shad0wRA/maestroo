@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.2700
+// @version      2026.09.12.2900
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2107,7 +2107,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.2700';
+  const MAESTRO_VERSAO = '2026.09.12.2900';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -24164,6 +24164,16 @@ function makeEsquivaModule(opts) {
       } catch (e) {}
       aplicarNotificacoes(r);
       const j = r && r.json;
+
+      /* O JOGO DIZ SE O COMANDO FOI MESMO APAGADO.
+       *
+       * A resposta do `cancelCommand` traz `command_deleted` (confirmado com
+       * a espia, 11/09). Um `false` explícito é uma recusa silenciosa: sem
+       * isto passava por cancelado, e a tropa seguia à mesma. Quando o campo
+       * não vem, fica como estava. */
+      if (j && j.command_deleted === false) {
+        return { ok: false, msg: 'o jogo não apagou o comando', raw: r };
+      }
       return { ok: !(j && j.error), msg: (j && (j.error || j.success)) || 'ok', raw: r };
     } catch (e) { return { ok: false, msg: e.message }; }
   }
@@ -27906,6 +27916,16 @@ function makeEncaixeModule(opts) {
     } catch (e) {}
     aplicarNotificacoes(r);
     const j = r && r.json;
+
+      /* O JOGO DIZ SE O COMANDO FOI MESMO APAGADO.
+       *
+       * A resposta do `cancelCommand` traz `command_deleted` (confirmado com
+       * a espia, 11/09). Um `false` explícito é uma recusa silenciosa: sem
+       * isto passava por cancelado, e a tropa seguia à mesma. Quando o campo
+       * não vem, fica como estava. */
+      if (j && j.command_deleted === false) {
+        return { ok: false, msg: 'o jogo não apagou o comando', raw: r };
+      }
     return { ok: !(j && j.error), msg: (j && (j.error || j.success)) || 'ok', raw: r };
   }
 
@@ -34859,7 +34879,10 @@ function makeApoioModule(opts) {
         const vgE = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroVisaoGeralEsquecer;
         if (vgE) vgE();
       } catch (e) {}
-      return !(r && r.json && r.json.error);
+      const j = r && r.json;
+      /* `command_deleted: false` é uma recusa silenciosa (espia, 11/09). */
+      if (j && j.command_deleted === false) return false;
+      return !(j && j.error);
     } catch (e) { return false; }
   }
 
@@ -38638,7 +38661,12 @@ function makeRelatoriosModule(opts) {
             Os de <b>"está a atacar o seu apoio"</b> são sempre guardados —
             esses dizem que perdeste tropa a defender.
           </div>
-          
+          <label><input type="checkbox" id="rel-transp"${c.transportes ? ' checked' : ''}>
+            relatórios de <b>transporte de recursos</b></label>
+          <div style="opacity:.6;font-size:12px;margin:1px 0 3px 18px">
+            As trocas no mercado e os envios de recursos entre cidades.
+          </div>
+        </div>
 
         <div style="background:var(--mSurf);padding:6px 8px;border-radius:4px;margin-bottom:6px">
           <label><input type="checkbox" id="rel-ler"${c.ler ? ' checked' : ''}>
@@ -38672,13 +38700,29 @@ function makeRelatoriosModule(opts) {
 
     const g = container.querySelector('#rel-guardar');
     if (g) g.onclick = () => {
-      guardarCfg({
-        ativo: container.querySelector('#rel-on').checked,
-        apoios: container.querySelector('#rel-apoios').checked,
-        transportes: container.querySelector('#rel-transp').checked,
-        maxPorPassagem: Number(container.querySelector('#rel-max').value) || 90,
-        porLote: Number(container.querySelector('#rel-lote').value) || 30,
-      });
+      /* UM CAMPO QUE FALTE NÃO PODE PARTIR O BOTÃO.
+       *
+       * O visto dos transportes nunca chegou a estar no HTML do painel, e o
+       * `.checked` de um campo inexistente rebentava o Guardar inteiro:
+       * "Cannot read properties of null". Nada era guardado, nem o resto. */
+      const visto = (sel, porOmissao) => {
+        const el = container.querySelector(sel);
+        return el ? !!el.checked : !!porOmissao;
+      };
+      const numero = (sel, porOmissao) => {
+        const el = container.querySelector(sel);
+        return (el && Number(el.value)) || porOmissao;
+      };
+      const antes = cfg();
+      guardarCfg(Object.assign({}, antes, {
+        ativo: visto('#rel-on', antes.ativo),
+        apoios: visto('#rel-apoios', antes.apoios),
+        transportes: visto('#rel-transp', antes.transportes),
+        ler: visto('#rel-ler', antes.ler),
+        lerMax: Math.max(1, Math.min(20, numero('#rel-ler-max', antes.lerMax))),
+        maxPorPassagem: numero('#rel-max', 90),
+        porLote: numero('#rel-lote', 30),
+      }));
       ctx.log('Relatórios: configuração guardada.');
     };
 
