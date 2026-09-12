@@ -30,6 +30,8 @@ falha sem ela (estragar o código de propósito e ver a falha).
 | `teste-apoio-transportes.js` | O Apoio só junta transportes quando o alvo está noutra ilha; na mesma ilha a tropa vai a pé. |
 | `teste-fechar-ilha.js` | Cada conta escreve só a sua chave (enviei, falhei, desisti, lugar); quem lê o plano junta tudo; o dono ganha nas atribuições. |
 | `teste-relatorios.js` | Lê um relatório: tropa e perdas de cada lado, espionagem, quem ataca quem; guarda a maior força já vista por jogador. |
+| `teste-painel-relatorios.js` | O botão Guardar do painel não rebenta por faltar um campo, e guarda o que lá está. |
+| `teste-cancelamento.js` | Um `command_deleted: false` não passa por cancelado (Encaixe, Esquiva, Apoio); sem o campo, fica como estava. |
 | `teste-captcha.js` | Com um captcha no ecrã o ciclo pára **e** o núcleo avisa no Discord (logo, e de meia em meia hora). |
 
 ## Formatos confirmados em jogo (espia, 11/09)
@@ -41,6 +43,7 @@ falha sem ela (estragar o código de propósito e ver a falha).
 - Revoltas: `started_at` = fim da R1.
 - Colonizadores: `id` em texto (`colonization_5120`), `island_x`, `island_y`, `number_on_island`.
 - Modelos e visão geral partilham o número do comando.
+- Acções: `send_units`, `cancelCommand` (com `command_deleted`), `cast`, `buildUp`, `trade` e o `frontend_bridge` confirmam com `success`/`error`; o `build` do recrutamento não devolve nem um nem outro.
 - Relatórios: o HTML vem em `plain.html` (topo da resposta, fora de `json`); tropas em `data-unit_id`/`data-unit_count`; lado em `report_side_attacker_unit`/`report_side_defender_unit`; espionagem em blocos ` spy `; perdas em `report_losts`; assunto em `<span class="subject">`; cidade e jogador em base64 nos links.
 
 ## Acrescentar um teste
