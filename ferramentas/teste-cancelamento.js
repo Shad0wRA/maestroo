@@ -48,7 +48,11 @@ function apoio(resposta) {
 (async () => {
   const CASOS = [
     ['o jogo apagou o comando', { success: 'O comando foi cancelado.', command_deleted: true }, true],
-    ['o jogo NÃO apagou (recusa silenciosa)', { success: 'ok', command_deleted: false }, false],
+    /* Cancelar tropa a caminho transforma o comando num regresso: o jogo
+     * responde `success` com `command_deleted: false`. É sucesso. */
+    ['tropa a caminho: vira regresso (success + command_deleted false)',
+      { success: 'O comando foi cancelado.', command_deleted: false }, true],
+    ['recusa silenciosa (command_deleted false SEM success)', { command_deleted: false }, false],
     ['resposta sem o campo: fica como estava', { success: 'O comando foi cancelado.' }, true],
     ['erro do jogo', { error: 'O comando não existe.' }, false],
   ];
@@ -61,8 +65,8 @@ function apoio(resposta) {
     t.verifica(`apoio: ${nome}`, r2 === esperado, r2);
   }
   {
-    const r = await posts('encaixe', { success: 'ok', command_deleted: false });
-    t.verifica('e diz porquê', /não apagou o comando/.test(r.msg), r.msg);
+    const r = await posts('encaixe', { command_deleted: false });
+    t.verifica('e diz porquê', /não apagou o comando nem confirmou/.test(r.msg), r.msg);
   }
   t.fim();
 })().catch((e) => { console.error('O TESTE REBENTOU:', e); process.exit(2); });

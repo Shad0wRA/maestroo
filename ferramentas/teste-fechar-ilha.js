@@ -110,5 +110,23 @@ async function montar() {
     t.verifica('nome com ponto: a chave fica segura e o envio vai para o nome certo', pd.enviados['Jo.ao'] === 400
       && (await fb.ler('fecharIlhaEnvios/pt125/365_460/Jo_ao')).conta === 'Jo.ao', pd.enviados);
   }
+  /* A FILA LIMPA TEM DE FICAR LIMPA. */
+  {
+    const fb = firebase();
+    /* Como o Firebase faz: uma lista vazia não se guarda. */
+    const escreverReal = fb.escrever;
+    fb.escrever = async (p, v) => {
+      const c = JSON.parse(JSON.stringify(v || {}));
+      if (c && Array.isArray(c.planos) && !c.planos.length) delete c.planos;
+      return escreverReal(p, c);
+    };
+    await fb.escrever('fecharIlha/pt125', { chave: '100:100', atribuicoes: { A: 0 }, estado: 'preparar' });
+    const c = conta(fb, 'A');
+    const antes = await c.lerFila();
+    t.verifica('sem fila nenhuma: aproveita o plano do formato antigo', antes.planos.length === 1, antes);
+    await fb.escrever('fecharIlhaFila/pt125', { planos: [], parada: false });
+    const dep = await c.lerFila();
+    t.verifica('fila gravada vazia: fica vazia (não ressuscita o plano antigo)', dep.planos.length === 0, dep);
+  }
   t.fim();
 })().catch((e) => { console.error('O TESTE REBENTOU:', e); process.exit(2); });
