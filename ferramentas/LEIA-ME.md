@@ -33,6 +33,7 @@ falha sem ela (estragar o código de propósito e ver a falha).
 | `teste-painel-relatorios.js` | O botão Guardar do painel não rebenta por faltar um campo, e guarda o que lá está. |
 | `teste-cancelamento.js` | Um `command_deleted: false` não passa por cancelado (Encaixe, Esquiva, Apoio); sem o campo, fica como estava. |
 | `teste-apoio-painel.js` | O botão "actualizar" pede os nomes em lote (um pedido, não um por alvo); o total por alvo soma as contas vivas. |
+| `teste-aldeias-vazias.js` | Aldeias prontas que não rendem nada em duas passagens seguidas: suspende, avisa e mostra o captcha. |
 | `teste-captcha.js` | Com um captcha no ecrã o ciclo pára **e** o núcleo avisa no Discord (logo, e de meia em meia hora). |
 
 ## Formatos confirmados em jogo (espia, 11/09)
