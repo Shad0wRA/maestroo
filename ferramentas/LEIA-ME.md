@@ -28,6 +28,7 @@ falha sem ela (estragar o código de propósito e ver a falha).
 | `teste-encaixe.js` | A leitura é sempre fresca (tem de ver o comando que acabou de sair); a razão de uma falha fica registada. |
 | `teste-colonizadores-revoltas.js` | Apoio (revoltas), Fundação e Expansão: sem saber que colonizadores vão a caminho, não sai nenhum. |
 | `teste-apoio-transportes.js` | O Apoio só junta transportes quando o alvo está noutra ilha; na mesma ilha a tropa vai a pé. |
+| `teste-fechar-ilha.js` | Cada conta escreve só a sua chave (enviei, falhei, desisti, lugar); quem lê o plano junta tudo; o dono ganha nas atribuições. |
 | `teste-captcha.js` | Com um captcha no ecrã o ciclo pára **e** o núcleo avisa no Discord (logo, e de meia em meia hora). |
 
 ## Formatos confirmados em jogo (espia, 11/09)
