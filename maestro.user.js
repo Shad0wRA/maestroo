@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.3700
+// @version      2026.09.12.3800
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2140,7 +2140,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.3700';
+  const MAESTRO_VERSAO = '2026.09.12.3800';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -40242,14 +40242,50 @@ function makeFecharIlhaModule(opts) {
         })),
       });
       const bruto = await r.text();
-      /* A resposta vem dentro das notificações, em texto. */
+
+      /* ONDE VEM A FICHA DA ILHA.
+       *
+       * De duas maneiras, conforme o pedido: em `json.models.Colonization.data`,
+       * ou dentro de `json.notifications[].param_str` — e esse é uma STRING com
+       * JSON lá dentro. Apanhar isso com uma expressão regular no texto em bruto
+       * não resultou ("o jogo não devolveu a ficha da ilha", 12/09): agora
+       * analisa-se a resposta a sério e, em último caso, procura-se o
+       * `island_info` em qualquer sítio dela. */
+      let topo = null;
+      try { topo = JSON.parse(bruto); } catch (e) {}
+      if (!topo) return { ok: false, msg: 'a resposta não é JSON' };
+
+      const comIlha = (o) => o && typeof o === 'object' && o.island_info;
       let d = null;
-      try { d = JSON.parse(bruto).json.models.Colonization.data; } catch (e) {}
-      if (!d) {
-        try {
-          const m = bruto.match(/\\"Colonization\\":(\{.*?\\"island_info\\".*?\}\})/);
-          d = JSON.parse(m[1].replace(/\\"/g, '"'));
-        } catch (e) {}
+      try { d = topo.json.models.Colonization.data; } catch (e) {}
+      if (!comIlha(d)) {
+        d = null;
+        const nots = (topo.json && topo.json.notifications) || [];
+        for (const n of nots) {
+          try {
+            const p = typeof n.param_str === 'string' ? JSON.parse(n.param_str) : n.param_str;
+            const c = p && (p.Colonization || (p.models && p.models.Colonization));
+            const alvo = (c && c.data) || c;
+            if (comIlha(alvo)) { d = alvo; break; }
+          } catch (e) {}
+        }
+      }
+      if (!comIlha(d)) {
+        /* Última tentativa: o `island_info` está algures na resposta. */
+        const procurar = (o, nivel) => {
+          if (!o || typeof o !== 'object' || nivel > 6) return null;
+          if (o.island_info) return o;
+          for (const k of Object.keys(o)) {
+            let v = o[k];
+            if (typeof v === 'string' && v.indexOf('island_info') >= 0) {
+              try { v = JSON.parse(v); } catch (e) { continue; }
+            }
+            const achado = procurar(v, nivel + 1);
+            if (achado) return achado;
+          }
+          return null;
+        };
+        d = procurar(topo, 0);
       }
       if (!d || !d.island_info) return { ok: false, msg: 'o jogo não devolveu a ficha da ilha' };
       const ii = d.island_info;
