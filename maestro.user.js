@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.3200
+// @version      2026.09.12.3400
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2110,7 +2110,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.3200';
+  const MAESTRO_VERSAO = '2026.09.12.3400';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -18245,11 +18245,28 @@ function makeAldeiasModule(opts) {
     } catch (e) { return false; }
   }
 
+  /* SUSPENSO ENQUANTO HOUVER VERIFICAÇÃO — NÃO MEIA HORA FIXA.
+   *
+   * Eram 30 minutos a contar da detecção, mesmo que a resolvesses ao fim de
+   * dois: a recolha ficava parada à toa o resto do tempo. Agora vê-se a cada
+   * passagem: sem verificação nenhuma no ecrã nem nas notificações, retoma-se
+   * já e apaga-se a marca.
+   *
+   * Os 30 minutos ficam como TECTO: se a verificação existir do lado do
+   * servidor sem nada visível, não se fica suspenso para sempre — retoma-se,
+   * e se a recolha voltar a render zero o módulo abre uma aldeia e volta a
+   * apanhá-la. */
   function captchaAtivo() {
     try {
       const t = Number(armazem.getItem(CAPTCHA_KEY) || 0);
-      // fica suspenso 30 min após deteção (dá tempo de resolveres)
-      return t && (agoraServidorMs() - t) < 30 * 60 * 1000;
+      if (!t) return false;
+      if ((agoraServidorMs() - t) >= 30 * 60 * 1000) return false;
+      const f = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroHaCaptcha;
+      if (f && !f()) {
+        try { armazem.removeItem(CAPTCHA_KEY); } catch (e) {}
+        return false;
+      }
+      return true;
     } catch (e) { return false; }
   }
 
@@ -18398,7 +18415,9 @@ function makeAldeiasModule(opts) {
         ? '🧩 Captcha no ecrã, na janela da aldeia. Resolve-o — o maestro fica parado até lá.'
         : '⚠️ Abri a aldeia e carreguei em Recolher, mas o captcha não apareceu. '
           + 'Resolve-o à mão (abre uma aldeia e recolhe).');
+      return viu;
     } catch (e) { seErroDeCodigo(e, 'Aldeias'); }
+    return false;
   }
 
   /* =========================================================================
@@ -18550,9 +18569,6 @@ function makeAldeiasModule(opts) {
      * vezes menos pedidos do que a de 5. */
   }
 
-  /* Passagens seguidas em que as aldeias prontas não renderam nada. */
-  let vaziasSeguidas = 0;
-
   async function fazerRecolha(ctx, towns) {
     const log = ctx.log;
 
@@ -18589,34 +18605,27 @@ function makeAldeiasModule(opts) {
     const prontas = relacoesProntas();
     if (!prontas.length) { log('Recolha: nenhuma aldeia pronta.'); return; }
 
-    /* RECOLHER MUITO E NÃO RENDER NADA É O SINAL DA VERIFICAÇÃO.
+    /* RECOLHER MUITO E NÃO RENDER NADA: PERGUNTA-SE AO JOGO.
      *
      * Visto em jogo (12/09, conta sem Capitão): "Recolhidas 126 aldeia(s)
-     * (~0 recursos)" de passagem em passagem durante mais de uma hora. O jogo
-     * aceita o pedido, responde sem erro, e não dá nada — a recusa
-     * `backend_requested_verification` nunca chega, por isso nada disto era
-     * detectado e ninguém foi avisado.
+     * (~0 recursos)" de passagem em passagem durante mais de uma hora. Por
+     * pedido directo, o servidor aceita, responde sem erro e não dá nada — a
+     * recusa `backend_requested_verification` nunca chega e ninguém dava por
+     * nada.
      *
-     * Uma aldeia pronta rende sempre mais do que zero. Zero em todas as
-     * prontas não é uma recolha: é o servidor a ignorar-nos.
+     * Em vez de adivinhar, faz-se o que uma pessoa faria: abre-se a janela de
+     * uma aldeia e carrega-se em Recolher. Se houver verificação, o jogo
+     * mostra-a — e aí o módulo suspende e avisa, e o núcleo pára o ciclo. Se
+     * não aparecer nada, a recolha segue como sempre: o clique recolhe na
+     * mesma, não se perde nada.
      *
-     * Exige-se DUAS passagens seguidas antes de suspender: uma leitura dos
-     * modelos a meio de uma actualização podia dar zero por um instante, e
-     * suspender a recolha à toa custa mais do que esperar uma passagem. */
-    const rendeTotal = prontas.reduce((s, p) => s + (Number(p.rende) || 0), 0);
-    if (rendeTotal <= 0) {
-      vaziasSeguidas++;
-      if (vaziasSeguidas >= 2) {
-        (ctx.logRotina || log)(`Recolha: ${prontas.length} aldeia(s) prontas e nenhuma rende nada, `
-          + `${vaziasSeguidas} passagens seguidas — trato isto como verificação por resolver.`);
-        await tratarCaptcha(ctx, 'recolha sem render nada');
-        await mostrarCaptchaPelaRecolha(ctx, aldeiaParaMostrarCaptcha(ctx, prontas, null));
-        return;
-      }
+     * Por isso não se suspende por suspeita: só quando o captcha aparece
+     * mesmo. */
+    if (prontas.reduce((s, p) => s + (Number(p.rende) || 0), 0) <= 0) {
       (ctx.logRotina || log)(`Recolha: ${prontas.length} aldeia(s) prontas e nenhuma rende nada — `
-        + 'confirmo na passagem seguinte antes de parar.');
-    } else {
-      vaziasSeguidas = 0;
+        + 'abro uma aldeia e carrego em Recolher para ver se há verificação.');
+      const apareceu = await mostrarCaptchaPelaRecolha(ctx, aldeiaParaMostrarCaptcha(ctx, prontas, null));
+      if (apareceu) { await tratarCaptcha(ctx, 'recolha a render zero'); return; }
     }
 
     if (temCapitao()) {
