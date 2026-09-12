@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.3400
+// @version      2026.09.12.3600
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2110,7 +2110,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.3400';
+  const MAESTRO_VERSAO = '2026.09.12.3600';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -39951,9 +39951,15 @@ function makeFecharIlhaModule(opts) {
   /* Quem ocupa cada lugar, com a aliança — é o que decide entre desistir e
    * seguir com menos uma conta. */
   async function estadoDaIlha(ix, iy, townIdBase) {
-    const out = { livres: [], donos: {} };
+    const out = { livres: [], donos: {}, lido: false };
     try {
-      const CHUNK = 10;
+      /* A GRELHA DO MAPA É DE 20, NÃO DE 10.
+       *
+       * Com 10 o servidor devolve outro pedaço do mapa: vinha sem cidade
+       * nenhuma e a ilha parecia vazia — "20 lugares livres" numa ilha com
+       * 22 cidades (visto em jogo, 12/09, ilha 381:470). O módulo do apoio
+       * sempre usou 20, e com 20 as cidades aparecem. */
+      const CHUNK = 20;
       const cx = Math.floor(ix / CHUNK), cy = Math.floor(iy / CHUNK);
       const url = mUw.location.origin + '/game/map_data?town_id=' + Number(townIdBase)
         + '&action=get_chunks&h=' + mUw.Game.csrfToken
@@ -39979,7 +39985,13 @@ function makeFecharIlhaModule(opts) {
         if (Number(t.x) !== Number(ix) || Number(t.y) !== Number(iy)) continue;
         const temNome = !!(t.name && String(t.name).trim());
         const nr = Number(t.nr);
-        if (!temNome || !Number.isFinite(nr) || nr < 0 || nr >= LUGARES) continue;
+        /* O LUGAR PODE PASSAR DOS 20.
+         *
+         * Descartava-se tudo a partir do lugar 20, e nesta ilha havia cidades
+         * no 20 e no 23 (12/09): ficavam por contar e os lugares delas
+         * apareciam livres. Só se exige que o lugar exista e não seja
+         * negativo. */
+        if (!temNome || !Number.isFinite(nr) || nr < 0) continue;
         ocupados.add(nr);
         out.donos[nr] = {
           nome: String(t.name),
@@ -39987,7 +39999,18 @@ function makeFecharIlhaModule(opts) {
           alianca: Number(t.alliance_id) || 0,
         };
       }
-      for (let n = 0; n < LUGARES; n++) if (!ocupados.has(n)) out.livres.push(n);
+      /* QUANTOS LUGARES TEM A ILHA.
+       *
+       * Não são sempre 20: nesta viram-se cidades no lugar 23. Enquanto não
+       * se souber o número certo por tipo de ilha, conta-se pelo maior lugar
+       * ocupado — nunca menos do que isso — e avisa-se quando passa dos 20,
+       * para não se inventarem lugares que podem não existir. */
+      let total = LUGARES;
+      for (const n of ocupados) if (n + 1 > total) total = n + 1;
+      for (let n = 0; n < total; n++) if (!ocupados.has(n)) out.livres.push(n);
+      out.ocupados = ocupados.size;
+      out.total = total;
+      out.lido = true;
     } catch (e) { seErroDeCodigo(e, 'FecharIlha'); }
     return out;
   }
@@ -40110,6 +40133,77 @@ function makeFecharIlhaModule(opts) {
       d[String(chave)] = Math.floor(Date.now() / 1000);
       armazem.setItem(ENVIEI_KEY, JSON.stringify(d));
     } catch (e) { seErroDeCodigo(e, 'FecharIlha'); }
+  }
+
+  /* ============ AS VAGAS QUEM AS DIZ É O JOGO ==========================
+   *
+   * O mapa (`get_chunks`) não serve para contar: traz o que a conta VIU, e
+   * não esquece cidades que já lá não estão. Na ilha 381:470 dava 22 cidades;
+   * o jogo dizia 9 e 11 vagas (confirmado em jogo, 12/09). Contar pelo mapa
+   * dava 2 vagas em vez de 11 — a ilha nunca fechava.
+   *
+   * O `forceUpdate` da colonização devolve o `island_info` com
+   * `uninhabited_place_count` (quantas vagas há) e propõe um lugar LIVRE em
+   * `target_number_on_island` — um diferente de cada vez (14, 7, 12 nas três
+   * leituras). O jogo aceita fundar em qualquer lugar livre à escolha, por
+   * isso basta pedir-lhe um e não repetir o das outras contas.
+   *
+   * É um pedido por conta e por tentativa, e não uma leitura do mapa. */
+  async function vagasDaIlha(townId, x, y, lugarSugerido) {
+    const url = mUw.location.origin + '/game/frontend_bridge?town_id=' + Number(townId)
+      + '&action=execute&h=' + mUw.Game.csrfToken;
+    try {
+      const args = { target_x: Number(x), target_y: Number(y) };
+      if (Number.isFinite(Number(lugarSugerido))) args.target_number_on_island = Number(lugarSugerido);
+      const r = await mUw.fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
+          'x-requested-with': 'XMLHttpRequest' },
+        credentials: 'include',
+        body: 'json=' + encodeURIComponent(JSON.stringify({
+          model_url: 'Colonization/' + (mUw.Game.player_id || ''),
+          action_name: 'forceUpdate', captcha: null, arguments: args,
+          town_id: Number(townId), nl_init: true,
+        })),
+      });
+      const bruto = await r.text();
+      /* A resposta vem dentro das notificações, em texto. */
+      let d = null;
+      try { d = JSON.parse(bruto).json.models.Colonization.data; } catch (e) {}
+      if (!d) {
+        try {
+          const m = bruto.match(/\\"Colonization\\":(\{.*?\\"island_info\\".*?\}\})/);
+          d = JSON.parse(m[1].replace(/\\"/g, '"'));
+        } catch (e) {}
+      }
+      if (!d || !d.island_info) return { ok: false, msg: 'o jogo não devolveu a ficha da ilha' };
+      const ii = d.island_info;
+      return {
+        ok: true,
+        vagas: Number(ii.uninhabited_place_count),
+        cidades: (ii.town_list || []).length,
+        lugar: Number(d.target_number_on_island),
+        pontos: !!d.enough_culture_points,
+      };
+    } catch (e) { return { ok: false, msg: e.message }; }
+  }
+
+  /* UM LUGAR LIVRE QUE MAIS NENHUMA CONTA VÁ USAR.
+   *
+   * Pede-se um ao jogo; se calhar num que já esteja reservado por outra
+   * conta, pede-se outro. O jogo propõe um diferente de cada vez, por isso
+   * poucas tentativas chegam. */
+  async function lugarLivrePorUsar(townId, x, y, jaUsados) {
+    let ultimo = null;
+    for (let i = 0; i < 6; i++) {
+      const v = await vagasDaIlha(townId, x, y, i ? (ultimo + 1) % LUGARES : null);
+      if (!v.ok) return { ok: false, msg: v.msg };
+      if (!v.vagas) return { ok: false, msg: 'a ilha já não tem vagas' };
+      ultimo = v.lugar;
+      if (!jaUsados.has(Number(v.lugar))) return { ok: true, lugar: Number(v.lugar), vagas: v.vagas };
+      await new Promise((res) => setTimeout(res, 600));
+    }
+    return { ok: false, msg: 'não encontrei um lugar livre que outra conta não vá usar' };
   }
 
   async function enviarColonizador(townId, x, y, numero) {
@@ -40313,7 +40407,23 @@ function makeFecharIlhaModule(opts) {
         if (!cidade) {
           log(`⚠️ Fechar ilha: era a minha vez e já não tenho colonizador.`);
         } else {
-          let r = await enviarColonizador(cidade, plano.x, plano.y, meuLugar);
+          /* O LUGAR PEDE-SE AO JOGO, na altura de enviar.
+           *
+           * Os lugares que as outras contas já usaram estão nas chaves delas
+           * (`fecharIlhaEnvios`), que o `lerPlano` juntou ao plano. */
+          let lugar = meuLugar;
+          if (!(Number(lugar) >= 0)) {
+            const usados = new Set(Object.keys(plano.atribuicoes)
+              .map((n) => Number(plano.atribuicoes[n])).filter((n) => n >= 0));
+            const esc = await lugarLivrePorUsar(cidade, plano.x, plano.y, usados);
+            if (!esc.ok) {
+              (ctx.logRotina || log)(`Fechar ilha ${plano.chave}: ${esc.msg} — tento na próxima passagem.`);
+              return;
+            }
+            lugar = esc.lugar;
+            log(`Fechar ilha ${plano.chave}: o jogo deu-me o lugar ${lugar} (${esc.vagas} vaga(s) na ilha).`);
+          }
+          let r = await enviarColonizador(cidade, plano.x, plano.y, lugar);
 
           /* LUGAR OCUPADO: TENTAR OUTRO NA MESMA ILHA.
            *
@@ -40331,11 +40441,13 @@ function makeFecharIlhaModule(opts) {
            * uma posição válida". */
           if (!r.ok && /j[áa] est[áa] a ser utilizado|already|posi[çc][ãa]o v[áa]lida|invalid/i
             .test(String(r.msg || ''))) {
-            const ilha2 = await estadoDaIlha(plano.x, plano.y, cidade);
-            const reservados = new Set(Object.keys(plano.atribuicoes)
-              .filter((n) => n !== eu && !plano.enviados[n])
-              .map((n) => Number(plano.atribuicoes[n])));
-            const alternativa = ilha2.livres.find((n) => !reservados.has(Number(n)));
+            /* O jogo é que sabe o que está livre — o mapa engana-se. */
+            const usados2 = new Set(Object.keys(plano.atribuicoes)
+              .filter((n) => n !== eu)
+              .map((n) => Number(plano.atribuicoes[n])).filter((n) => n >= 0));
+            usados2.add(Number(lugar));
+            const esc2 = await lugarLivrePorUsar(cidade, plano.x, plano.y, usados2);
+            const alternativa = esc2.ok ? esc2.lugar : null;
 
             /* Quantas vezes já se tentou. Sem um tecto, uma recusa que não se
              * resolve com outro lugar repetia-se para sempre. */
@@ -40345,8 +40457,8 @@ function makeFecharIlhaModule(opts) {
              * gravava, e o tecto de quatro podia nunca chegar. */
             await registarMeu(plano, eu, { tentativas: tentativasAgora });
 
-            log(`Fechar ilha: lugares livres em ${plano.chave}: `
-              + `${ilha2.livres.join(', ') || 'nenhum'} (tentativa ${plano.tentativas[eu]}).`);
+            log(`Fechar ilha ${plano.chave}: o lugar ${lugar} não serviu `
+              + `(${r.msg}) — tentativa ${plano.tentativas[eu]}.`);
 
             if (plano.tentativas[eu] >= 4) {
               await registarMeu(plano, eu, { falhou: `4 tentativas sem sucesso (${r.msg})` });
@@ -40357,8 +40469,7 @@ function makeFecharIlhaModule(opts) {
               log(`⚠️ Fechar ilha: o lugar ${meuLugar} foi ocupado e a ilha `
                 + `${plano.chave} já não tem nenhum livre — desisto.`);
             } else {
-              log(`Fechar ilha: o lugar ${meuLugar} foi ocupado — tento o ${alternativa}.`);
-              plano.atribuicoes[eu] = alternativa;
+              log(`Fechar ilha ${plano.chave}: tento o lugar ${alternativa}.`);
               r = await enviarColonizador(cidade, plano.x, plano.y, alternativa);
               if (r.ok) meuLugarUsado = alternativa;
             }
@@ -40366,12 +40477,11 @@ function makeFecharIlhaModule(opts) {
 
           if (r.ok) {
             marcarEnviei(plano.chave);
-            const usado = meuLugarUsado != null ? meuLugarUsado : meuLugar;
+            const usado = meuLugarUsado != null ? meuLugarUsado : lugar;
             await registarMeu(plano, eu, { enviado: Math.floor(Date.now() / 1000), lugar: usado });
-            log(`🏛️ Fechar ilha: colonizador a caminho de ${plano.chave}, `
-              + `lugar ${meuLugarUsado != null ? meuLugarUsado : meuLugar}.`);
+            log(`🏛️ Fechar ilha: colonizador a caminho de ${plano.chave}, lugar ${usado}.`);
           } else if (!plano.falhados || !plano.falhados[eu]) {
-            log(`⚠️ Fechar ilha: o envio para o lugar ${meuLugar} falhou (${r.msg}).`);
+            log(`⚠️ Fechar ilha: o envio para o lugar ${lugar} falhou (${r.msg}).`);
           }
         }
       }
@@ -40461,8 +40571,18 @@ function makeFecharIlhaModule(opts) {
 
     const towns = ctx.getMyTowns() || [];
     if (!towns.length) return;
-    const ilha = await estadoDaIlha(plano.x, plano.y, towns[0].id);
-    const faltam = ilha.livres.length;
+    /* QUANTAS VAGAS TEM A ILHA: PERGUNTA-SE AO JOGO.
+     *
+     * O mapa traz o que a conta viu e não esquece cidades que já lá não
+     * estão: na 381:470 dava 22 cidades quando o jogo dizia 9 e 11 vagas
+     * (12/09). Contar pelo mapa era contar a menos e a ilha nunca fechava. */
+    const vg = await vagasDaIlha(towns[0].id, plano.x, plano.y);
+    if (!vg.ok) {
+      rotina(`Fechar ilha ${plano.chave}: não consegui saber as vagas (${vg.msg}) — `
+        + 'tento na próxima passagem.');
+      return;
+    }
+    const faltam = vg.vagas;
 
     if (!faltam) {
       plano.estado = 'feito';
@@ -40487,14 +40607,22 @@ function makeFecharIlhaModule(opts) {
     }
 
     if (prontas.length < faltam) {
-      rotina(`Fechar ilha ${plano.chave}: ${faltam} lugar(es) livre(s) e ${prontas.length} `
+      rotina(`Fechar ilha ${plano.chave}: ${faltam} vaga(s) `
+        + `(${vg.cidades} cidade(s) na ilha) e ${prontas.length} `
         + `conta(s) com colonizador e vaga — falta(m) ${faltam - prontas.length}.`);
       return;
     }
 
+    /* O LUGAR JÁ NÃO SE REPARTE AQUI.
+     *
+     * Repartiam-se números lidos do mapa — e o mapa engana-se nos dois
+     * sentidos. Como o jogo aceita fundar em qualquer lugar livre e propõe um
+     * diferente a cada pedido, cada conta pergunta-lhe o seu na altura de
+     * enviar e evita os que as outras já usaram. Aqui só se decide QUEM vai.
+     * O `-1` marca "vais, o lugar pede-o tu". */
     const escolhidas = prontas.slice(0, faltam);
     const atribuicoes = {};
-    escolhidas.forEach((n, i) => { atribuicoes[n] = ilha.livres[i]; });
+    escolhidas.forEach((n) => { atribuicoes[n] = -1; });
     plano.atribuicoes = atribuicoes;
     plano.estado = 'lancar';
     plano.lancadoEm = agoraS;
