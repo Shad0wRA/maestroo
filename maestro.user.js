@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.3900
+// @version      2026.09.12.4100
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2140,7 +2140,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.3900';
+  const MAESTRO_VERSAO = '2026.09.12.4100';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -24255,14 +24255,19 @@ function makeEsquivaModule(opts) {
       aplicarNotificacoes(r);
       const j = r && r.json;
 
-      /* O JOGO DIZ SE O COMANDO FOI MESMO APAGADO.
+      /* O JOGO DIZ SE O COMANDO FOI MESMO APAGADO — MAS SÓ QUANDO NÃO
+       * CONFIRMA DE OUTRA MANEIRA.
        *
-       * A resposta do `cancelCommand` traz `command_deleted` (confirmado com
-       * a espia, 11/09). Um `false` explícito é uma recusa silenciosa: sem
-       * isto passava por cancelado, e a tropa seguia à mesma. Quando o campo
-       * não vem, fica como estava. */
-      if (j && j.command_deleted === false) {
-        return { ok: false, msg: 'o jogo não apagou o comando', raw: r };
+       * O `cancelCommand` traz `command_deleted`. Mas cancelar tropa já a
+       * caminho NÃO apaga o comando: transforma-o num regresso, e o jogo
+       * responde `success` com `command_deleted: false`. A 2900 tratava isso
+       * como falha e a esquiva dava erro num cancelamento que correu bem
+       * (visto em jogo, 12/09).
+       *
+       * Portanto: `success` manda. O `command_deleted: false` só conta como
+       * recusa quando vem SEM `success` — aí é mesmo silenciosa. */
+      if (j && !j.success && j.command_deleted === false) {
+        return { ok: false, msg: 'o jogo não apagou o comando nem confirmou', raw: r };
       }
       return { ok: !(j && j.error), msg: (j && (j.error || j.success)) || 'ok', raw: r };
     } catch (e) { return { ok: false, msg: e.message }; }
@@ -28007,14 +28012,19 @@ function makeEncaixeModule(opts) {
     aplicarNotificacoes(r);
     const j = r && r.json;
 
-      /* O JOGO DIZ SE O COMANDO FOI MESMO APAGADO.
+      /* O JOGO DIZ SE O COMANDO FOI MESMO APAGADO — MAS SÓ QUANDO NÃO
+       * CONFIRMA DE OUTRA MANEIRA.
        *
-       * A resposta do `cancelCommand` traz `command_deleted` (confirmado com
-       * a espia, 11/09). Um `false` explícito é uma recusa silenciosa: sem
-       * isto passava por cancelado, e a tropa seguia à mesma. Quando o campo
-       * não vem, fica como estava. */
-      if (j && j.command_deleted === false) {
-        return { ok: false, msg: 'o jogo não apagou o comando', raw: r };
+       * O `cancelCommand` traz `command_deleted`. Mas cancelar tropa já a
+       * caminho NÃO apaga o comando: transforma-o num regresso, e o jogo
+       * responde `success` com `command_deleted: false`. A 2900 tratava isso
+       * como falha e a esquiva dava erro num cancelamento que correu bem
+       * (visto em jogo, 12/09).
+       *
+       * Portanto: `success` manda. O `command_deleted: false` só conta como
+       * recusa quando vem SEM `success` — aí é mesmo silenciosa. */
+      if (j && !j.success && j.command_deleted === false) {
+        return { ok: false, msg: 'o jogo não apagou o comando nem confirmou', raw: r };
       }
     return { ok: !(j && j.error), msg: (j && (j.error || j.success)) || 'ok', raw: r };
   }
@@ -35063,8 +35073,10 @@ function makeApoioModule(opts) {
         if (vgE) vgE();
       } catch (e) {}
       const j = r && r.json;
-      /* `command_deleted: false` é uma recusa silenciosa (espia, 11/09). */
-      if (j && j.command_deleted === false) return false;
+      /* Cancelar tropa a caminho não apaga o comando: transforma-o num
+       * regresso (`success` com `command_deleted: false`). Só conta como
+       * recusa quando vem sem `success`. */
+      if (j && !j.success && j.command_deleted === false) return false;
       return !(j && j.error);
     } catch (e) { return false; }
   }
@@ -39924,9 +39936,20 @@ function makeFecharIlhaModule(opts) {
     if (!f) return { planos: [], parada: false };
     try {
       const d = await f.ler(caminhoFila());
-      if (d && Array.isArray(d.planos)) return { planos: d.planos, parada: !!d.parada, motivo: d.motivo };
 
-      /* Nada na fila: aproveitar um plano antigo, se existir. */
+      /* UMA FILA VAZIA É UMA FILA VAZIA.
+       *
+       * O Firebase não guarda listas vazias: gravar `planos: []` deixa lá só
+       * `{parada:false}`. Como isto exigia uma LISTA para dar a fila por
+       * válida, uma fila limpa caía no caminho de compatibilidade e o plano
+       * antigo ressuscitava — o botão "limpar a fila toda" não limpava nada
+       * (visto em jogo, 12/09).
+       *
+       * Havendo registo da fila, é ele que manda, tenha ou não planos. O plano
+       * antigo só se aproveita quando NUNCA houve fila, que era para isso que
+       * a compatibilidade servia. */
+      if (d) return { planos: Array.isArray(d.planos) ? d.planos : [], parada: !!d.parada, motivo: d.motivo };
+
       const velho = await f.ler(caminho());
       if (velho && velho.atribuicoes) return { planos: [velho], parada: false };
       return { planos: [], parada: false };
@@ -40819,6 +40842,12 @@ function makeFecharIlhaModule(opts) {
     container.querySelector('#fi-apagar').onclick = async () => {
       filaEmMemoria = { planos: [], parada: false };
       await gravarFila(filaEmMemoria);
+      /* E o plano do formato antigo, senão volta na leitura seguinte. */
+      try {
+        const f = fb();
+        if (f && f.apagar) await f.apagar(caminho());
+        else if (f) await f.escrever(caminho(), null);
+      } catch (e) { seErroDeCodigo(e, 'FecharIlha'); }
       ctx.log('Fechar ilha: fila limpa.');
       painel(container, ctx);
     };
