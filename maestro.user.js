@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.4100
+// @version      2026.09.12.4200
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2140,7 +2140,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.4100';
+  const MAESTRO_VERSAO = '2026.09.12.4200';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -29796,10 +29796,27 @@ function makeEncaixeModule(opts) {
              * Enche-se com o que a cidade tem, da unidade que rende mais por
              * lugar para a que rende menos. */
             try {
+              /* OS PORÕES CONTAM.
+               *
+               * A capacidade saía da tabela base — 10 e 26 — e ignorava a
+               * pesquisa de porões, que a leva a 16 e 32. Numa cidade com 138
+               * transportes rápidos e porões feitos, davam-se 1380 lugares em
+               * vez de 2208: as composições levavam menos 293 de tropa e
+               * ficava lugar vazio nos barcos (visto em jogo, 13/09 —
+               * "1915 de 2208, ainda cabem +293 Hoplita"). A janela do jogo já
+               * contava certo; só estas composições é que não. */
+              const comPoroes = (() => {
+                try {
+                  const r2 = (t.researches && t.researches()) || {};
+                  return !!((r2.attributes || r2).berth);
+                } catch (e) { return false; }
+              })();
               let lugares = 0;
               for (const u of ['small_transporter', 'big_transporter']) {
-                lugares += (Number(carga[u]) || 0) * (Number((gd[u] || {}).capacity) || 0);
+                const cap = (Number((gd[u] || {}).capacity) || 0) + (comPoroes ? 6 : 0);
+                lugares += (Number(carga[u]) || 0) * cap;
               }
+
               if (lugares > 0) {
                 const terrestres = Object.keys(tenho)
                   .filter((u) => gd[u] && !gd[u].is_naval && Number(tenho[u]) > 0)
