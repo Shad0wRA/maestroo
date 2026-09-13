@@ -38,6 +38,7 @@ falha sem ela (estragar o código de propósito e ver a falha).
 | `teste-fechar-ilha-vagas.js` | As vagas e o lugar vêm do jogo (`forceUpdate`), não do mapa; duas contas não pedem o mesmo lugar. |
 | `teste-vigia-mudo.js` | Correr não é fazer: o núcleo marca a hora de cada linha de ecrã e o vigia avisa quando um módulo vigiado passa horas sem produzir nada. |
 | `teste-encaixe-carga.js` | As composições enchem os transportes contando a pesquisa de porões (16 e 32), não a capacidade base. |
+| `teste-sentinelas.js` | Uma leitura da Ágora que não cobre todas as minhas cidades não prova que a aliada esteja a descoberto: não se manda outra sentinela. |
 | `teste-captcha.js` | Com um captcha no ecrã o ciclo pára **e** o núcleo avisa no Discord (logo, e de meia em meia hora). |
 
 ## Formatos confirmados em jogo (espia, 11/09)
