@@ -58,16 +58,19 @@ const agora = Math.floor(Date.now() / 1000);
       igual(vigia({ aldeias: { a: 1, u: h(5), f: h(9) } }, agora), []));
     t.verifica('nunca fez nada desde o arranque: não avisa (f a zero)',
       igual(vigia({ aldeias: { a: 1, u: agora - 300, f: 0 } }, agora), []));
-    t.verifica('recrutamento calado 6 h: ainda não (espera 12 h)',
-      igual(vigia({ recrutamento: { a: 1, u: agora - 300, f: h(6) } }, agora), []));
-    t.verifica('recrutamento calado 13 h: avisa',
-      igual(vigia({ recrutamento: { a: 1, u: agora - 300, f: h(13) } }, agora), ['recrutamento']));
+    t.verifica('recrutamento calado 13 h: ainda não (pode estar à espera de recursos)',
+      igual(vigia({ recrutamento: { a: 1, u: agora - 300, f: h(13) } }, agora), []));
+    t.verifica('recrutamento calado 25 h: avisa',
+      igual(vigia({ recrutamento: { a: 1, u: agora - 300, f: h(25) } }, agora), ['recrutamento']));
+    /* O tique só trabalha quando há moedas: calado não é avaria. */
+    t.verifica('tique calado há dias: NÃO avisa',
+      igual(vigia({ tique: { a: 1, u: agora - 60, f: h(48) } }, agora), []));
     t.verifica('módulos que passam dias sem ter o que fazer não são vigiados',
       igual(vigia({ expansao: { a: 1, u: agora - 300, f: h(48) },
         fecharilha: { a: 1, u: agora - 300, f: h(48) } }, agora), []));
     t.verifica('dois mudos ao mesmo tempo: ambos na lista',
       igual(vigia({ aldeias: { a: 1, u: agora - 60, f: h(5) },
-        tique: { a: 1, u: agora - 60, f: h(9) } }, agora).sort(), ['aldeias', 'tique']));
+        construcao: { a: 1, u: agora - 60, f: h(30) } }, agora).sort(), ['aldeias', 'construcao']));
   }
   t.fim();
 })().catch((e) => { console.error('O TESTE REBENTOU:', e); process.exit(2); });
