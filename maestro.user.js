@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.4300
+// @version      2026.09.12.4400
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -871,6 +871,19 @@
       refrescar: refrescarApoioFora,
       porAlvo: apoioForaPorAlvo,
       candidatas: cidadesComApoioFora,
+      /* QUE CIDADES MINHAS É QUE A LEITURA COBRE.
+       *
+       * O `porAlvo` junta o que se leu, mas não diz de onde NÃO se leu. Quem
+       * conclui "não tenho lá tropa" precisa de saber isso: uma sentinela
+       * enviada de uma cidade por ler não aparece, e mandar outra é duplicá-la. */
+      lidas: (validadeMs) => {
+        const cache = lerCacheApoioFora();
+        const limite = Number(validadeMs) || (APOIO_FORA_VALIDADE * 4);
+        const agora = Date.now();
+        return Object.keys(cache)
+          .filter((id) => (agora - Number((cache[id] || {}).quando || 0)) <= limite)
+          .map(Number);
+      },
     };
   } catch (e) {}
 
@@ -2140,7 +2153,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.4300';
+  const MAESTRO_VERSAO = '2026.09.12.4400';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -14800,15 +14813,34 @@ function makeSentinelasModule(opts) {
    * A verdade está na leitura da Ágora, que o núcleo mantém em cache desde
    * ontem. Só se não houver leitura nenhuma é que se cai nos modelos — e aí
    * vale a guarda das 12 horas, que impede o envio repetido às cegas. */
+  /* true / false / null (= não sei).
+   *
+   * A leitura da Ágora só cobre ALGUMAS das minhas cidades de cada vez. Uma
+   * sentinela enviada de uma cidade por ler não aparece nessa leitura — e
+   * concluir daí que a cidade aliada está a descoberto punha lá outra, e
+   * outra, e outra: apareceram cidades com 15 sentinelas (visto em jogo,
+   * 13/09).
+   *
+   * Por isso: encontrar tropa é uma certeza (`true`); NÃO a encontrar só é
+   * `false` quando a leitura cobre as minhas cidades todas. Faltando alguma,
+   * responde-se `null` e quem chama não manda nada. */
   function tenhoTropaEm(townId) {
     try {
-      const fora = (mUw.__maestroApoioFora && mUw.__maestroApoioFora.porAlvo());
-      if (fora) {
-        const u = ((fora[Number(townId)] || {}).unidades) || {};
-        return Object.keys(u).some((k) => Number(u[k]) > 0);
-      }
-    } catch (e) { seErroDeCodigo(e, 'Sentinelas'); }
-    return tenhoTropaEmPelosModelos(townId);
+      if (tenhoTropaEmPelosModelos(townId)) return true;
+
+      const api = mUw.__maestroApoioFora;
+      const fora = api && api.porAlvo();
+      if (!fora) return null;                       // nenhuma leitura: não sei
+
+      const u = ((fora[Number(townId)] || {}).unidades) || {};
+      if (Object.keys(u).some((k) => Number(u[k]) > 0)) return true;
+
+      const minhas = Object.keys(mUw.ITowns.towns || {}).map(Number);
+      const lidas = new Set(((api.lidas && api.lidas()) || []).map(Number));
+      const porLer = minhas.filter((id) => !lidas.has(id));
+      if (porLer.length) return null;               // pode estar numa que falta ler
+      return false;
+    } catch (e) { seErroDeCodigo(e, 'Sentinelas'); return null; }
   }
 
   function tenhoTropaEmPelosModelos(townId) {
@@ -14921,6 +14953,7 @@ function makeSentinelasModule(opts) {
     let jaLa = 0;
     /* Para o registo dizer onde a coisa pára. */
     let ilhasVistas = 0;
+    let porLer = 0;
     let aliadosVistos = 0;
     let cidadesVistas = 0;
     let semIlha = 0;
@@ -14967,10 +15000,16 @@ function makeSentinelasModule(opts) {
 
       for (const al of aliadas) {
         /* Já lá tenho tropa? Então a sentinela está viva. */
-        /* Já lá tenho tropa? Então a sentinela está viva. */
-        if (tenhoTropaEm(al.id)) {
+        const la = tenhoTropaEm(al.id);
+        if (la === true) {
           jaLa++;
           registo[al.id] = { quando: Math.floor(Date.now() / 1000), quantas: c.quantas };
+          continue;
+        }
+        /* NA DÚVIDA NÃO SE MANDA. Uma leitura que não cobre as minhas cidades
+         * todas não prova que a cidade esteja a descoberto. */
+        if (la == null) {
+          porLer++;
           continue;
         }
 
@@ -15026,7 +15065,8 @@ function makeSentinelasModule(opts) {
       rotina(`Sentinelas: ${cidadesVistas} cidade(s) minha(s) vista(s), `
         + `${ilhasVistas} ilha(s) identificada(s)`
         + (semIlha ? ` (${semIlha} sem identificar — o mapa não respondeu)` : '')
-        + `, ${aliadosVistos} aliada(s) encontrada(s), ${jaLa} já com sentinela.`);
+        + `, ${aliadosVistos} aliada(s) encontrada(s), ${jaLa} já com sentinela`
+        + (porLer ? `, ${porLer} por confirmar (leitura da Ágora incompleta — não mando às cegas).` : '.'));
     }
   }
 
