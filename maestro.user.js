@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.4200
+// @version      2026.09.12.4300
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2140,7 +2140,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.4200';
+  const MAESTRO_VERSAO = '2026.09.12.4300';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -39435,10 +39435,19 @@ function makeFrotaModule(opts) {
    * fechar ilha, esquiva) ficam de fora de propósito: avisar sobre eles era
    * ruído. */
   const VIGIADOS = {
-    aldeias: 3 * 3600,       // recolhe de 10 em 10 min: 3 h calado é avaria
-    tique: 6 * 3600,
-    construcao: 12 * 3600,
-    recrutamento: 12 * 3600,
+    /* A recolha não espera por nada: se há aldeias prontas, recolhe. Três
+     * horas calada é avaria. */
+    aldeias: 3 * 3600,
+    /* Estes dois dependem de recursos e podem ficar horas à espera sem que
+     * isso seja problema. Um dia inteiro sem fazer nada já não é espera. */
+    construcao: 24 * 3600,
+    recrutamento: 24 * 3600,
+    /* O TIQUE FICOU DE FORA.
+     *
+     * Só faz alguma coisa quando há moedas para gastar; sem moedas, ficar
+     * calado é o que deve fazer. Com 6 h de prazo, encheu o Discord de avisos
+     * inúteis (13/09) — que é precisamente o ruído que este vigia não pode
+     * gerar. */
   };
 
   async function vigiarFrota(ctx, w, fb) {
