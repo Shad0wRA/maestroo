@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.5900
+// @version      2026.09.12.6000
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -549,10 +549,26 @@
    * exige nada — na dúvida, avisa-se. */
   const FOLGA_ELMO = 1 / 0.9;      // 1,111… — a viagem escondida infla a velocidade
 
-  /* Bónus de velocidade conhecidos. `unit_movement_boost` é um feitiço cujo
-   * valor varia com o mundo: fica aqui para se acrescentar quando se souber
-   * o número certo. */
-  const TOLERANCIA_NC = 0.28;      // cartografia (+10%) e farol (+15%) juntos
+  /* O FEITIÇO "MOVIMENTO DE TROPAS MELHORADO".
+   *
+   * Dá +30% de velocidade durante uma hora (lido do jogo, `meta_defaults.percent`;
+   * 30 no pt126 e no pt127, 13/09). Sem o contar, um colonizador com o feitiço
+   * anda acima do limite e passava por navio de guerra.
+   *
+   * Lê-se ao jogo em vez de ficar fixo: se o valor mudar num mundo, o Maestro
+   * acompanha. */
+  function bonusMovimento() {
+    try {
+      const p = (uw.GameData.powers || {}).unit_movement_boost || {};
+      const pct = Number((p.meta_defaults || {}).percent);
+      if (Number.isFinite(pct) && pct > 0 && pct < 300) return 1 + pct / 100;
+    } catch (e) {}
+    return 1.30;
+  }
+
+  /* O máximo que um colonizador pode aparentar: cartografia (+10%), farol
+   * (+15%) e o feitiço (+30%), tudo junto. */
+  function tolerânciaNC() { return 1.10 * 1.15 * bonusMovimento(); }
 
   function velocidadeColonizador() {
     try {
@@ -563,7 +579,7 @@
     return 9;   // valor de sempre, se o jogo ainda não respondeu
   }
 
-  function limiteColonizador() { return velocidadeColonizador() * (1 + TOLERANCIA_NC); }
+  function limiteColonizador() { return velocidadeColonizador() * tolerânciaNC(); }
 
   /* As unidades cuja velocidade explica o tempo observado.
    *
@@ -573,13 +589,24 @@
     const out = [];
     try {
       const u = uw.GameData.units || {};
-      const combosNavais = [
+      /* TODAS AS COMBINAÇÕES, não só as duas pesquisas.
+       *
+       * Faltava o feitiço de movimento (+30%): uma velocidade que só ele
+       * explica ficava por explicar, e a unidade certa não aparecia na lista. */
+      const mov = bonusMovimento();
+      const baseNavais = [
         { f: 1, nome: 'sem bónus' },
         { f: 1.10, nome: 'cartografia' },
         { f: 1.15, nome: 'farol' },
         { f: 1.10 * 1.15, nome: 'cartografia + farol' },
       ];
-      const combosTerra = [{ f: 1, nome: '' }, { f: 1.10, nome: 'meteorologia' }];
+      const baseTerra = [{ f: 1, nome: '' }, { f: 1.10, nome: 'meteorologia' }];
+      const comFeitico = (lista) => lista.concat(lista.map((c) => ({
+        f: c.f * mov,
+        nome: (c.nome ? c.nome + ' + ' : '') + 'feitiço de movimento',
+      })));
+      const combosNavais = comFeitico(baseNavais);
+      const combosTerra = comFeitico(baseTerra);
 
       for (const id of Object.keys(u)) {
         const v = Number(u[id].speed) || 0;
@@ -2198,7 +2225,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.5900';
+  const MAESTRO_VERSAO = '2026.09.12.6000';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
