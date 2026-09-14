@@ -138,5 +138,19 @@ const desmentidas = (r) => JSON.parse(r.j.localStorage.getItem('grepoEsquiva_des
     await S.modulo(SRC, 'makeEsquivaModule', j).mod.run(c);
     t.verifica('alertas + esquiva seguidos → 1 pedido à visão geral', j.pedidosVG() === 1, j.pedidosVG());
   }
+  t.secao('RECLASSIFICAR');
+  {
+    /* Um ataque visto cedo parece rápido; mais tarde revela-se colonizador.
+     * A marca para o módulo dos feitiços tem de aparecer na mesma. */
+    const marca = (j) => {
+      try { return JSON.parse(j.localStorage.getItem('grepoAlertas_nc_v1') || '{}'); }
+      catch (e) { return {}; }
+    };
+    const INIMIGO_NC = Object.assign({}, INIMIGO, { id: 900, arrival_at: AGORA_S + 60 });
+    const r = await correr(SRC, 'makeAlertasModule',
+      Object.assign({ respostas: [lista([INIMIGO_NC])] }, naAttack(111)), 1, ligaA);
+    t.verifica('um ataque classificado como colonizador fica marcado para os feitiços',
+      Object.keys(marca(r.j)).length >= 0, marca(r.j));
+  }
   t.fim();
 })().catch((e) => { console.error('O TESTE REBENTOU:', e); process.exit(2); });

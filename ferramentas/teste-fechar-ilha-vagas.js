@@ -71,8 +71,17 @@ function montar(propostas, formato) {
   {
     const m = montar([14], 'models');
     const r = await m.api.livre(111, 381, 470, new Set([14]));
-    t.verifica('o jogo insiste no mesmo: desiste e diz porquê', !r.ok
-      && /não encontrei um lugar livre/.test(r.msg), r);
+    t.verifica('o jogo insiste no mesmo: desiste e diz quais viu', !r.ok
+      && /só me propôs lugares que outras contas/.test(r.msg), r);
+  }
+  {
+    /* NUNCA se sugere um número: sugerir um ocupado dá "posição não válida"
+     * e a conta desistia da ilha (14/09). */
+    const m = montar([14, 7, 12], 'models');
+    await m.api.livre(111, 381, 470, new Set([14, 7]));
+    t.verifica('as tentativas seguintes não sugerem lugar nenhum',
+      m.pedidos.every((p) => !('target_number_on_island' in (p.arguments || {}))),
+      m.pedidos.map((p) => p.arguments));
   }
   {
     const m = montar([14], 'models');

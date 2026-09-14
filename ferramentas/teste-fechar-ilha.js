@@ -128,5 +128,19 @@ async function montar() {
     const dep = await c.lerFila();
     t.verifica('fila gravada vazia: fica vazia (não ressuscita o plano antigo)', dep.planos.length === 0, dep);
   }
+  /* UMA DESISTÊNCIA POR TENTATIVAS CADUCA. */
+  {
+    const fb = await montar();
+    const a = conta(fb, 'A');
+    const p = await a.lerPlano();
+    await a.registarMeu(p, { falhou: '4 tentativas sem sucesso (posição não válida)', tentativas: 4 });
+    const p2 = await a.lerPlano();
+    t.verifica('a falha fica registada', p2.falhados.A === '4 tentativas sem sucesso (posição não válida)', p2.falhados);
+    await a.registarMeu(p2, { falhou: '', tentativas: 0 });
+    const p3 = await a.lerPlano();
+    t.verifica('uma falha vazia apaga a desistência', !p3.falhados || !p3.falhados.A, p3.falhados);
+    t.verifica('... e o registo da conta continua lá para o resto',
+      !!(await fb.ler('fecharIlhaEnvios/pt125/365_460/A')), await fb.ler('fecharIlhaEnvios/pt125/365_460/A'));
+  }
   t.fim();
 })().catch((e) => { console.error('O TESTE REBENTOU:', e); process.exit(2); });
