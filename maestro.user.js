@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.4700
+// @version      2026.09.12.5000
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2153,7 +2153,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.4700';
+  const MAESTRO_VERSAO = '2026.09.12.5000';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -34278,8 +34278,12 @@ function makeApoioModule(opts) {
    * acaba. */
   function quantasPosso(c) {
     try {
-      /* O campo chama-se `pacote` — é o que o painel edita. */
-      const porEnvio = c.pacote || {};
+      /* O QUE CADA ALVO LEVA: O OBJECTIVO.
+       *
+       * Era o `pacote`, que desapareceu com o modo sem objectivo. O objectivo
+       * diz o que se quer NO ALVO, que é a pergunta certa: quantos alvos mais
+       * é que a tropa desta conta ainda enche. */
+      const porEnvio = c.objetivoPadrao || {};
       const pedidas = Object.keys(porEnvio).filter((u) => Number(porEnvio[u]) > 0);
       if (!pedidas.length) return null;
 
@@ -34977,7 +34981,7 @@ function makeApoioModule(opts) {
    * Uma leitura do Firebase serve a lista inteira. Só conta quem deu sinal na
    * última meia hora: uma conta parada há dias não diz nada do presente. */
   async function totaisNosAlvos() {
-    const out = { porAlvo: {}, contas: 0, ok: false };
+    const out = { porAlvo: {}, casa: {}, contas: 0, ok: false };
     try {
       if (typeof fbLerM !== 'function' || !fbUrlM || !fbUrlM()) return out;
       const d = (await fbLerM(`frota/${mWorld}`)) || {};
@@ -34986,6 +34990,10 @@ function makeApoioModule(opts) {
         const x = d[k] || {};
         if (!x.quando || (agoraS - Number(x.quando)) > 1800) continue;
         out.contas++;
+        const casaDela = (x.apoio || {}).casa || {};
+        for (const u of Object.keys(casaDela)) {
+          out.casa[u] = (out.casa[u] || 0) + (Number(casaDela[u]) || 0);
+        }
         const alvosDela = (x.apoio || {}).alvos || {};
         for (const id of Object.keys(alvosDela)) {
           const u = (alvosDela[id] || {}).u || {};
@@ -35941,7 +35949,6 @@ function makeApoioModule(opts) {
         log(`Apoio: limpei ${removidas} registo(s) de cidades que já não tenho.`);
       }
     })();
-    const pacote = lista.pacote || c.pacote;
 
     /* ===== O QUE JÁ LÁ ESTÁ, SOMADO DE TODAS AS CONTAS ==================
      *
@@ -35993,6 +36000,14 @@ function makeApoioModule(opts) {
     } catch (e) { seErroDeCodigo(e, 'Apoio'); }
 
     /* O objectivo deste alvo: fixo se estiver em revolta, senão o do painel. */
+    /* TODO O ALVO TEM OBJECTIVO.
+     *
+     * Havia dois modos: com objectivo, cada conta mandava a sua parte; sem
+     * objectivo, cada conta mandava um "pacote" fixo e o total era travado por
+     * um limite de cidades. O segundo modo não sabia quanto já lá estava — era
+     * às cegas — e tornava impossível dizer quantos alvos a frota ainda
+     * aguenta. Foi retirado: quem não tiver objectivo próprio usa o padrão do
+     * painel. */
     const objetivoDe = (alvoId) => {
       const auto = (lista.revoltasAuto || {})[String(alvoId)];
       if (auto) return c.objetivoRevolta || {};
@@ -36090,7 +36105,7 @@ function makeApoioModule(opts) {
     for (const alvo of alvos) {
       const jaApoiam = Object.keys(reg)
         .filter((k) => { const m = k.match(/^(\d+)->(\d+)$/); return m && Number(m[2]) === alvo; }).length;
-      if (jaApoiam >= limiteDe(alvo)) continue;
+      void jaApoiam;   // o limite de cidades por alvo saiu com o modo sem objectivo
 
       // rodízio: preferir as cidades que menos alvos apoiam
       const uso = {};
@@ -36166,7 +36181,12 @@ function makeApoioModule(opts) {
       const objAlvo = objetivoDe(alvo);
       const comObjetivo = Object.keys(objAlvo).length > 0;
       let porMandar = null;
-      if (comObjetivo) {
+      if (!comObjetivo) {
+        rotina(`Apoio: ${alvo} não tem objectivo e o padrão do painel está vazio — `
+          + 'não mando nada. Põe um objectivo padrão.');
+        continue;
+      }
+      {
         if (!frotaLida) {
           rotina(`Apoio: ${alvo} tem objectivo, mas a frota não foi lida — `
             + 'sem saber quantas contas há, não mando nada para lá nesta passagem.');
@@ -36191,10 +36211,10 @@ function makeApoioModule(opts) {
       const servindoObjetivo = comObjetivo;
 
       for (const t of candidatas) {
-        if (comObjetivo && !Object.keys(porMandar).length) break;
-        if (!servindoObjetivo && Object.keys(reg).filter((k) => {
-          const m = k.match(/^(\d+)->(\d+)$/); return m && Number(m[2]) === alvo;
-        }).length >= limiteDe(alvo)) break;
+        /* Quem trava é o objectivo: mandada a parte desta conta, pára. O
+         * limite de cidades por alvo existia para o modo sem objectivo, que
+         * já não há. */
+        if (!Object.keys(porMandar).length) break;
 
         /* Esta cidade já disse que não tem tropa nesta passagem: não vale a
          * pena tentá-la para os alvos seguintes. */
@@ -36217,15 +36237,15 @@ function makeApoioModule(opts) {
          *
          * O cálculo antigo dava a cada CIDADE a fatia inteira da conta — era
          * a origem do excesso. */
+        /* O QUE MANDAR: o que ainda falta à parte desta conta.
+         *
+         * O tecto por cidade era cinco pacotes; o pacote desapareceu com o
+         * modo sem objectivo. Cada cidade manda o que tem e o que falta, e o
+         * `porMandar` vai sendo descontado — quando chega a zero, as cidades
+         * seguintes já não mandam. */
         const desejado = {};
-
-        if (comObjetivo) {
-          for (const u of Object.keys(porMandar)) {
-            const tecto = Math.max(1, (Number(pacote[u]) || 0) * 5);
-            desejado[u] = Math.min(Number(porMandar[u]) || 0, tecto);
-          }
-        } else {
-          for (const u of Object.keys(pacote)) desejado[u] = Number(pacote[u]) || 0;
+        for (const u of Object.keys(porMandar)) {
+          desejado[u] = Number(porMandar[u]) || 0;
         }
 
         for (const u of Object.keys(desejado)) {
@@ -36553,12 +36573,6 @@ function makeApoioModule(opts) {
         </div>
 
         <div style="margin:4px 0">
-          Pacote por cidade:
-          E<input type="number" id="ap-sword" value="${c.pacote.sword}" style="width:44px">
-          A<input type="number" id="ap-archer" value="${c.pacote.archer}" style="width:44px">
-          H<input type="number" id="ap-hoplite" value="${c.pacote.hoplite}" style="width:44px">
-          B<input type="number" id="ap-bireme" value="${c.pacote.bireme}" style="width:44px">
-          · máx. <input type="number" id="ap-max" value="${c.maxCidadesPorAlvo}" style="width:44px">
         <div style="margin-top:5px">
           <label><input type="checkbox" id="ap-sotr"${c.evitarTransporteGrande !== false ? ' checked' : ''}>
             não usar transportes grandes</label>
@@ -36621,6 +36635,9 @@ function makeApoioModule(opts) {
           <button id="ap-fora" style="cursor:pointer;font-size:12px" title="lê a Ágora (separador Fora) de todas as tuas cidades e actualiza os números">🔎 ler a Ágora</button>
           <span style="opacity:.55;font-size:12px">“retirar” tira o alvo da lista e manda o apoio de volta</span>
         </div>
+        <div id="ap-capacidade" style="background:var(--mSurf);padding:5px 8px;border-radius:4px;
+          margin-bottom:6px;font-size:12px;opacity:.85">a contar…</div>
+
         <div style="max-height:180px;overflow-y:auto">
           <table style="width:100%;border-collapse:collapse;font-size:13px">
             <tr style="opacity:.6"><td>cidade</td><td>jogador</td><td>tropa total lá (todas as contas)</td><td></td></tr>
@@ -36910,6 +36927,40 @@ function makeApoioModule(opts) {
       comRolamento(() => painel(container, ctx));
     };
 
+  /* QUANTOS ALVOS MAIS É QUE A TROPA EM CASA AINDA COBRE.
+   *
+   * Com o objectivo por alvo e a tropa que as contas ainda têm em casa, a
+   * resposta é uma divisão: a unidade que der para menos alvos é a que manda.
+   * Serve para não pôr no painel mais alvos do que a frota consegue encher. */
+  function quantosAlvosMais(casa, objetivo) {
+    const obj = objetivo || {};
+    const uns = Object.keys(obj).filter((u) => Number(obj[u]) > 0);
+    if (!uns.length) return null;
+    let menor = Infinity;
+    let limita = '';
+    for (const u of uns) {
+      const dá = Math.floor((Number(casa[u]) || 0) / Number(obj[u]));
+      if (dá < menor) { menor = dá; limita = u; }
+    }
+
+    /* E OS TRANSPORTES PARA LEVAR A TROPA TERRESTRE.
+     *
+     * Contar só a tropa dá um número optimista: sem barcos, ela não sai da
+     * ilha. A capacidade vem da frota, já com os porões de cada conta. */
+    let popTerra = 0;
+    for (const u of uns) {
+      const gd = (mUw.GameData.units || {})[u] || {};
+      if (gd.is_naval) continue;
+      popTerra += Number(obj[u]) * (Number(gd.population) || 1);
+    }
+    const capacidade = Number(casa.__capacidade) || 0;
+    if (popTerra > 0) {
+      const porTransportes = Math.floor(capacidade / popTerra);
+      if (porTransportes < menor) { menor = porTransportes; limita = 'transportes'; }
+    }
+    return { quantos: menor === Infinity ? 0 : menor, limita };
+  }
+
     /* OS TOTAIS ENTRAM DEPOIS.
      *
      * Uma leitura do Firebase para a lista toda, sem atrasar o desenho do
@@ -36919,6 +36970,26 @@ function makeApoioModule(opts) {
       try {
         const tt = await totaisNosAlvos();
         if (!tt.ok) return;
+
+        /* Quantos alvos mais é que isto ainda dá. */
+        try {
+          const cel = container.querySelector('#ap-capacidade');
+          if (cel) {
+            const obj = (cfg().objetivoPadrao) || {};
+            const q = quantosAlvosMais(tt.casa, obj);
+            const somaCasa = Object.keys(tt.casa)
+              .filter((k2) => k2 !== '__capacidade')
+              .reduce((s2, k2) => s2 + (Number(tt.casa[k2]) || 0), 0);
+            const nomeU = (u) => ((mUw.GameData.units[u] || {}).name || u);
+            cel.innerHTML = q
+              ? `<b>${q.quantos}</b> alvo(s) mais dava(m) para encher com a tropa em casa `
+                + `(${somaCasa} unidades em ${tt.contas} conta(s); o travão são `
+                + (q.limita === 'transportes'
+                  ? `os transportes: ${tt.casa.__capacidade || 0} de carga em casa).`
+                  : `os ${esc(nomeU(q.limita))}: ${tt.casa[q.limita] || 0} para ${obj[q.limita]} por alvo).`)
+              : '<span style="opacity:.6">sem objectivo definido, não dá para contar alvos.</span>';
+          }
+        } catch (e) { seErroDeCodigo(e, 'Apoio'); }
         for (const id of alvos) {
           const cel = container.querySelector(`[data-total="${id}"]`);
           if (!cel) continue;
@@ -37000,15 +37071,10 @@ function makeApoioModule(opts) {
 
     const g = container.querySelector('#ap-guardar');
     if (g) g.onclick = () => {
+      /* O pacote e o limite de cidades saíram do painel: quem manda é o
+       * objectivo. Um campo que não existe não pode ser lido. */
       guardarCfg({
         ativo: container.querySelector('#ap-on').checked,
-        pacote: {
-          sword: Number(container.querySelector('#ap-sword').value) || 0,
-          archer: Number(container.querySelector('#ap-archer').value) || 0,
-          hoplite: Number(container.querySelector('#ap-hoplite').value) || 0,
-          bireme: Number(container.querySelector('#ap-bireme').value) || 0,
-        },
-        maxCidadesPorAlvo: Number(container.querySelector('#ap-max').value) || 10,
         objetivoPadrao: (() => {
           /* Vazio ou zero = sem objectivo para esse tipo de unidade. */
           const o = {};
@@ -37553,15 +37619,17 @@ function makeFundacaoModule(opts) {
    * centro DENTRO desses oceanos. Sem oceanos, vale só a distância.
    *
    * A ordenação por distância fica a cargo de quem chama, que já a fazia. */
-  async function ilhasPertoDe(centro, oceanos, townIdBase, minimo) {
+  async function ilhasPertoDe(centro, oceanos, townIdBase, minimo, anelDe, anelAte) {
     const achadas = [];
     const vistos = new Set();
     const filtro = (oceanos || []).map(String);
     const cx = Math.floor(Number(centro.x) / CHUNK);
     const cy = Math.floor(Number(centro.y) / CHUNK);
     const quero = Math.max(1, Number(minimo) || 12);
+    const de = Math.max(1, Number(anelDe) || 1);
+    const ate = Math.max(de, Number(anelAte) || 4);
 
-    for (let anel = 1; anel <= 4; anel++) {
+    for (let anel = de; anel <= ate; anel++) {
       /* Todo o anel de uma vez: seis blocos por pedido, com pausa. */
       const querer = [];
       for (let dx = -anel; dx <= anel; dx++) {
@@ -37770,9 +37838,32 @@ function makeFundacaoModule(opts) {
       /* A cidade centro é o EPICENTRO: procura-se à volta dela, em anéis, e
        * não dentro de um oceano. Se também tiveres indicado oceanos, eles
        * valem como filtro — o mais perto do centro, dentro deles. */
-      const ilhas = await ilhasPertoDe(centroC, c.oceanos || [], t.id, 24);
-      for (const i of ilhas) {
-        aTentar.push({ x: i.x, y: i.y, id: i.id, origem: 'perto de ' + c.centroId });
+      /* PROCURAR TÃO LONGE QUANTO FOR PRECISO.
+       *
+       * A procura ia só até quatro anéis e ficava-se pelas primeiras 24 ilhas.
+       * Numa conta com muitas cidades, essas são todas já tuas ou pequenas — e
+       * o módulo desistia sem nunca olhar mais longe (visto em jogo, 14/09:
+       * 24 saltadas, nenhuma tentada). Agora alarga-se em degraus até haver
+       * candidatas que sirvam, ou até o servidor começar a recusar.
+       *
+       * Custa pouco: os blocos vão seis por pedido desde a 4700. */
+      const jaVistas = new Set();
+      const degraus = [[1, 4], [5, 8], [9, 12], [13, 16]];
+      for (const [de, ate] of degraus) {
+        const ilhas = await ilhasPertoDe(centroC, c.oceanos || [], t.id, 24, de, ate);
+        for (const i of ilhas) {
+          const ch = `${i.x}:${i.y}`;
+          if (jaVistas.has(ch)) continue;
+          jaVistas.add(ch);
+          aTentar.push({ x: i.x, y: i.y, id: i.id, origem: 'perto de ' + c.centroId });
+        }
+        /* Candidatas que as tuas regras não descartam à partida: as ilhas
+         * onde já tens cidade não contam, porque essas nunca serão usadas. */
+        const minhasIlhas = new Set((ctx.getMyTowns() || []).map((x) => ilhaDe(x.id)).filter(Boolean));
+        const uteis = aTentar.filter((i) => !minhasIlhas.has(`${Number(i.x)}:${Number(i.y)}`)).length;
+        if (uteis >= 6) break;
+        if (servidorTravadoAgora()) break;
+        rotina(`Fundação: só ${uteis} candidata(s) úteis até ao anel ${ate} — procuro mais longe.`);
       }
       rotina(`Fundação: à volta da cidade ${c.centroId}`
         + ((c.oceanos || []).length ? `, no(s) oceano(s) ${c.oceanos.join(', ')}` : '')
@@ -37804,6 +37895,9 @@ function makeFundacaoModule(opts) {
         + 'não fundo nesta passagem.');
       return;
     }
+
+    /* Porque é que cada candidata foi saltada — para a mensagem final. */
+    const razoes = {};
 
     for (const ilha of aTentar) {
       const chave = `${ilha.x}:${ilha.y}`;
@@ -37847,6 +37941,7 @@ function makeFundacaoModule(opts) {
         const alvoIlha = `${Number(ilha.x)}:${Number(ilha.y)}`;
         const jaTenho = (ctx.getMyTowns() || []).some((x) => ilhaDe(x.id) === alvoIlha);
         if (jaTenho) {
+          razoes[chave] = 'já lá tenho cidade';
           log(`— ${chave}: já tenho uma cidade nesta ilha; salto.`);
           continue;
         }
@@ -37881,6 +37976,7 @@ function makeFundacaoModule(opts) {
          * ilha pequena é pequena para sempre e nem chega a gastar um pedido. */
         const guardado = tamanhoGuardado(ilha.id);
         if (guardado && guardado.total < 20) {
+          razoes[chave] = 'ilha pequena (opção "só ilhas grandes")';
           registarPorque('fundacao', chave, `ilha pequena (${guardado.total} lugares)`);
           continue;
         }
@@ -37894,12 +37990,14 @@ function makeFundacaoModule(opts) {
           continue;
         }
         if (info.total < 20) {
+          razoes[chave] = 'ilha pequena (opção "só ilhas grandes")';
           registarPorque('fundacao', chave, `ilha pequena (${info.total} lugares)`);
           log(`— ${chave}: ilha pequena (${info.total} lugares); salto.`);
           continue;
         }
         if (!info.livres) {
           registarPorque('fundacao', chave, `ilha cheia (${info.ocupados}/${info.total})`);
+          razoes[chave] = 'ilha cheia';
           log(`— ${chave}: ilha grande mas cheia (${info.ocupados}/${info.total}); salto.`);
           continue;
         }
@@ -38068,7 +38166,24 @@ function makeFundacaoModule(opts) {
       }
     }
 
-    log('Fundação: não encontrei lugar livre nas ilhas a tentar.');
+    /* PORQUE É QUE NÃO FUNDOU.
+     *
+     * Dizia sempre "não encontrei lugar livre", mesmo quando havia lugares de
+     * sobra e o que faltou foram ilhas que as tuas regras deixam usar (visto
+     * em jogo, 14/09: 24 ilhas saltadas por serem pequenas ou por já lá teres
+     * cidade, nenhuma por falta de vaga). */
+    const porques = {};
+    try {
+      for (const ch of Object.keys(razoes)) {
+        const p = razoes[ch];
+        if (p) porques[p] = (porques[p] || 0) + 1;
+      }
+    } catch (e) {}
+    const resumo = Object.keys(porques).sort((a, b) => porques[b] - porques[a])
+      .slice(0, 3).map((k) => `${porques[k]}× ${k}`).join(' · ');
+    log('Fundação: nenhuma das ' + aTentar.length + ' ilha(s) candidata(s) serviu'
+      + (resumo ? ` — ${resumo}.` : '.')
+      + ' Se for por tamanho ou por já lá teres cidade, muda as opções no painel.');
   }
 
   /* ============ BOTÃO NA JANELA DE ILHA DO JOGO ========================= */
@@ -39455,7 +39570,39 @@ function makeFrotaModule(opts) {
      *
      * Vai a soma por alvo, não a repartição por cidade — essa fica na cache
      * local de cada conta, e só é precisa a quem for enviar. */
-    const apoio = { alvos: {}, quando: 0 };
+    const apoio = { alvos: {}, casa: {}, quando: 0 };
+
+    /* A TROPA QUE ESTA CONTA TEM EM CASA.
+     *
+     * A frota já dizia o que cada conta tem POSTO nos alvos; faltava o que
+     * ainda tem para dar. Com as duas coisas, o painel do apoio consegue
+     * responder à pergunta que interessa: quantos alvos mais é que a frota
+     * inteira ainda aguenta cobrir. */
+    try {
+      const DEF = ['sword', 'slinger', 'archer', 'hoplite', 'rider', 'chariot', 'bireme'];
+      let capacidade = 0;
+      for (const id of Object.keys(mUw.ITowns.towns || {})) {
+        const t2 = mUw.ITowns.getTown(Number(id));
+        const u = (() => {
+          try { return t2.units() || {}; } catch (e) { return {}; }
+        })();
+        for (const k of DEF) {
+          const n = Number(u[k]) || 0;
+          if (n > 0) apoio.casa[k] = (apoio.casa[k] || 0) + n;
+        }
+        /* OS TRANSPORTES SÃO O VERDADEIRO LIMITE.
+         *
+         * A tropa terrestre não atravessa o mar sozinha. Publica-se a
+         * capacidade de carga em casa, já com os porões desta conta — sem
+         * isto, a conta de "quantos alvos mais" dava um número optimista. */
+        try {
+          const poroes = !!((t2.researches && (t2.researches().attributes || t2.researches()) || {}).berth);
+          capacidade += (Number(u.small_transporter) || 0) * (poroes ? 16 : 10)
+            + (Number(u.big_transporter) || 0) * (poroes ? 32 : 26);
+        } catch (e) {}
+      }
+      if (capacidade > 0) apoio.casa.__capacidade = capacidade;
+    } catch (e) {}
     try {
       const porAlvo = (mUw.__maestroApoioFora && mUw.__maestroApoioFora.porAlvo()) || null;
       if (porAlvo) {
