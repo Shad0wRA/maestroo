@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.6500
+// @version      2026.09.12.6600
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -200,7 +200,7 @@
         n: Math.max(1, Number(quantos) || 1),
       };
       localStorage.setItem(QUER_NC_KEY, JSON.stringify(d));
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'núcleo'); }
   }
 
   function jaNaoQuerNC(quem) {
@@ -208,7 +208,7 @@
       const d = JSON.parse(localStorage.getItem(QUER_NC_KEY) || '{}');
       delete d[quem];
       localStorage.setItem(QUER_NC_KEY, JSON.stringify(d));
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'núcleo'); }
   }
 
   /* Alguém com prioridade acima de `quem` está à espera de um colonizador? */
@@ -448,7 +448,7 @@
         return 'desligado';
       } catch (e) { return 'não consegui: ' + e.message; }
     };
-  } catch (e) {}
+  } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* O interceptor é montado uma vez e fica inerte enquanto o teste estiver
    * desligado: sem isso, ligá-lo obrigaria a recarregar a página. */
@@ -596,7 +596,13 @@
   /* O visto "mundo Olimpo" do painel dos alertas. */
   function mundoOlimpo() {
     try {
-      const v = localStorage.getItem('grepoMaestro_olimpo_v1');
+      /* POR MUNDO, não por navegador.
+       *
+       * A chave era única: ligar o Olimpo num mundo ligava-o em todos os que
+       * partilhassem o perfil do Firefox. Cada mundo tem a sua. */
+      const w = String((uw.Game && uw.Game.world_id) || '');
+      const v = localStorage.getItem('grepoMaestro_olimpo_' + w)
+        || localStorage.getItem('grepoMaestro_olimpo_v1');   // formato antigo
       return v === '1' || v === 'true';
     } catch (e) { return false; }
   }
@@ -695,7 +701,7 @@
         for (const k of ks.slice(0, ks.length - 300)) delete d[k];
       }
       localStorage.setItem(DEMORAS_KEY, JSON.stringify(d));
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'núcleo'); }
   }
 
   /* As demoras de uma cidade minha para um alvo. `null` = não consegui ler.
@@ -1896,10 +1902,45 @@
 
   try { uw.__maestroAvisarCaptcha = avisarCaptcha; } catch (e) {}
 
+  /* ============ ACÇÕES QUE RESPONDEM CALADAS ==========================
+   *
+   * Nem `success` nem `error`. O código dá-as por feitas — e o recrutamento
+   * provou que nem sempre o são. Em vez de apertar às cegas e arriscar partir
+   * o que funciona, regista-se qual foi a acção. Uma vez por tipo.
+   *
+   * Na consola: __maestroRespostasMudas()
+   * ==================================================================== */
+  const respostasMudas = {};
+  function anotarRespostaMuda(url) {
+    try {
+      const u = String(url || '');
+      const acao = (u.match(/[?&]action=([a-z_]+)/i) || [])[1]
+        || (u.match(/action_name['"]?\s*[:=]\s*['"]([A-Za-z]+)/) || [])[1] || '?';
+      const ed = (u.split('/game/')[1] || '').split('?')[0] || '?';
+      const k = ed + ':' + acao;
+      respostasMudas[k] = (respostasMudas[k] || 0) + 1;
+      if (respostasMudas[k] === 1) {
+        guardarNaCaixa('core', `acção sem confirmação do jogo: ${k} — dou-a por feita, `
+          + 'mas fica registada.', true);
+      }
+    } catch (e) {}
+  }
+  try {
+    uw.__maestroRespostasMudas = () => Object.assign({}, respostasMudas);
+    uw.__maestroAnotarRespostaMuda = anotarRespostaMuda;
+  } catch (e) {}
+
   function seErroDeCodigo(e, onde) {
     try {
       const msg = String((e && e.message) || e || '');
-      if (!/is not defined|is not a function|Cannot read propert|of undefined|of null/i.test(msg)) {
+      /* ERROS DE CÓDIGO — E FALHAS A GUARDAR.
+       *
+       * Só se reportavam erros de programação. Mas uma escrita que falha
+       * (disco cheio, quota do navegador, modo privado) perde definições em
+       * silêncio — e era engolida por um `catch` vazio. Passa a contar. */
+      const deEscrita = /quota|storage|QuotaExceeded|exceeded the quota|NS_ERROR_DOM_QUOTA/i.test(msg);
+      if (!deEscrita
+          && !/is not defined|is not a function|Cannot read propert|of undefined|of null/i.test(msg)) {
         return;   // falha prevista: silêncio, como antes
       }
       /* Uma vez por mensagem: senão enche tudo numa passagem. */
@@ -2354,7 +2395,7 @@
       const d = lerUltimasExec();
       d[modId] = Number(quando) || Date.now();
       localStorage.setItem(ULTIMA_EXEC_KEY, JSON.stringify(d));
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'núcleo'); }
   }
 
   /* Tempo gasto por módulo desde que a página abriu: quantas passagens, a
@@ -2395,7 +2436,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.6500';
+  const MAESTRO_VERSAO = '2026.09.12.6600';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -3119,7 +3160,7 @@
       try {
         atualizarPainelEstado();
         if (redesenharPainelAberto) redesenharPainelAberto();
-      } catch (e) {}
+      } catch (e) { seErroDeCodigo(e, 'núcleo'); }
     } catch (e) { seErroDeCodigo(e, 'núcleo'); }
   }
 
@@ -4504,7 +4545,7 @@
         localStorage.setItem(BTN_POS_KEY, JSON.stringify({
           left: parseInt(btn.style.left, 10), top: parseInt(btn.style.top, 10),
         }));
-      } catch (e) {}
+      } catch (e) { seErroDeCodigo(e, 'núcleo'); }
     }
 
     btn.addEventListener('mousedown', (ev) => {
@@ -9886,6 +9927,22 @@ function makeRecrutamentoModule(opts) {
       aplicarNotificacoes(r);
       const j = r && r.json;
       const erro = j && j.error;
+      /* O JOGO CONFIRMOU, RECUSOU, OU FICOU CALADO?
+       *
+       * "Não veio erro" conta por feito — e às vezes não é. A espia de 12/09
+       * mostrou que quase todas as acções respondem com `success`; só o
+       * `build` do recrutamento não responde nada.
+       *
+       * Não se muda o que já funciona: quando a resposta vem calada, mantém-se
+       * o sucesso E fica registado qual foi a acção. Com essa lista, na próxima
+       * revisão aperta-se cada uma com dados em vez de suposições. */
+      if (!erro && !(j && j.success)) {
+        try {
+          const am = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window)
+            .__maestroAnotarRespostaMuda;
+          if (am) am(url);
+        } catch (e2) {}
+      }
       return { ok: !erro, msg: erro || (j && j.success) || 'ok' };
     } catch (e) { return { ok: false, msg: e.message }; }
   }
@@ -9918,6 +9975,22 @@ function makeRecrutamentoModule(opts) {
       aplicarNotificacoes(r);
       const j = r && r.json;
       const erro = j && j.error;
+      /* O JOGO CONFIRMOU, RECUSOU, OU FICOU CALADO?
+       *
+       * "Não veio erro" conta por feito — e às vezes não é. A espia de 12/09
+       * mostrou que quase todas as acções respondem com `success`; só o
+       * `build` do recrutamento não responde nada.
+       *
+       * Não se muda o que já funciona: quando a resposta vem calada, mantém-se
+       * o sucesso E fica registado qual foi a acção. Com essa lista, na próxima
+       * revisão aperta-se cada uma com dados em vez de suposições. */
+      if (!erro && !(j && j.success)) {
+        try {
+          const am = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window)
+            .__maestroAnotarRespostaMuda;
+          if (am) am(url);
+        } catch (e2) {}
+      }
       return { ok: !erro, msg: erro || (j && j.success) || 'ok' };
     } catch (e) { return { ok: false, msg: e.message }; }
   }
@@ -10166,6 +10239,22 @@ function makeRecrutamentoModule(opts) {
       aplicarNotificacoes(r);   // refresca a interface e os modelos
       const j = r && r.json;
       const erro = j && j.error;
+      /* O JOGO CONFIRMOU, RECUSOU, OU FICOU CALADO?
+       *
+       * "Não veio erro" conta por feito — e às vezes não é. A espia de 12/09
+       * mostrou que quase todas as acções respondem com `success`; só o
+       * `build` do recrutamento não responde nada.
+       *
+       * Não se muda o que já funciona: quando a resposta vem calada, mantém-se
+       * o sucesso E fica registado qual foi a acção. Com essa lista, na próxima
+       * revisão aperta-se cada uma com dados em vez de suposições. */
+      if (!erro && !(j && j.success)) {
+        try {
+          const am = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window)
+            .__maestroAnotarRespostaMuda;
+          if (am) am(url);
+        } catch (e2) {}
+      }
       return { ok: !erro, msg: erro || (j && j.success) || 'ok' };
     } catch (e) { return { ok: false, msg: e.message }; }
   }
@@ -10658,6 +10747,22 @@ function makeRecrutamentoModule(opts) {
       aplicarNotificacoes(r);
       const j = r && r.json;
       const erro = j && j.error;
+      /* O JOGO CONFIRMOU, RECUSOU, OU FICOU CALADO?
+       *
+       * "Não veio erro" conta por feito — e às vezes não é. A espia de 12/09
+       * mostrou que quase todas as acções respondem com `success`; só o
+       * `build` do recrutamento não responde nada.
+       *
+       * Não se muda o que já funciona: quando a resposta vem calada, mantém-se
+       * o sucesso E fica registado qual foi a acção. Com essa lista, na próxima
+       * revisão aperta-se cada uma com dados em vez de suposições. */
+      if (!erro && !(j && j.success)) {
+        try {
+          const am = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window)
+            .__maestroAnotarRespostaMuda;
+          if (am) am(url);
+        } catch (e2) {}
+      }
       return { ok: !erro, msg: erro || (j && j.success) || 'ok' };
     } catch (e) { return { ok: false, msg: e.message }; }
   }
@@ -13070,6 +13175,22 @@ function makeHeroisModule(opts) {
       aplicarNotificacoes(r);
       const j = r && r.json;
       const erro = j && j.error;
+      /* O JOGO CONFIRMOU, RECUSOU, OU FICOU CALADO?
+       *
+       * "Não veio erro" conta por feito — e às vezes não é. A espia de 12/09
+       * mostrou que quase todas as acções respondem com `success`; só o
+       * `build` do recrutamento não responde nada.
+       *
+       * Não se muda o que já funciona: quando a resposta vem calada, mantém-se
+       * o sucesso E fica registado qual foi a acção. Com essa lista, na próxima
+       * revisão aperta-se cada uma com dados em vez de suposições. */
+      if (!erro && !(j && j.success)) {
+        try {
+          const am = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window)
+            .__maestroAnotarRespostaMuda;
+          if (am) am(url);
+        } catch (e2) {}
+      }
       return { ok: !erro, msg: erro || (j && j.success) || 'ok' };
     } catch (e) { return { ok: false, msg: e.message }; }
   }
@@ -15137,6 +15258,22 @@ function makeSentinelasModule(opts) {
 
       const j = r && r.json;
       const erro = j && j.error;
+      /* O JOGO CONFIRMOU, RECUSOU, OU FICOU CALADO?
+       *
+       * "Não veio erro" conta por feito — e às vezes não é. A espia de 12/09
+       * mostrou que quase todas as acções respondem com `success`; só o
+       * `build` do recrutamento não responde nada.
+       *
+       * Não se muda o que já funciona: quando a resposta vem calada, mantém-se
+       * o sucesso E fica registado qual foi a acção. Com essa lista, na próxima
+       * revisão aperta-se cada uma com dados em vez de suposições. */
+      if (!erro && !(j && j.success)) {
+        try {
+          const am = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window)
+            .__maestroAnotarRespostaMuda;
+          if (am) am(url);
+        } catch (e2) {}
+      }
       return { ok: !erro, msg: erro || (j && j.success) || 'ok' };
     } catch (e) { return { ok: false, msg: e.message }; }
   }
@@ -15492,6 +15629,22 @@ function makeDiariaModule(opts) {
 
       const j = r && r.json;
       const erro = j && j.error;
+      /* O JOGO CONFIRMOU, RECUSOU, OU FICOU CALADO?
+       *
+       * "Não veio erro" conta por feito — e às vezes não é. A espia de 12/09
+       * mostrou que quase todas as acções respondem com `success`; só o
+       * `build` do recrutamento não responde nada.
+       *
+       * Não se muda o que já funciona: quando a resposta vem calada, mantém-se
+       * o sucesso E fica registado qual foi a acção. Com essa lista, na próxima
+       * revisão aperta-se cada uma com dados em vez de suposições. */
+      if (!erro && !(j && j.success)) {
+        try {
+          const am = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window)
+            .__maestroAnotarRespostaMuda;
+          if (am) am(url);
+        } catch (e2) {}
+      }
       return { ok: !erro, msg: erro || (j && j.success) || 'ok' };
     } catch (e) { return { ok: false, msg: e.message }; }
   }
@@ -15844,7 +15997,7 @@ function makeFabricaNCModule(opts) {
       const d = JSON.parse(armazem.getItem(ORDENS_KEY) || '{}');
       d[String(townId)] = Date.now();
       armazem.setItem(ORDENS_KEY, JSON.stringify(d));
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'FabricaNC'); }
   }
 
   function temOrdemDeNC(townId) {
@@ -20397,7 +20550,9 @@ function makeAlertasModule(opts) {
 
   function mundoOlimpoLocal() {
     try {
-      const v = localStorage.getItem('grepoMaestro_olimpo_v1');
+      const w = String((mUw && mUw.Game && mUw.Game.world_id) || '');
+      const v = localStorage.getItem('grepoMaestro_olimpo_' + w)
+        || localStorage.getItem('grepoMaestro_olimpo_v1');
       return v === '1' || v === 'true';
     } catch (e) { return false; }
   }
@@ -20457,7 +20612,10 @@ function makeAlertasModule(opts) {
       const el = container.querySelector('#alr-olimpo');
       if (el) {
         el.onchange = () => {
-          try { localStorage.setItem('grepoMaestro_olimpo_v1', el.checked ? '1' : '0'); } catch (e) {}
+          try {
+            const w = String((mUw.Game || {}).world_id || '');
+            localStorage.setItem('grepoMaestro_olimpo_' + w, el.checked ? '1' : '0');
+          } catch (e) { seErroDeCodigo(e, 'Alertas'); }
           ctx.log(el.checked
             ? 'Alertas: mundo Olimpo — o grande templo passa a contar na velocidade.'
             : 'Alertas: mundo Olimpo desligado.');
@@ -21064,7 +21222,7 @@ function makeDeusesModule(opts) {
       const d = JSON.parse(armazem.getItem(MINIMOS_KEY) || '{}');
       d[String(townId)] = n;
       armazem.setItem(MINIMOS_KEY, JSON.stringify(d));
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Deuses'); }
   }
 
   /* ---------------------- decisão --------------------------------------- */
@@ -22375,6 +22533,22 @@ function makeDeusesModule(opts) {
         } catch (e) { avisoPublicado = { falhou: e.message }; }
       }
 
+      /* O JOGO CONFIRMOU, RECUSOU, OU FICOU CALADO?
+       *
+       * "Não veio erro" conta por feito — e às vezes não é. A espia de 12/09
+       * mostrou que quase todas as acções respondem com `success`; só o
+       * `build` do recrutamento não responde nada.
+       *
+       * Não se muda o que já funciona: quando a resposta vem calada, mantém-se
+       * o sucesso E fica registado qual foi a acção. Com essa lista, na próxima
+       * revisão aperta-se cada uma com dados em vez de suposições. */
+      if (!erro && !(j && j.success)) {
+        try {
+          const am = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window)
+            .__maestroAnotarRespostaMuda;
+          if (am) am(url);
+        } catch (e2) {}
+      }
       return { ok: !erro, msg: erro || (j && j.success) || 'ok' };
     } catch (e) { return { ok: false, msg: e.message }; }
   }
@@ -22465,10 +22639,10 @@ function makeDeusesModule(opts) {
           try {
             const acorda = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroAcordar;
             if (acorda) { acorda('feiticos'); acorda('recrutamento'); }
-          } catch (e) {}
+          } catch (e) { seErroDeCodigo(e, 'Deuses'); }
         }
       } catch (e) { seErroDeCodigo(e, 'Deuses'); }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Deuses'); }
 
     /* NÃO CONSEGUI LER ≠ NADA A CAMINHO.
      *
@@ -23865,7 +24039,7 @@ function makeEsquivaModule(opts) {
       d[k] = (d[k] || []).filter((t) => (Date.now() - t) < 24 * 3600 * 1000);
       d[k].push(Number(quando) || Date.now());
       armazem.setItem(MEUS_ENVIOS_KEY, JSON.stringify(d));
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Esquiva'); }
   }
 
   /* No regresso, a "origem" do movimento é o alvo que ataquei. Se eu ataquei
@@ -23875,7 +24049,7 @@ function makeEsquivaModule(opts) {
   try {
     const w2 = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window);
     w2.__maestroAnotarAtaqueMeu = (alvoId) => anotarEnvioMeu(alvoId, Date.now());
-  } catch (e) {}
+  } catch (e) { seErroDeCodigo(e, 'Esquiva'); }
 
   function pareceRegresso(a) {
     try {
@@ -27732,6 +27906,22 @@ function makeTrocaCidadesModule(opts) {
       aplicarNotificacoes(r);   // refresca a interface e os modelos
       const j = r && r.json;
       const erro = j && j.error;
+      /* O JOGO CONFIRMOU, RECUSOU, OU FICOU CALADO?
+       *
+       * "Não veio erro" conta por feito — e às vezes não é. A espia de 12/09
+       * mostrou que quase todas as acções respondem com `success`; só o
+       * `build` do recrutamento não responde nada.
+       *
+       * Não se muda o que já funciona: quando a resposta vem calada, mantém-se
+       * o sucesso E fica registado qual foi a acção. Com essa lista, na próxima
+       * revisão aperta-se cada uma com dados em vez de suposições. */
+      if (!erro && !(j && j.success)) {
+        try {
+          const am = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window)
+            .__maestroAnotarRespostaMuda;
+          if (am) am(url);
+        } catch (e2) {}
+      }
       return { ok: !erro, msg: erro || (j && j.success) || 'ok' };
     } catch (e) { return { ok: false, msg: e.message }; }
   }
@@ -31542,6 +31732,22 @@ function makeMissoesModule(opts) {
       aplicarNotificacoes(r);
       const j = r && r.json;
       const erro = j && j.error;
+      /* O JOGO CONFIRMOU, RECUSOU, OU FICOU CALADO?
+       *
+       * "Não veio erro" conta por feito — e às vezes não é. A espia de 12/09
+       * mostrou que quase todas as acções respondem com `success`; só o
+       * `build` do recrutamento não responde nada.
+       *
+       * Não se muda o que já funciona: quando a resposta vem calada, mantém-se
+       * o sucesso E fica registado qual foi a acção. Com essa lista, na próxima
+       * revisão aperta-se cada uma com dados em vez de suposições. */
+      if (!erro && !(j && j.success)) {
+        try {
+          const am = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window)
+            .__maestroAnotarRespostaMuda;
+          if (am) am(url);
+        } catch (e2) {}
+      }
       return { ok: !erro, msg: erro || (j && j.success) || 'ok' };
     } catch (e) { return { ok: false, msg: e.message }; }
   }
@@ -36862,7 +37068,7 @@ function makeApoioModule(opts) {
               const rf = JSON.parse(armazem.getItem(K) || '{}');
               rf[String(alvo)] = Date.now();
               armazem.setItem(K, JSON.stringify(rf));
-            } catch (e) {}
+            } catch (e) { seErroDeCodigo(e, 'Apoio'); }
             break;
           }
 
@@ -37874,7 +38080,7 @@ function makeFundacaoModule(opts) {
       const d = JSON.parse(armazem.getItem(ILHAS_KEY) || '{}');
       d[String(islandId)] = { total: Number(total), aldeias: Number(aldeias) || 0 };
       armazem.setItem(ILHAS_KEY, JSON.stringify(d));
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Fundacao'); }
   }
 
   /* ============ BLOCOS DO MAPA: EM LOTE E COM TRAVÃO =================
@@ -40023,7 +40229,7 @@ function makeFrotaModule(opts) {
         jogo.bp24 = bp - (Number(ref.bp) || 0);
         jogo.horas = Math.round((agoraS - Number(ref.t)) / 3600);
       }
-    } catch (e) {}
+    } catch (e) { seErroDeCodigo(e, 'Frota'); }
 
     /* ---- O APOIO QUE ESTA CONTA TEM EM CADA ALVO -------------------------
      *
