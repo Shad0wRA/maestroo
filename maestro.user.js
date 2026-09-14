@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.6600
+// @version      2026.09.12.6800
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2436,7 +2436,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.6600';
+  const MAESTRO_VERSAO = '2026.09.12.6800';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -20412,6 +20412,78 @@ function makeAlertasModule(opts) {
       novosAtaques.length = 0;
       for (const a of sobram) novosAtaques.push(a);
     }
+
+    /* ============ RECLASSIFICAR TUDO, A CADA PASSAGEM ==================
+     *
+     * As marcas de colonizador só se escreviam na PRIMEIRA vez que o ataque
+     * era visto — e é aí que a classificação vale menos: a viagem medida
+     * ainda é curta, tudo parece rápido, e um colonizador passa por navio de
+     * guerra. Depois nunca mais era revista.
+     *
+     * Resultado visto em jogo (14/09): nove ataques a caminho, um deles com
+     * colonizador, nenhum marcado — e o módulo dos feitiços, que depende
+     * destas marcas, nunca lançou tempestade nenhuma.
+     *
+     * Agora a classificação é refeita em TODAS as passagens, para todos os
+     * ataques a caminho.
+     *
+     * ATENÇÃO À RAZÃO, que é fácil de errar: a medição NÃO melhora com o
+     * tempo. A viagem é medida desde que o comando foi visto, e essa hora não
+     * muda; e a prova pelo tempo que FALTA só aperta quando falta MUITO —
+     * quanto mais perto da chegada, mais alto fica o máximo possível e menos
+     * ele diz. As duas contas valem sobretudo CEDO.
+     *
+     * O que a repetição dá é outra coisa, e é real: um ataque classificado
+     * ontem foi-o com as regras de ontem. Quando as regras mudam — mais
+     * combinações de bónus, o visto do Olimpo, a mesma ilha — os ataques já
+     * vistos nunca eram reavaliados e ficavam mal classificados para sempre.
+     * Também apanha o caso de a primeira leitura ter falhado.
+     *
+     * O aviso continua a sair uma vez por vaga: o que muda é a marca, e um
+     * aviso extra quando um ataque que parecia normal se revela colonizador.
+     * ================================================================== */
+    try {
+      const marcas = JSON.parse(armazem.getItem('grepoAlertas_nc_v1') || '{}');
+      const agoraS = agoraJogo();
+      let mexeu = false;
+
+      for (const a of movs) {
+        const cid = Number(a.command_id || a.id) || 0;
+        if (!cid || marcas[cid]) continue;              // já marcado: nada a fazer
+        const i = analisar(a);
+        if (!(i.cls && i.cls.nc)) continue;
+
+        marcas[cid] = Number(a.arrival_at) || 0;
+        mexeu = true;
+
+        /* Se já tinha sido avisado como normal, diz-se agora o que é. */
+        if (vistos[cid]) {
+          const falta = Number(a.arrival_at) - agoraS;
+          log(`🚨 Reclassificado: o ataque de ${a.town_name_origin || '?'} a `
+            + `${a.town_name_destination || a.target_town_id} PODE trazer colonizador `
+            + `(${i.cls.cat}) — chega em ${Math.max(0, Math.round(falta / 60))} min.`);
+          try {
+            if (ctx.avisarDiscord) {
+              await ctx.avisarDiscord('ataqueNC', {
+                titulo: '🚨 Reclassificado: pode trazer COLONIZADOR',
+                descricao: `Um ataque que parecia normal foi reclassificado.\n`
+                  + `**${a.town_name_origin || '?'}** → **${a.town_name_destination || a.target_town_id}**`,
+                campos: [
+                  { nome: 'Chega', valor: hhmm(a.arrival_at) },
+                  { nome: 'Porquê', valor: String(i.cls.porque || i.cls.cat).slice(0, 200) },
+                ],
+              });
+            }
+          } catch (e) { seErroDeCodigo(e, 'Alertas'); }
+        }
+      }
+
+      /* O que já chegou sai da lista, para não crescer sem fim. */
+      for (const k of Object.keys(marcas)) {
+        if (Number(marcas[k]) && Number(marcas[k]) < agoraS - 600) { delete marcas[k]; mexeu = true; }
+      }
+      if (mexeu) armazem.setItem('grepoAlertas_nc_v1', JSON.stringify(marcas));
+    } catch (e) { seErroDeCodigo(e, 'Alertas'); }
 
     /* ---- avisar por VAGA, não ataque a ataque ---- */
     const reforcos = lerReforcos();
