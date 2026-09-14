@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.4500
+// @version      2026.09.12.4600
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2153,7 +2153,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.4500';
+  const MAESTRO_VERSAO = '2026.09.12.4600';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -24619,11 +24619,19 @@ function makeEsquivaModule(opts) {
       const nc = ordenados.find((i) => i.nc) || ultimo;
       const antesDoNC = ordenados.filter((i) => !i.nc && i.arrival < nc.arrival);
       if (!antesDoNC.length) return null;               // só vem o NC: não esquivar
-      S = antesDoNC[0].arrival - c.antesDoImpacto;
+      S = antesDoNC[0].arrival - c.antesDoImpacto - preparoConhecido();
       casa = nc.arrival - c.antesDoNC;                  // em casa mesmo antes do NC
       tipo = 'NC';
     } else {
-      S = primeiro.arrival - c.antesDoImpacto;
+      /* A MARGEM TEM DE CHEGAR PARA O TRABALHO TODO.
+       *
+       * Eram 20 s fixos entre a saída e o impacto. Mas entre o temporizador
+       * disparar e a primeira tropa sair passam-se segundos a actualizar
+       * contadores, a carregar a ilha e a fazer os envios: numa cidade com
+       * três envios foram 36 s, e a tropa saiu DEPOIS do impacto — a esquiva
+       * falhou (visto em jogo, 14/09, ataque às 11:17:58). Junta-se o tempo
+       * que a preparação costuma levar. */
+      S = primeiro.arrival - c.antesDoImpacto - preparoConhecido();
       casa = ultimo.arrival + c.depoisDoImpacto;
       tipo = 'normal';
     }
@@ -24671,10 +24679,44 @@ function makeEsquivaModule(opts) {
   }
 
   /* ---------------------- execução agendada ----------------------------- */
+  /* QUANTO TEMPO DEMORA A ESQUIVA A SAIR, depois de o temporizador disparar.
+   *
+   * Actualizar os contadores, carregar a ilha, escolher o destino e mandar os
+   * envios leva segundos — e com vários envios, dezenas. Guarda-se o pior
+   * tempo recente para a margem de saída o incluir. */
+  const PREPARO_KEY = 'grepoEsquiva_preparo_v1';
+  function preparoConhecido() {
+    try {
+      const v = Number(armazem.getItem(PREPARO_KEY));
+      return Number.isFinite(v) && v > 0 ? Math.min(v, 180) : 0;
+    } catch (e) { return 0; }
+  }
+  function anotarPreparo(segundos) {
+    try {
+      const s = Math.max(0, Math.round(Number(segundos) || 0));
+      const antes = preparoConhecido();
+      /* Sobe depressa, desce devagar: o que interessa é não voltar a chegar
+       * tarde, e um arranque rápido não prova que o próximo também o seja. */
+      const novo = s > antes ? s : Math.round(antes * 0.8 + s * 0.2);
+      armazem.setItem(PREPARO_KEY, String(Math.min(180, novo)));
+    } catch (e) { seErroDeCodigo(e, 'Esquiva'); }
+  }
+
   async function executarPlano(ctx, plano) {
     const c = cfg();
     const log = ctx.log;
+    const comecou = agoraJogo();
     if (agoraJogo() == null) { log('Sem relógio do servidor — não ajo às cegas.'); return; }
+
+    /* JÁ PASSOU? Mandar a tropa embora depois de o ataque bater não esquiva
+     * nada — só a põe na rua e obriga a cancelar. */
+    const impactoPlano = Number(plano.impacto) || 0;
+    if (impactoPlano && comecou > impactoPlano) {
+      log(`⚠️ Esquiva ${plano.townId}: o ataque já bateu há ${comecou - impactoPlano}s — `
+        + 'não mando a tropa para a rua. Vou passar a sair mais cedo.');
+      anotarPreparo(preparoConhecido() + (comecou - impactoPlano) + 15);
+      return;
+    }
     const cidades = minhasCidades();
     const alvo = cidades.find((x) => x.id === Number(plano.townId));
     const nome = alvo ? alvo.name : plano.townId;
@@ -24857,6 +24899,13 @@ function makeEsquivaModule(opts) {
       if (comandos.length > 1) await ctx.sleep(ctx.rand(300, 600));
     }
     if (!enviados.length) return;
+    /* Quanto tempo levou desde o temporizador disparar até a tropa estar na
+     * rua: é isto que a margem da próxima esquiva tem de incluir. */
+    try {
+      const demorou = agoraJogo() - comecou;
+      if (Number.isFinite(demorou) && demorou >= 0) anotarPreparo(demorou + 5);
+    } catch (e) { seErroDeCodigo(e, 'Esquiva'); }
+
     log(`🏃 ${nome}: tropas enviadas para ${esc.destino.name} `
       + `(esquiva ${plano.tipo}${enviados.length > 1 ? ', ' + enviados.join(' + ') : ''}).`);
 
@@ -25447,7 +25496,7 @@ function makeEsquivaModule(opts) {
             townId: Number(townId), daMain,
             S: t, C: t + Math.max(5, Math.floor(faltaImpacto / 2)),
             casa: impacto + (Number(c.depoisDoImpacto) || 15),
-            tipo: tempos.tipo,
+            tipo: tempos.tipo, impacto,
           };
           planos[chave] = plano2;
           gravarPlanos(planos);
@@ -25474,6 +25523,9 @@ function makeEsquivaModule(opts) {
       planos[chave] = {
         townId: Number(townId), daMain, origemAtaque,
         S: tempos.S, C: tempos.C, casa: tempos.casa, tipo: tempos.tipo,
+        /* A hora do impacto: serve para não mandar a tropa para a rua depois
+         * de o ataque já ter batido, e para medir o atraso da preparação. */
+        impacto: Number(impactos[0].arrival) || 0,
       };
       /* De onde veio a informação — para se saber se o aviso da main está a
        * funcionar ou se foi o jogo que acabou por trazer o ataque. */
