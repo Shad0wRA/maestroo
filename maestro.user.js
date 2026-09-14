@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.4400
+// @version      2026.09.12.4500
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2153,7 +2153,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.4400';
+  const MAESTRO_VERSAO = '2026.09.12.4500';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -42051,7 +42051,33 @@ function makeReforcoModule(opts) {
    *
    * Devolve a lista (normalmente um só bloco), ou `null` se os modelos não
    * estiverem carregados — "não sei" não se confunde com "já lá não está". */
-  function blocosEm(origemId, destinoId) {
+  async function blocosEm(origemId, destinoId) {
+    const pelosModelos = blocosPelosModelos(origemId, destinoId);
+    if (pelosModelos === null || pelosModelos.length) return pelosModelos;
+
+    /* OS MODELOS NÃO CHEGAM PARA DIZER QUE JÁ LÁ NÃO ESTÁ.
+     *
+     * Os modelos `Units` são incompletos — já se tinha visto numa multi com
+     * cinco blocos em que faltava um. Uma lista sem o bloco passava por
+     * "morreu no ataque ou foi retirada": o registo era apagado e a tropa
+     * ficava parada no destino para sempre (visto em jogo, 14/09, quatro
+     * cidades de uma vez em 55.9).
+     *
+     * Antes de dar a tropa por perdida, pergunta-se à Ágora da ORIGEM, que é
+     * a leitura fiável para blocos de apoio. */
+    try {
+      const api = mUw.__maestroApoioFora;
+      if (!api || !api.daCidade) return null;
+      const blocos = await api.daCidade(Number(origemId));
+      if (blocos == null) return null;                    // não consegui ler
+      return blocos
+        .filter((b) => Number(b.alvoId) === Number(destinoId))
+        .map((b) => ({ id: Number(b.unitsId) || 0, unidades: b.unidades || {} }))
+        .filter((b) => Object.keys(b.unidades).length);
+    } catch (e) { seErroDeCodigo(e, 'Reforco'); return null; }
+  }
+
+  function blocosPelosModelos(origemId, destinoId) {
     try {
       const mods = mUw.MM.getModels().Units;
       if (!mods || !Object.keys(mods).length) return null;
@@ -42209,7 +42235,7 @@ function makeReforcoModule(opts) {
        * era insistir. */
       if (Number(e.proxima) > agora()) continue;
 
-      const blocos = blocosEm(e.origem, e.destino);
+      const blocos = await blocosEm(e.origem, e.destino);
       if (blocos == null) {
         rotina(`Reforço: não consegui ler a tropa de ${nomeDe(e.origem)} em `
           + `${nomeDe(e.destino)} — tento na próxima passagem.`);
