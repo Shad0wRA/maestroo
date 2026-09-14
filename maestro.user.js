@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.6300
+// @version      2026.09.12.6500
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -649,6 +649,119 @@
   }
 
   function limiteColonizador() { return velocidadeColonizador() * tolerânciaNC(); }
+
+  /* ============ AS DEMORAS QUE O JOGO DÁ PARA CADA ALVO ================
+   *
+   * A janela de atacar devolve, para o alvo escolhido, o tempo de viagem de
+   * CADA unidade — já com a distância, a velocidade do mundo e os bónus da
+   * cidade (confirmado em jogo, 14/09):
+   *
+   *   units.sword.duration = 625 · speed 26,4
+   *   units.colonize_ship.duration = 793 …
+   *
+   * Isto é uma MEDIÇÃO do próprio jogo, não uma estimativa minha. Vale nos
+   * dois casos:
+   *
+   *  • entre ilhas, para comparar tempo com tempo em vez de velocidades;
+   *  • na MESMA ILHA, onde a distância entre ilhas é zero e não há
+   *    velocidade nenhuma para medir — era aí que um colonizador passava por
+   *    "tropa a pé" (14/09).
+   *
+   * A constante muda de alvo para alvo (4867, 13817, 18470… medidos na mesma
+   * ilha), por isso guarda-se POR PAR de cidades. Não muda com o tempo: uma
+   * leitura serve para sempre.
+   *
+   * Custa um pedido por alvo novo. Por isso: uma de cada vez, com o travão do
+   * servidor respeitado.
+   *
+   * SUPOSIÇÃO, escrita para não se perder: leio da MINHA cidade para o alvo,
+   * e o ataque vem ao contrário. A distância é simétrica, por isso o tempo
+   * deve ser o mesmo — mas os bónus são os DELE, e é para isso que serve a
+   * margem das combinações. */
+  const DEMORAS_KEY = 'grepoMaestro_demoras_v1';
+
+  function lerDemoras() {
+    try { return JSON.parse(localStorage.getItem(DEMORAS_KEY) || '{}') || {}; }
+    catch (e) { return {}; }
+  }
+  function guardarDemora(deId, paraId, dados) {
+    try {
+      const d = lerDemoras();
+      d[`${Number(deId)}>${Number(paraId)}`] = dados;
+      /* Não deixar crescer sem fim: ficam as 300 mais recentes. */
+      const ks = Object.keys(d);
+      if (ks.length > 300) {
+        ks.sort((a, b) => (d[a].quando || 0) - (d[b].quando || 0));
+        for (const k of ks.slice(0, ks.length - 300)) delete d[k];
+      }
+      localStorage.setItem(DEMORAS_KEY, JSON.stringify(d));
+    } catch (e) {}
+  }
+
+  /* As demoras de uma cidade minha para um alvo. `null` = não consegui ler.
+   * Não repete o pedido: o que já se leu fica guardado. */
+  async function demorasPara(minhaCidade, alvoId) {
+    const chave = `${Number(minhaCidade)}>${Number(alvoId)}`;
+    const guardado = lerDemoras()[chave];
+    if (guardado && guardado.u) return guardado;
+    if (servidorTravado()) return null;
+    try {
+      const url = uw.location.origin + '/game/town_info?town_id=' + Number(minhaCidade)
+        + '&action=attack&h=' + uw.Game.csrfToken
+        + '&json=' + encodeURIComponent(JSON.stringify({
+            target_id: Number(alvoId), town_id: Number(minhaCidade), nl_init: true }))
+        + '&_=' + Date.now();
+      const r = await uw.fetch(url, {
+        headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
+      }).then(lerRespostaComum);
+      const j = (r && r.json && r.json.json) || (r && r.json) || {};
+      const us = j.units || {};
+      const out = { u: {}, prep: Number(j.runtime_setup_time) || 300, quando: Date.now() };
+      for (const k of Object.keys(us)) {
+        const d = Number(us[k].duration);
+        if (d > 0) out.u[k] = d;
+      }
+      if (!Object.keys(out.u).length) return null;
+      guardarDemora(minhaCidade, alvoId, out);
+      return out;
+    } catch (e) { return null; }
+  }
+
+  /* Que unidades explicam uma viagem que DUROU `segundos`, entre estas duas
+   * cidades. Compara tempo com tempo: a demora que o jogo dá é a da unidade
+   * sem bónus nenhum, e os bónus do atacante só a podem ENCURTAR — por isso
+   * cada unidade explica desde a demora dela a dividir pelo bónus máximo até
+   * à demora inteira. */
+  function unidadesQueExplicamPorTempo(demoras, segundos, ehColonizador) {
+    const out = [];
+    if (!demoras || !(segundos > 0)) return out;
+    const gd = uw.GameData.units || {};
+    for (const id of Object.keys(demoras.u)) {
+      const base = Number(demoras.u[id]);
+      if (!(base > 0)) continue;
+      const naval = !!(gd[id] || {}).is_naval;
+      let melhor = null;
+      for (const c of combinacoes(naval, id === 'colonize_ship')) {
+        const esperado = demoras.prep + (base - demoras.prep) / c.f;
+        const desvio = Math.abs(esperado - segundos) / esperado;
+        if (desvio > FOLGA_MEDICAO_NC) continue;
+        if (!melhor || desvio < melhor.desvio) melhor = { desvio, bonus: c.nome };
+      }
+      if (melhor) out.push({ id, naval, desvio: melhor.desvio, bonus: melhor.bonus });
+      void ehColonizador;
+    }
+    return out.sort((a, b) => a.desvio - b.desvio);
+  }
+
+  try {
+    uw.__maestroDemoras = {
+      ler: demorasPara,
+      explicam: unidadesQueExplicamPorTempo,
+      /* O que já está guardado, sem pedido nenhum — para quem precisa de
+       * decidir na hora. */
+      guardadas: (de, para) => lerDemoras()[`${Number(de)}>${Number(para)}`] || null,
+    };
+  } catch (e) {}
 
   /* As unidades cuja velocidade explica o tempo observado.
    *
@@ -2282,7 +2395,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.6300';
+  const MAESTRO_VERSAO = '2026.09.12.6500';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -24364,6 +24477,53 @@ function makeEsquivaModule(opts) {
     } catch (e) { return null; }
   }
 
+  /* Na mesma ilha: o que a demora do jogo diz sobre este ataque.
+   *
+   * Devolve `true` (pode trazer colonizador) enquanto não houver resposta —
+   * e a leitura é pedida em segundo plano, para a passagem seguinte já
+   * decidir com dados. */
+  function mesmaIlhaTrazNC(a, alvo) {
+    void alvo;
+    try {
+      const api = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroDemoras;
+      if (!api) return true;
+
+      const minhaCidade = Number(a.target_town_id);
+      const atacante = Number(a.home_town_id);
+      if (!minhaCidade || !atacante) return true;
+
+      const dem = api.guardadas(minhaCidade, atacante);
+      if (!dem) {
+        /* Ainda não se sabe: pede-se agora e a passagem seguinte já decide.
+         * Até lá, assume-se o pior. */
+        Promise.resolve(api.ler(minhaCidade, atacante)).then((d) => {
+          if (d) rotina(`Esquiva: já sei o que cada unidade demora de ${atacante} `
+            + `para ${minhaCidade} — a próxima passagem já decide.`);
+        }).catch(() => {});
+        return true;
+      }
+
+      /* Quanto durou esta viagem: desde a partida, ou desde que a vimos. */
+      const rv = primeiraVezQueVi(a);
+      const partida = a.started_at || (rv && rv.quando);
+      if (!partida) return true;
+      const durou = Number(a.arrival_at) - Number(partida);
+      if (!(durou > 0)) return true;
+
+      const explicam = api.explicam(dem, durou);
+      if (!explicam.length) return true;                      // nada explica: não arrisco
+      const nc = explicam.some((x) => x.id === 'colonize_ship');
+      if (nc) {
+        rotina(`Esquiva: ataque na mesma ilha compatível com colonizador `
+          + `(${explicam.map((x) => x.id).join(', ')}).`);
+        return true;
+      }
+      rotina(`Esquiva: ataque na mesma ilha — ${explicam[0].id} explica o tempo `
+        + `(${explicam[0].bonus}); não é colonizador.`);
+      return false;
+    } catch (e) { return true; }
+  }
+
   function pareceNC(a, alvo, c) {
     try {
       const o = coordsOrigem(a);
@@ -24376,15 +24536,17 @@ function makeEsquivaModule(opts) {
       if (![ox, oy, ax, ay].every(Number.isFinite)) return false;
       const dist = Math.sqrt(Math.pow(ox - ax, 2) + Math.pow(oy - ay, 2));
 
-      /* MESMA ILHA: NÃO DÁ PARA MEDIR, LOGO ASSUME-SE O PIOR.
+      /* MESMA ILHA: PERGUNTA-SE AO JOGO QUANTO DEMORA CADA UNIDADE.
        *
-       * Com distância zero não há velocidade para comparar. Estava aqui a
-       * assumir-se que um colonizador não vem da própria ilha — e vem: uma
-       * conquista dentro da ilha foi tratada como tropa a pé (14/09).
+       * Com distância zero não há velocidade para comparar, e assumia-se que
+       * um colonizador não vinha da própria ilha — e vem: uma conquista dentro
+       * da ilha foi tratada como tropa a pé (14/09).
        *
-       * Como não se pode medir, vale a regra da casa: perder tropa é mau,
+       * A janela de atacar dá a demora de CADA unidade para aquele alvo, já
+       * com a distância e a velocidade do mundo: compara-se tempo com tempo.
+       * Enquanto a leitura não existir, assume-se o pior — perder tropa é mau,
        * perder uma cidade é muito pior. */
-      if (!(dist > 0)) return true;
+      if (!(dist > 0)) return mesmaIlhaTrazNC(a, alvo);
 
       /* QUANDO É QUE UM ATAQUE TRAZ COLONIZADOR.
        *
@@ -36901,7 +37063,7 @@ function makeApoioModule(opts) {
           + 'principal — as outras seguem sozinhas.</div>'}
         <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px">
           <b style="font-size:13px">Alvos apoiados</b>
-          <button id="ap-nomes" style="cursor:pointer;font-size:12px" title="traz a lista partilhada e procura os nomes que faltam">🔄 actualizar</button>
+          <button id="ap-nomes" style="cursor:pointer;font-size:12px" title="traz a lista partilhada e procura os nomes que faltam (com Shift: esquece os nomes e procura todos de novo) — procura os nomes que faltam">🔄 actualizar</button>
           <button id="ap-adoptar" style="cursor:pointer;font-size:12px" title="regista o apoio que já está nos alvos, para o repor passar a saber o que se perde">📌 adoptar</button>
           <button id="ap-fora" style="cursor:pointer;font-size:12px" title="lê a Ágora (separador Fora) de todas as tuas cidades e actualiza os números">🔎 ler a Ágora</button>
           <span style="opacity:.55;font-size:12px">“retirar” tira o alvo da lista e manda o apoio de volta</span>
@@ -37287,7 +37449,9 @@ function makeApoioModule(opts) {
     })();
 
     const btN = container.querySelector('#ap-nomes');
-    if (btN) btN.onclick = async () => {
+    if (btN) btN.onclick = async (ev) => {
+      /* Com Shift: esquece os nomes e procura-os todos de novo. */
+      const forcar = !!(ev && ev.shiftKey);
       /* TRAZER A LISTA PRIMEIRO.
        *
        * O botão percorria a lista que estava em memória desde que o painel
@@ -37299,15 +37463,22 @@ function makeApoioModule(opts) {
       btN.disabled = true;
       btN.textContent = 'a actualizar...';
 
-      /* O BOTÃO FORÇA A RELEITURA DOS NOMES.
+      /* O BOTÃO JÁ NÃO APAGA OS NOMES TODOS.
        *
-       * Não faz sentido carregar em "actualizar" e continuar a ver um dono
-       * antigo à espera que as 24 h passem. Deitam-se fora os nomes dos
-       * alvos, para serem procurados de novo. */
-      try {
-        for (const id of alvos) delete cacheCidades[Number(id)];
-        gravarNomes();
-      } catch (e) { seErroDeCodigo(e, 'Apoio'); }
+       * Apagava-os para forçar a releitura — e assim cada clique obrigava a
+       * redescobrir a lista inteira: os alvos sem movimentos caíam no modo
+       * lento, um pedido cada, e o servidor respondia 429 (visto em jogo,
+       * 14/09, quatro de uma vez). Cada 429 pára o maestro dois minutos.
+       *
+       * Agora só se procura o que falta. Para forçar a releitura de um dono
+       * que mudou, carrega com a tecla Shift. */
+      if (forcar) {
+        try {
+          for (const id of alvos) delete cacheCidades[Number(id)];
+          gravarNomes();
+          ctx.log('Apoio: nomes esquecidos — vou procurá-los todos de novo.');
+        } catch (e) { seErroDeCodigo(e, 'Apoio'); }
+      }
 
       let atuais = alvos;
       try {
