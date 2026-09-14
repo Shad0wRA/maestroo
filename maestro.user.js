@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.6800
+// @version      2026.09.12.6900
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2436,7 +2436,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.6800';
+  const MAESTRO_VERSAO = '2026.09.12.6900';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -42812,6 +42812,42 @@ function makeReforcoModule(opts) {
 
   /* ---------------------- as cidades que podem ajudar -------------------- */
 
+  /* ============ TROPA JÁ COMPROMETIDA NÃO SE MANDA =====================
+   *
+   * A esquiva e o encaixe agendam envios: a tropa está em casa, mas já tem
+   * destino e hora. Se o reforço a levar entretanto, o plano chega à hora e
+   * não encontra nada — a esquiva não esquiva, e a rajada do encaixe sai
+   * incompleta.
+   *
+   * Por isso, uma cidade com envio agendado fica de fora do reforço até o
+   * plano sair ou expirar. É mais simples e mais seguro do que tentar
+   * reservar unidade a unidade: os planos guardam o que vão levar, mas a
+   * tropa muda entre o agendamento e a saída.
+   *
+   * Os planos vivem nas chaves dos próprios módulos — lêem-se em bruto, para
+   * não pôr o reforço a depender deles. */
+  function cidadesComEnvioAgendado() {
+    const fora = new Set();
+    const agoraS = (() => {
+      try { return Math.floor(mUw.Timestamp.now()); } catch (e) { return Math.floor(Date.now() / 1000); }
+    })();
+    for (const chave of ['grepoEsquiva_planos_v1', 'grepoEncaixe_planos_v1']) {
+      try {
+        const d = JSON.parse(armazem.getItem(chave) || '{}') || {};
+        for (const k of Object.keys(d)) {
+          const p = d[k] || {};
+          const cidade = Number(p.townId || p.origem || p.cidade) || 0;
+          if (!cidade) continue;
+          /* Um plano cuja hora já passou há muito não prende nada. */
+          const quando = Number(p.S || p.sai || p.quando) || 0;
+          if (quando && quando < agoraS - 3600) continue;
+          fora.add(cidade);
+        }
+      } catch (e) { seErroDeCodigo(e, 'Reforco'); }
+    }
+    return fora;
+  }
+
   function cidadesDosGrupos(nomes, ctx) {
     try {
       const grupos = mUw.MM.getCollections().TownGroup[0].models.map((m) => m.attributes);
@@ -43365,6 +43401,10 @@ function makeReforcoModule(opts) {
      * O ataque que bate primeiro é servido primeiro: a tropa que não chegasse
      * a esse também não o defendia. */
     const ajudantes = cidadesDosGrupos(c.grupos, ctx);
+    const comprometidas = cidadesComEnvioAgendado();
+    if (comprometidas.size) {
+      rotina(`Reforço: ${comprometidas.size} cidade(s) com envio agendado ficam de fora.`);
+    }
     if (!ajudantes.length) {
       rotina(`Reforço: não encontrei cidades nos grupos ${(c.grupos || []).join(', ')}.`);
       return;
@@ -43399,6 +43439,11 @@ function makeReforcoModule(opts) {
       const segundos = a.chega - agora();
 
       for (const origem of ajudantes) {
+        /* Tropa já com destino e hora: não se leva. */
+        if (comprometidas.has(Number(origem.id))) {
+          rotina(`Reforço: ${origem.name || origem.id} tem um envio agendado — não lhe toco.`);
+          continue;
+        }
         if (mandados >= MAX_POR_PASSAGEM) {
           rotina(`Reforço: mandei ${mandados} nesta passagem — continuo na próxima.`);
           return;
