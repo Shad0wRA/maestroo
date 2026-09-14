@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.5500
+// @version      2026.09.12.5600
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2153,7 +2153,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.5500';
+  const MAESTRO_VERSAO = '2026.09.12.5600';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -33811,7 +33811,9 @@ function makeApoioModule(opts) {
       const k = `${tipo}_${alvoId}`;
       atuais[k] = {
         tipo, alvo: Number(alvoId),
-        quanto: Number(quanto) || 1,
+        quanto: (quanto && typeof quanto === 'object') ? 1 : (Number(quanto) || 1),
+        /* O reforço viaja como TROPA, não como número de envios. */
+        unidades: (quanto && typeof quanto === 'object') ? quanto : null,
         quando: Math.floor(Date.now() / 1000),
       };
       await fbEscreverM(fbCaminhoPedidos(), atuais);
@@ -34551,6 +34553,19 @@ function makeApoioModule(opts) {
   }
 
   /* Quanto falta para repor o que esta conta perdeu neste alvo. */
+  /* O REFORÇO PEDIDO NO PAINEL: tropa a mais, por alvo.
+   *
+   * `{ 5512: { sword: 500, bireme: 200 } }` — vai além do objectivo e
+   * desconta-se à medida que sai. */
+  function lerReforco() {
+    try { return JSON.parse(armazem.getItem('grepoApoio_reforcar_v1') || '{}') || {}; }
+    catch (e) { return {}; }
+  }
+  function gravarReforco(d) {
+    try { armazem.setItem('grepoApoio_reforcar_v1', JSON.stringify(d || {})); }
+    catch (e) { seErroDeCodigo(e, 'Apoio'); }
+  }
+
   function faltaRepor(alvoId) {
     const foi = (lerEnviado()[String(alvoId)]) || {};
     const ha = tenhoEm(alvoId);
@@ -35381,23 +35396,29 @@ function makeApoioModule(opts) {
 
       for (const p of pedidos) {
         if (p.tipo === 'repor') {
-          const falta = faltaRepor(p.alvo);
-          if (Object.keys(falta).length) {
-            const r = JSON.parse(armazem.getItem('grepoApoio_repor_v1') || '{}');
-            r[p.alvo] = falta;
-            armazem.setItem('grepoApoio_repor_v1', JSON.stringify(r));
-
-            const lista = Object.keys(falta)
-              .map((u) => `${falta[u]} ${(mUw.GameData.units[u] || {}).name || u}`).join(', ');
-            log(`🔁 Pedido da principal: reponho ${lista} em ${p.alvo}.`);
-          } else {
-            rotina(`Apoio: pediram para repor em ${p.alvo}, mas esta conta não perdeu nada lá.`);
+          /* ENCHER ATÉ AO OBJECTIVO, JÁ.
+           *
+           * Era "repor o que ESTA conta perdeu" — e por isso não aparecia na
+           * main, que muitas vezes não tinha enviado nada. Agora é o que
+           * interessa: a diferença entre o objectivo e o que está no alvo,
+           * repartida pelas contas como sempre. O ciclo já sabe fazer isso;
+           * o pedido só o traz para agora em vez da passagem seguinte.
+           *
+           * A trava dos trinta minutos fica: carregar duas vezes não manda a
+           * dobrar. */
+          log(`🔁 Pedido da principal: encher ${p.alvo} até ao objectivo.`);
+          if (ctx.voltarEm) ctx.voltarEm(20);
+        } else if (p.tipo === 'reforcar' && p.unidades) {
+          const extra = lerReforco();
+          const antes = extra[p.alvo] || {};
+          for (const u of Object.keys(p.unidades)) {
+            antes[u] = (Number(antes[u]) || 0) + (Number(p.unidades[u]) || 0);
           }
-        } else if (p.tipo === 'reforcar') {
-          const extra = JSON.parse(armazem.getItem('grepoApoio_reforcar_v1') || '{}');
-          extra[p.alvo] = (Number(extra[p.alvo]) || 0) + (Number(p.quanto) || 1);
-          armazem.setItem('grepoApoio_reforcar_v1', JSON.stringify(extra));
-          log(`🔁 Pedido da principal: mais ${p.quanto} envio(s) para ${p.alvo}.`);
+          extra[p.alvo] = antes;
+          gravarReforco(extra);
+          log(`🔁 Pedido da principal: reforçar ${p.alvo} com `
+            + `${Object.keys(p.unidades).map((u) => `${p.unidades[u]} ${u}`).join(', ')}.`);
+          if (ctx.voltarEm) ctx.voltarEm(20);
         }
 
         marcarPedidoFeito(p.chave);
@@ -36230,6 +36251,22 @@ function makeApoioModule(opts) {
       }
       const servindoObjetivo = comObjetivo;
 
+      /* O REFORÇO PEDIDO NO PAINEL SOMA-SE AO OBJECTIVO.
+       *
+       * É tropa a mais, de propósito: serve para engrossar um alvo que está a
+       * levar porrada sem mexer no objectivo de todos. */
+      try {
+        const extra = lerReforco()[alvo];
+        if (extra && Object.keys(extra).length) {
+          porMandar = porMandar || {};
+          for (const u of Object.keys(extra)) {
+            porMandar[u] = (Number(porMandar[u]) || 0) + (Number(extra[u]) || 0);
+          }
+          rotina(`Apoio: ${alvo} leva também o reforço pedido no painel `
+            + `(${Object.keys(extra).map((u) => `${extra[u]} ${u}`).join(', ')}).`);
+        }
+      } catch (e) { seErroDeCodigo(e, 'Apoio'); }
+
       for (const t of candidatas) {
         /* Quem trava é o objectivo: mandada a parte desta conta, pára. O
          * limite de cidades por alvo existia para o modo sem objectivo, que
@@ -36301,13 +36338,22 @@ function makeApoioModule(opts) {
       if (r.ok) {
         anotarEnvio(alvo, cargaFinal);
 
-        /* Era um reforço pedido no painel? Desconta-se um. */
+        /* DESCONTAR O QUE SAIU DO REFORÇO PEDIDO NO PAINEL.
+         *
+         * O reforço era uma contagem de "envios", e um envio era o pacote —
+         * que desapareceu com o modo sem objectivo (5000). Ficou a contar
+         * envios sem tamanho nenhum: o botão não mandava nada. Agora o reforço
+         * é TROPA, unidade a unidade, e desconta-se o que sai. */
         try {
-          const extra = JSON.parse(armazem.getItem('grepoApoio_reforcar_v1') || '{}');
-          if (Number(extra[alvo]) > 0) {
-            extra[alvo] = Number(extra[alvo]) - 1;
-            if (extra[alvo] <= 0) delete extra[alvo];
-            armazem.setItem('grepoApoio_reforcar_v1', JSON.stringify(extra));
+          const extra = lerReforco();
+          const pedido = extra[alvo];
+          if (pedido) {
+            for (const u of Object.keys(pedido)) {
+              pedido[u] = Math.max(0, (Number(pedido[u]) || 0) - (Number(cargaFinal[u]) || 0));
+              if (!pedido[u]) delete pedido[u];
+            }
+            if (!Object.keys(pedido).length) delete extra[alvo];
+            gravarReforco(extra);
           }
         } catch (e) { seErroDeCodigo(e, 'Apoio'); }
       }
@@ -36564,8 +36610,6 @@ function makeApoioModule(opts) {
       const info = cacheCidades[id] || { nome: '#' + id, jogador: '…' };
       const t = tropasEnviadasPara(id, reg);
 
-      /* O botão "repor" só faz sentido onde esta conta PERDEU tropa. */
-      const perdeu = Object.keys(faltaRepor(id)).length > 0;
       const det = Object.keys(t.detalhe).map((k) => `${t.detalhe[k]} ${k}`).join(', ');
       return `<tr data-alvo="${id}">
         <td style="padding:2px 3px">${esc(info.nome)}</td>
@@ -36573,10 +36617,10 @@ function makeApoioModule(opts) {
         <td style="padding:2px 3px;opacity:.85" data-total="${id}">${
           t.total ? `<span style="opacity:.6">eu: ${esc(det)}</span>` : '<span style="opacity:.5">a somar…</span>'}</td>
         <td style="padding:2px 3px;text-align:right;white-space:nowrap">
-          <button data-reforcar="${id}" title="mandar mais envios para este alvo"
+          <button data-reforcar="${id}" title="mandar tropa a mais para este alvo, além do objectivo"
             style="cursor:pointer;font-size:12px;background:#364;color:#dfd;border:none;border-radius:3px;padding:2px 5px">reforçar</button>
-          ${perdeu ? `<button data-repor="${id}" title="repor o que esta conta perdeu aqui"
-            style="cursor:pointer;font-size:12px;background:#446;color:#ddf;border:none;border-radius:3px;padding:2px 5px">repor</button>` : ''}
+          <button data-repor="${id}" title="encher já até ao objectivo"
+            style="cursor:pointer;font-size:12px;background:#446;color:#ddf;border:none;border-radius:3px;padding:2px 5px">repor</button>
           <button data-remover="${id}" style="cursor:pointer;font-size:12px;background:#733;color:#fdd;border:none;border-radius:3px;padding:2px 5px">retirar</button>
         </td>
       </tr>`;
@@ -36741,71 +36785,81 @@ function makeApoioModule(opts) {
       } catch (e) { return 0; }
     };
 
-    /* ---- REFORÇAR: mais envios para um alvo que já está na lista ---- */
+    /* ---- REFORÇAR: tropa a mais para um alvo, além do objectivo ---- */
     container.querySelectorAll('[data-reforcar]').forEach((b) => {
       b.onclick = async () => {
         const id = Number(b.getAttribute('data-reforcar'));
         const info = cacheCidades[id] || { nome: '#' + id };
-        const podem = quantasPosso(c);
+        const nomeU = (u) => ((mUw.GameData.units[u] || {}).name || u);
+        const UNS = ['sword', 'archer', 'hoplite', 'bireme'];
 
-        const quantos = await pedirNumero(
-          `Reforçar ${info.nome}\n\n`
-          + (podem ? `Esta conta consegue fazer ${podem.quantas} envio(s) `
-              + `(limitada por ${(mUw.GameData.units[podem.limita] || {}).name || podem.limita}).\n\n` : '')
-          + 'Quantos envios a mais desta conta?', 1);
+        /* QUANTA TROPA, NÃO QUANTOS "ENVIOS".
+         *
+         * Um envio era o pacote, que desapareceu com o modo sem objectivo: o
+         * botão contava envios sem tamanho e não mandava nada. Pergunta-se a
+         * tropa, que é o que se quer no alvo. */
+        const resposta = (() => {
+          try {
+            return mUw.prompt(`Reforçar ${info.nome} — tropa a MAIS, além do objectivo.\n\n`
+              + `Escreve as quantidades por esta ordem:\n`
+              + UNS.map(nomeU).join(', ') + '\n\n'
+              + 'Exemplo: 500,500,500,200\n'
+              + 'Cada conta manda esta quantidade.', '0,0,0,0');
+          } catch (e) { return null; }
+        })();
+        if (resposta == null) return;
 
-        if (!(quantos > 0)) return;
+        const partes = String(resposta).split(/[,;\s]+/).filter((x) => x !== '');
+        const unidades = {};
+        UNS.forEach((u, i2) => {
+          const n = Math.max(0, Number(partes[i2]) || 0);
+          if (n > 0) unidades[u] = n;
+        });
+        if (!Object.keys(unidades).length) { ctx.log('Apoio: reforço sem tropa nenhuma — nada feito.'); return; }
 
         b.disabled = true; b.textContent = '...';
-
-        /* O pedido viaja para as outras contas; cada uma faz o que
-         * conseguir com a tropa que tem. */
         try {
-          const extra = JSON.parse(armazem.getItem('grepoApoio_reforcar_v1') || '{}');
-          extra[id] = (Number(extra[id]) || 0) + Number(quantos);
-          armazem.setItem('grepoApoio_reforcar_v1', JSON.stringify(extra));
+          const extra = lerReforco();
+          const antes = extra[id] || {};
+          for (const u of Object.keys(unidades)) antes[u] = (Number(antes[u]) || 0) + unidades[u];
+          extra[id] = antes;
+          gravarReforco(extra);
 
-          const foi = await publicarPedido('reforcar', id, quantos);
-          ctx.log(`Apoio: ${info.nome} vai receber mais ${quantos} envio(s)`
+          const foi = await publicarPedido('reforcar', id, unidades);
+          const lista = Object.keys(unidades).map((u) => `${unidades[u]} ${nomeU(u)}`).join(', ');
+          ctx.log(`Apoio: ${info.nome} vai receber ${lista} a mais`
             + (foi ? ' de CADA conta.' : ' desta conta (não consegui avisar as outras).'));
+          if (ctx.voltarEm) ctx.voltarEm(20);
         } catch (e) { seErroDeCodigo(e, 'Apoio'); }
-
         b.disabled = false; b.textContent = 'reforçar';
       };
     });
 
-    /* ---- REPOR: o que ESTA conta perdeu neste alvo ---- */
+    /* ---- REPOR: encher já até ao objectivo ---- */
     container.querySelectorAll('[data-repor]').forEach((b) => {
       b.onclick = async () => {
         const id = Number(b.getAttribute('data-repor'));
         const info = cacheCidades[id] || { nome: '#' + id };
+        const obj = (cfg().objetivoPadrao) || {};
+        const lista = Object.keys(obj).filter((u) => Number(obj[u]) > 0)
+          .map((u) => `${obj[u]} ${(mUw.GameData.units[u] || {}).name || u}`).join(', ');
 
-        const falta = faltaRepor(id);
-        const nomes = Object.keys(falta);
-
-        if (!nomes.length) {
-          ctx.log(`Apoio: ${info.nome} não perdeu nada do que esta conta enviou.`);
-          return;
-        }
-
-        const lista = nomes
-          .map((u) => `${falta[u]} ${(mUw.GameData.units[u] || {}).name || u}`)
-          .join(', ');
-
-        if (!await perguntar(`Repor em ${info.nome}?\n\n`
-          + `Esta conta enviou mais do que lá está agora — falta: ${lista}.\n\n`
-          + 'Vou mandar essa diferença das cidades que tiverem tropa.')) return;
+        /* ENCHER ATÉ AO OBJECTIVO, JÁ.
+         *
+         * Era "repor o que ESTA conta perdeu", e por isso nem sequer aparecia
+         * na main quando ela não tinha enviado nada. O que interessa é a
+         * diferença entre o objectivo e o que está lá agora — e isso o ciclo
+         * já sabe repartir pelas contas. O botão só o traz para agora. */
+        if (!await perguntar(`Encher ${info.nome} até ao objectivo?\n\n`
+          + (lista ? `Objectivo: ${lista}.\n\n` : '')
+          + 'Cada conta manda já a diferença que lhe toca.')) return;
 
         b.disabled = true; b.textContent = '...';
         try {
-          armazem.setItem('grepoApoio_repor_v1', JSON.stringify(
-            Object.assign(JSON.parse(armazem.getItem('grepoApoio_repor_v1') || '{}'),
-              { [id]: falta })));
-
-          /* O pedido viaja; cada conta repõe o que ELA perdeu ali. */
           const foi = await publicarPedido('repor', id, 1);
-          ctx.log(`Apoio: ${info.nome} — vou repor ${lista}`
-            + (foi ? ', e as outras contas repõem o que perderam.' : '.'));
+          ctx.log(`Apoio: ${info.nome} — vou encher até ao objectivo`
+            + (foi ? ', e as outras contas também.' : ' (não consegui avisar as outras).'));
+          if (ctx.voltarEm) ctx.voltarEm(20);
         } catch (e) { seErroDeCodigo(e, 'Apoio'); }
         b.disabled = false; b.textContent = 'repor';
       };
@@ -37868,15 +37922,7 @@ function makeFundacaoModule(opts) {
        *
        * Custa pouco: os blocos vão seis por pedido desde a 4700. */
       const jaVistas = new Set();
-      /* ATÉ ENCONTRAR, NÃO ATÉ AO ANEL 16.
-       *
-       * O limite era meu, não do jogo: numa zona com muitas ilhas pequenas,
-       * podia não haver nenhuma grande livre nesse raio e o módulo desistia
-       * (14/09). Vai-se afastando enquanto o servidor deixar; cada degrau
-       * custa poucos pedidos, porque os blocos vão seis a seis e os tamanhos
-       * já conhecidos não se voltam a pedir. */
-      const degraus = [];
-      for (let a = 1; a <= 40; a += 4) degraus.push([a, a + 3]);
+      const degraus = [[1, 4], [5, 8], [9, 12], [13, 16]];
       for (const [de, ate] of degraus) {
         const ilhas = await ilhasPertoDe(centroC, c.oceanos || [], t.id, 24, de, ate);
         for (const i of ilhas) {
