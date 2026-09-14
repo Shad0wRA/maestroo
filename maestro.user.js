@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.5000
+// @version      2026.09.12.5300
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2153,7 +2153,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.5000';
+  const MAESTRO_VERSAO = '2026.09.12.5300';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -24712,9 +24712,20 @@ function makeEsquivaModule(opts) {
      * nada — só a põe na rua e obriga a cancelar. */
     const impactoPlano = Number(plano.impacto) || 0;
     if (impactoPlano && comecou > impactoPlano) {
-      log(`⚠️ Esquiva ${plano.townId}: o ataque já bateu há ${comecou - impactoPlano}s — `
-        + 'não mando a tropa para a rua. Vou passar a sair mais cedo.');
-      anotarPreparo(preparoConhecido() + (comecou - impactoPlano) + 15);
+      const atraso = comecou - impactoPlano;
+      /* NÃO SE INFLACIONA A MARGEM COM ISTO.
+       *
+       * A primeira versão somava o atraso todo à margem. Mas um atraso destes
+       * costuma vir de o maestro ter estado PARADO — dois minutos depois de um
+       * 429, por exemplo (visto em jogo, 14/09: 117 s) — e não de a preparação
+       * ser lenta. Somá-lo punha a tropa a sair dois minutos antes em todas as
+       * esquivas seguintes, para sempre.
+       *
+       * A margem aprende só com as esquivas que correm: essas medem o tempo
+       * real da preparação. Aqui diz-se o que houve e fica por isso. */
+      log(`⚠️ Esquiva ${plano.townId}: o ataque já bateu há ${atraso}s — não mando a tropa `
+        + 'para a rua. Isto costuma ser o maestro ter estado parado (429, captcha, '
+        + 'aba recarregada).');
       return;
     }
     const cidades = minhasCidades();
@@ -25370,6 +25381,15 @@ function makeEsquivaModule(opts) {
         if (agendados.has(chaveP)) continue;      // já tratado nesta sessão
         const pl = planos[chaveP];
         if (!pl || !pl.S) continue;
+
+        /* Um plano cujo impacto já passou não se executa: mandar a tropa
+         * para a rua agora só a põe fora de casa sem esquivar nada. */
+        if (Number(pl.impacto) && agoraR > Number(pl.impacto)) {
+          agendados.add(chaveP);
+          rotina(`Esquiva: o plano da cidade ${pl.townId} já não serve `
+            + `(o ataque bateu há ${agoraR - Number(pl.impacto)}s).`);
+          continue;
+        }
 
         const faltaR = Number(pl.S) - agoraR;
 
@@ -36527,17 +36547,18 @@ function makeApoioModule(opts) {
     const alvos = (lista.alvos || lista.targets || []).map(Number).filter(Boolean);
     const reg = lerRegisto();
 
-    /* ---- QUANTAS CIDADES CONSIGO APOIAR ----
+    /* ---- QUANTAS CIDADES MAIS É QUE A FROTA AGUENTA ----
      *
-     * Soma a tropa toda desta conta e divide pelo que cada envio leva. */
-    const podem = quantasPosso(c);
-    const htmlPodem = podem ? `
+     * Era a conta desta conta sozinha — e com vinte contas, esse número não
+     * diz nada sobre quantos alvos se podem pôr no painel. A resposta útil é
+     * a da frota inteira: soma-se a tropa em casa de todas as contas e
+     * divide-se pelo objectivo por alvo, contando também os transportes. O
+     * número entra quando a leitura da frota chegar. */
+    const htmlPodem = `
       <div style="background:var(--mSurf);padding:5px 7px;border-radius:4px;margin-bottom:6px;font-size:13px">
         Cidades apoiadas: <b>${alvos.length}</b>
-        · esta conta ainda consegue apoiar <b>${podem.quantas}</b>
-        ${podem.limita ? `<span style="opacity:.6">(limitada por ${
-          esc((mUw.GameData.units[podem.limita] || {}).name || podem.limita)})</span>` : ''}
-      </div>` : '';
+        · <span id="ap-capacidade" style="opacity:.85">a somar a frota…</span>
+      </div>`;
 
     const linhas = alvos.length ? alvos.map((id) => {
       const info = cacheCidades[id] || { nome: '#' + id, jogador: '…' };
@@ -36635,9 +36656,6 @@ function makeApoioModule(opts) {
           <button id="ap-fora" style="cursor:pointer;font-size:12px" title="lê a Ágora (separador Fora) de todas as tuas cidades e actualiza os números">🔎 ler a Ágora</button>
           <span style="opacity:.55;font-size:12px">“retirar” tira o alvo da lista e manda o apoio de volta</span>
         </div>
-        <div id="ap-capacidade" style="background:var(--mSurf);padding:5px 8px;border-radius:4px;
-          margin-bottom:6px;font-size:12px;opacity:.85">a contar…</div>
-
         <div style="max-height:180px;overflow-y:auto">
           <table style="width:100%;border-collapse:collapse;font-size:13px">
             <tr style="opacity:.6"><td>cidade</td><td>jogador</td><td>tropa total lá (todas as contas)</td><td></td></tr>
@@ -36982,11 +37000,13 @@ function makeApoioModule(opts) {
               .reduce((s2, k2) => s2 + (Number(tt.casa[k2]) || 0), 0);
             const nomeU = (u) => ((mUw.GameData.units[u] || {}).name || u);
             cel.innerHTML = q
-              ? `<b>${q.quantos}</b> alvo(s) mais dava(m) para encher com a tropa em casa `
-                + `(${somaCasa} unidades em ${tt.contas} conta(s); o travão são `
+              ? `a frota ainda enche mais <b>${q.quantos}</b> `
+                + `<span style="opacity:.65">(${tt.contas} conta(s), ${somaCasa} unidades em casa; `
                 + (q.limita === 'transportes'
-                  ? `os transportes: ${tt.casa.__capacidade || 0} de carga em casa).`
-                  : `os ${esc(nomeU(q.limita))}: ${tt.casa[q.limita] || 0} para ${obj[q.limita]} por alvo).`)
+                  ? `travada pelos transportes — ${tt.casa.__capacidade || 0} de carga)`
+                  : `travada por ${esc(nomeU(q.limita))} — ${tt.casa[q.limita] || 0} para `
+                    + `${obj[q.limita]} por alvo)`)
+                + '</span>'
               : '<span style="opacity:.6">sem objectivo definido, não dá para contar alvos.</span>';
           }
         } catch (e) { seErroDeCodigo(e, 'Apoio'); }
@@ -40631,16 +40651,27 @@ function makeFecharIlhaModule(opts) {
    * conta, pede-se outro. O jogo propõe um diferente de cada vez, por isso
    * poucas tentativas chegam. */
   async function lugarLivrePorUsar(townId, x, y, jaUsados) {
-    let ultimo = null;
-    for (let i = 0; i < 6; i++) {
-      const v = await vagasDaIlha(townId, x, y, i ? (ultimo + 1) % LUGARES : null);
+    /* NUNCA SE SUGERE UM NÚMERO AO JOGO.
+     *
+     * Quando o lugar proposto já estava reservado por outra conta, isto pedia
+     * outro SUGERINDO o número seguinte. Se esse estivesse ocupado, o jogo
+     * respondia "Não escolheu uma posição válida para fundar uma cidade" — e
+     * ao fim de quatro tentativas a conta desistia da ilha (visto em jogo,
+     * 14/09, na 381:470, com 13 lugares livres).
+     *
+     * O jogo propõe sempre um lugar LIVRE, e um diferente a cada pedido
+     * (14, 7, 12 nas leituras da espia). Basta voltar a perguntar. */
+    const vistos = [];
+    for (let i = 0; i < 8; i++) {
+      const v = await vagasDaIlha(townId, x, y);
       if (!v.ok) return { ok: false, msg: v.msg };
       if (!v.vagas) return { ok: false, msg: 'a ilha já não tem vagas' };
-      ultimo = v.lugar;
       if (!jaUsados.has(Number(v.lugar))) return { ok: true, lugar: Number(v.lugar), vagas: v.vagas };
+      vistos.push(Number(v.lugar));
       await new Promise((res) => setTimeout(res, 600));
     }
-    return { ok: false, msg: 'não encontrei um lugar livre que outra conta não vá usar' };
+    return { ok: false,
+      msg: `o jogo só me propôs lugares que outras contas já vão usar (${vistos.join(', ')})` };
   }
 
   async function enviarColonizador(townId, x, y, numero) {
@@ -40974,8 +41005,16 @@ function makeFecharIlhaModule(opts) {
           }
           return;
         }
-        rotina(`Fechar ilha ${plano.chave}: faltam ${ilhaAgora.livres.length} lugar(es) `
-          + 'por ocupar — a fila espera pela chegada dos colonizadores.');
+        /* QUANTOS DOS LUGARES JÁ SÃO NOSSOS.
+         *
+         * "Faltam 13 por ocupar" sozinho parece que nada aconteceu, quando o
+         * que se passou foi as contas terem enviado e os colonizadores ainda
+         * estarem a caminho. */
+        const enviaramJa = Object.keys(plano.enviados || {}).length;
+        const porEnviar = Object.keys(plano.atribuicoes || {}).length - enviaramJa;
+        rotina(`Fechar ilha ${plano.chave}: ${ilhaAgora.livres.length} lugar(es) ainda por ocupar; `
+          + `${enviaramJa} conta(s) já mandaram colonizador`
+          + (porEnviar > 0 ? `, ${porEnviar} por mandar.` : ' — espera-se a chegada.'));
 
         /* QUEM FALHOU CEDE O LUGAR A OUTRA CONTA DISPONÍVEL.
          *
