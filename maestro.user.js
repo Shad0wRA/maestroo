@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.5300
+// @version      2026.09.12.5500
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2153,7 +2153,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.5300';
+  const MAESTRO_VERSAO = '2026.09.12.5500';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -37868,7 +37868,15 @@ function makeFundacaoModule(opts) {
        *
        * Custa pouco: os blocos vão seis por pedido desde a 4700. */
       const jaVistas = new Set();
-      const degraus = [[1, 4], [5, 8], [9, 12], [13, 16]];
+      /* ATÉ ENCONTRAR, NÃO ATÉ AO ANEL 16.
+       *
+       * O limite era meu, não do jogo: numa zona com muitas ilhas pequenas,
+       * podia não haver nenhuma grande livre nesse raio e o módulo desistia
+       * (14/09). Vai-se afastando enquanto o servidor deixar; cada degrau
+       * custa poucos pedidos, porque os blocos vão seis a seis e os tamanhos
+       * já conhecidos não se voltam a pedir. */
+      const degraus = [];
+      for (let a = 1; a <= 40; a += 4) degraus.push([a, a + 3]);
       for (const [de, ate] of degraus) {
         const ilhas = await ilhasPertoDe(centroC, c.oceanos || [], t.id, 24, de, ate);
         for (const i of ilhas) {
@@ -37879,11 +37887,29 @@ function makeFundacaoModule(opts) {
         }
         /* Candidatas que as tuas regras não descartam à partida: as ilhas
          * onde já tens cidade não contam, porque essas nunca serão usadas. */
+        /* UMA ILHA PEQUENA NÃO É UMA CANDIDATA ÚTIL.
+         *
+         * Esta conta contava como útil toda a ilha onde não há cidade minha —
+         * pequenas incluídas. Com 32 pequenas à volta, o módulo achava que
+         * tinha candidatas de sobra e deixava de procurar mais longe (visto em
+         * jogo, 14/09: 40 candidatas, 32 pequenas, 2 cheias, 6 minhas, e nada
+         * fundado).
+         *
+         * O tamanho de uma ilha não muda, por isso fica guardado da primeira
+         * vez que se lê: dá para descartar as conhecidas sem gastar pedido. */
         const minhasIlhas = new Set((ctx.getMyTowns() || []).map((x) => ilhaDe(x.id)).filter(Boolean));
-        const uteis = aTentar.filter((i) => !minhasIlhas.has(`${Number(i.x)}:${Number(i.y)}`)).length;
+        const soGrandes = !!c.exigirAldeias;   // é assim que a opção se chama
+        const uteis = aTentar.filter((i) => {
+          if (minhasIlhas.has(`${Number(i.x)}:${Number(i.y)}`)) return false;
+          if (!soGrandes) return true;
+          const t2 = tamanhoGuardado(i.id);
+          /* Desconhecida conta como útil: só se sabe pedindo. */
+          return !t2 || Number(t2.total) >= 20;
+        }).length;
         if (uteis >= 6) break;
         if (servidorTravadoAgora()) break;
-        rotina(`Fundação: só ${uteis} candidata(s) úteis até ao anel ${ate} — procuro mais longe.`);
+        rotina(`Fundação: só ${uteis} candidata(s) úteis até ao anel ${ate} `
+          + `(de ${aTentar.length} vistas) — procuro mais longe.`);
       }
       rotina(`Fundação: à volta da cidade ${c.centroId}`
         + ((c.oceanos || []).length ? `, no(s) oceano(s) ${c.oceanos.join(', ')}` : '')
