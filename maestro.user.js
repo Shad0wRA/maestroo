@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.5700
+// @version      2026.09.12.5800
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2153,7 +2153,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.5700';
+  const MAESTRO_VERSAO = '2026.09.12.5800';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -19918,6 +19918,18 @@ function makeAlertasModule(opts) {
               cat: '🚨 NAVIO COLONIZADOR (o que falta da viagem já não dá para mais nada)',
               grave: true, nc: true, certo: true,
             };
+          } else if (velMax != null && velMax > limiteColonizador() && cls && cls.nc && !cls.certo) {
+            /* E A PROVA SERVE NOS DOIS SENTIDOS.
+             *
+             * A viagem medida conta desde que vimos o comando, por isso pode
+             * dar uma velocidade baixa de mais e acusar colonizador onde não
+             * há. O que falta da viagem não depende disso: se nem partindo
+             * agora chegaria tão devagar, não é colonizador.
+             *
+             * Só se desfaz uma suspeita POR MEDIÇÃO — uma certeza
+             * (a velocidade bate certo com a do colonizador) mantém-se. */
+            cls = { cat: 'navio de guerra ou transporte (rápido de mais para colonizador)',
+              grave: true, nc: false };
           }
         } catch (e) { seErroDeCodigo(e, 'Alertas'); }
       }
@@ -24219,10 +24231,37 @@ function makeEsquivaModule(opts) {
        *
        * Nesse caso não se afirma nada sobre a categoria, e assume-se o pior
        * para a esquiva: pode trazer colonizador. */
-      if (!a.started_at && rv && rv.novo && vistoNoArranque(visto)) {
+      /* O TEMPO QUE FALTA DIZ A VELOCIDADE MÁXIMA POSSÍVEL.
+       *
+       * Os ataques dos outros vêm SEMPRE sem `started_at` (confirmado em
+       * jogo, 12/09), por isso a viagem era estimada e a velocidade saía
+       * errada — 37 numa leitura em que o limite do colonizador é 11,5. Sem
+       * dados, assumia-se o pior e todo o ataque passava por poder trazer
+       * colonizador.
+       *
+       * Mas há uma conta que não precisa da hora de partida: se ainda faltam
+       * T horas para percorrer a distância D, a velocidade não pode passar de
+       * D/T — o comando não pode ter andado para trás. Esse máximo chega para
+       * DESPACHAR a dúvida nos dois sentidos: abaixo do limite do colonizador,
+       * é colonizador de certeza; acima, não pode ser. */
+      const faltaSeg = Math.max(1, Number(a.arrival_at) - agoraJogo());
+      const velMax = (c.K * dist) / faltaSeg;
+      const limNC = (() => {
+        try {
+          const f = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroNC;
+          return f && f.limite ? f.limite() : 0;
+        } catch (e) { return 0; }
+      })();
+
+      if (limNC > 0 && velMax > limNC) {
+        /* Nem que tivesse partido agora chegava tão devagar: não é colonizador. */
+        ehNC = false; incerto = false;
+      } else if (limNC > 0 && velMax <= limNC) {
+        ehNC = true; incerto = false;
+      } else if (!a.started_at && rv && rv.novo && vistoNoArranque(visto)) {
         ehNC = true; incerto = true;
       } else if (duracao == null) {
-        // sem hora de partida: assume-se o pior
+        // sem hora de partida nem tempo que falte: assume-se o pior
         ehNC = true; incerto = true;
       } else {
         const viagem = duracao - tempoPreparacao();
