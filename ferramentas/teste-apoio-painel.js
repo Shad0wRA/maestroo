@@ -84,5 +84,35 @@ const FROTA = {
     const tt = await api.totaisNosAlvos();
     t.verifica('sem dados na frota: diz que leu, sem totais', tt.ok && !Object.keys(tt.porAlvo).length, tt);
   }
+  /* QUANTOS ALVOS MAIS É QUE A TROPA EM CASA COBRE. */
+  {
+    /* O objectivo tem tropa terrestre: a conta precisa da população das
+     * unidades e dos transportes que a levam. */
+    const ctx = { Math, Number, Object, Infinity,
+      mUw: { GameData: { units: { sword: { population: 1 }, archer: { population: 1 },
+        hoplite: { population: 1 }, bireme: { is_naval: true, population: 1 } } } } };
+    vm.createContext(ctx);
+    const f = vm.runInContext(funcao(SRC, '  function quantosAlvosMais(casa, objetivo) {', AP) + '\nquantosAlvosMais', ctx);
+    const obj = { sword: 3000, archer: 3000, hoplite: 3000, bireme: 1500 };
+    t.verifica('tropa para três alvos, travada pelos birremes',
+      igual(f({ sword: 12000, archer: 12000, hoplite: 12000, bireme: 5200, __capacidade: 999999 }, obj), { quantos: 3, limita: 'bireme' }),
+      f({ sword: 12000, archer: 12000, hoplite: 12000, bireme: 5200, __capacidade: 999999 }, obj));
+    t.verifica('sem tropa nenhuma: zero alvos', f({}, obj).quantos === 0);
+    t.verifica('falta uma unidade do objectivo: conta zero, e diz qual',
+      igual(f({ sword: 99999, archer: 99999, hoplite: 99999, __capacidade: 999999 }, obj), { quantos: 0, limita: 'bireme' }),
+      f({ sword: 99999, archer: 99999, hoplite: 99999, __capacidade: 999999 }, obj));
+    t.verifica('sem objectivo definido: não dá para contar', f({ sword: 100 }, {}) === null);
+    /* Sem barcos, a tropa terrestre não sai da ilha. */
+    t.verifica('tropa de sobra mas sem transportes: zero alvos, e diz que são eles',
+      igual(f({ sword: 99999, archer: 99999, hoplite: 99999, bireme: 99999 }, obj),
+        { quantos: 0, limita: 'transportes' }),
+      f({ sword: 99999, archer: 99999, hoplite: 99999, bireme: 99999 }, obj));
+    t.verifica('transportes para dois alvos, tropa para muitos: manda o menor',
+      f({ sword: 99999, archer: 99999, hoplite: 99999, bireme: 99999, __capacidade: 18000 }, obj).quantos === 2,
+      f({ sword: 99999, archer: 99999, hoplite: 99999, bireme: 99999, __capacidade: 18000 }, obj));
+    t.verifica('objectivo com zeros é ignorado',
+      f({ sword: 6000, __capacidade: 999999 }, { sword: 3000, archer: 0 }).quantos === 2,
+      f({ sword: 6000, __capacidade: 999999 }, { sword: 3000, archer: 0 }));
+  }
   t.fim();
 })().catch((e) => { console.error('O TESTE REBENTOU:', e); process.exit(2); });

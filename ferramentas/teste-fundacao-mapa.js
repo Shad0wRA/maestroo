@@ -66,5 +66,39 @@ const blocos = (n) => Array.from({ length: n }, (_, i) => ({ x: i, y: i }));
     const r = await m.f([], 111);
     t.verifica('nada a pedir: nenhum pedido', m.pedidos.length === 0 && r.length === 0);
   }
+  /* A PROCURA TEM DE PODER IR MAIS LONGE. */
+  {
+    const pedidos = [];
+    const ctx = {
+      mUw: { location: { origin: 'https://x' }, Game: { csrfToken: 'T' }, ITowns: { towns: { 111: {} } },
+        fetch: async (url) => {
+          const j = JSON.parse(decodeURIComponent((String(url).match(/json=([^&]+)/) || [])[1]));
+          j.chunks.forEach((c) => pedidos.push(`${c.x}:${c.y}`));
+          const data = {};
+          /* Só há ilhas a partir do anel 5 — perto do centro está tudo tomado. */
+          j.chunks.forEach((c, i) => {
+            const anel = Math.max(Math.abs(c.x - 10), Math.abs(c.y - 10));
+            data[i] = { islands: anel >= 5 ? [{ x: c.x * 20, y: c.y * 20, id: anel }] : [] };
+          });
+          const corpo = JSON.stringify({ json: { data } });
+          return { status: 200, text: async () => corpo, json: async () => JSON.parse(corpo) };
+        } },
+      window: { __maestroServidorTravado: () => false },
+      lerResposta: async (r) => JSON.parse(await r.text()),
+      CHUNK: 20, oceanoDe: () => 55, seErroDeCodigo: () => {}, console, setTimeout,
+    };
+    vm.createContext(ctx);
+    const f = vm.runInContext(funcao(SRC, '  function servidorTravadoAgora() {', FU)
+      + funcao(SRC, '  async function pedirBlocos(lista, townIdBase) {', FU)
+      + funcao(SRC, '  async function ilhasPertoDe(centro, oceanos, townIdBase, minimo, anelDe, anelAte) {', FU)
+      + '\nilhasPertoDe', ctx);
+    const centro = { x: 200, y: 200 };
+    const perto = await f(centro, [], 111, 24, 1, 4);
+    t.verifica('até ao anel 4 não há nada (é o caso de 14/09)', perto.length === 0, perto.length);
+    const longe = await f(centro, [], 111, 24, 5, 8);
+    t.verifica('do anel 5 ao 8 já aparecem ilhas', longe.length > 0, longe.length);
+    t.verifica('... e não se repetem blocos dentro do mesmo degrau',
+      new Set(pedidos).size === pedidos.length, { pedidos: pedidos.length, únicos: new Set(pedidos).size });
+  }
   t.fim();
 })().catch((e) => { console.error('O TESTE REBENTOU:', e); process.exit(2); });
