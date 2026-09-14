@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.6000
+// @version      2026.09.12.6100
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2225,7 +2225,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.6000';
+  const MAESTRO_VERSAO = '2026.09.12.6100';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -22363,23 +22363,44 @@ function makeDeusesModule(opts) {
        *
        * Também servem de escudo: as perdas caem sobre eles e cada um que
        * morre é um enviado que volta. */
+      /* O MÍNIMO DO JOGO É EM HABITANTES, NÃO EM UNIDADES.
+       *
+       * A mensagem do jogo é clara — "uma tropa de ataque tem de ser
+       * constituída pelo menos por 86 habitantes" — mas isto comparava
+       * CONTAGENS: 36 enviados contavam 36, quando valem 3 de população cada,
+       * ou seja 108. Resultado: cidades que já cumpriam o mínimo com folga
+       * juntavam espadachins que não faziam falta e, quando não os tinham,
+       * ficavam à espera passagem após passagem (visto em jogo, 14/09, na
+       * 34.3 e na 34.4).
+       *
+       * Agora conta-se população, lida do jogo. */
+      const popDe = (u) => {
+        try { return Number((mUw.GameData.units[u] || {}).population) || 1; } catch (e) { return 1; }
+      };
+      const popEnviado = popDe(UNIDADE_ENVIADO);
+      const popSword = popDe('sword');
+
       const minimo = minimoAprendido(t.id);
       let escudoExtra = 0;
-      if (minimo && quantos < minimo) {
-        const emCasaSword = (() => {
-          try { return Number((mUw.ITowns.getTown(t.id).units() || {}).sword) || 0; }
-          catch (e) { return 0; }
-        })();
-        const faltam = minimo - quantos;
-        escudoExtra = Math.min(faltam, Math.max(0, emCasaSword - 1));   // deixa um em casa
+      if (minimo) {
+        const popQueVai = quantos * popEnviado;
+        if (popQueVai < minimo) {
+          const emCasaSword = (() => {
+            try { return Number((mUw.ITowns.getTown(t.id).units() || {}).sword) || 0; }
+            catch (e) { return 0; }
+          })();
+          const faltaPop = minimo - popQueVai;
+          const precisa = Math.ceil(faltaPop / popSword);
+          escudoExtra = Math.min(precisa, emCasaSword);
 
-        if (quantos + escudoExtra < minimo) {
-          (ctx.logRotina || ctx.log)(`${t.name}: ${quantos} enviados e ${emCasaSword} espadachins `
-            + `não chegam ao mínimo de ${minimo} — espero.`);
-          continue;
+          if (popQueVai + escudoExtra * popSword < minimo) {
+            (ctx.logRotina || ctx.log)(`${t.name}: ${quantos} enviados (${popQueVai} hab.) `
+              + `e ${emCasaSword} espadachins não chegam ao mínimo de ${minimo} habitantes — espero.`);
+            continue;
+          }
+          (ctx.logRotina || ctx.log)(`${t.name}: junto ${escudoExtra} espadachins aos ${quantos} `
+            + `enviados (${popQueVai} hab.) para chegar ao mínimo de ${minimo} habitantes.`);
         }
-        (ctx.logRotina || ctx.log)(`${t.name}: junto ${escudoExtra} espadachins aos ${quantos} `
-          + `enviados para chegar ao mínimo de ${minimo}.`);
       }
 
       /* VÁRIOS ATAQUES EM CURSO SÃO PERMITIDOS.
