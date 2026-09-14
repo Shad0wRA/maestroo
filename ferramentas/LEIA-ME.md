@@ -40,6 +40,7 @@ falha sem ela (estragar o código de propósito e ver a falha).
 | `teste-encaixe-carga.js` | As composições enchem os transportes contando a pesquisa de porões (16 e 32), não a capacidade base. |
 | `teste-sentinelas.js` | Uma leitura da Ágora que não cobre todas as minhas cidades não prova que a aliada esteja a descoberto: não se manda outra sentinela. |
 | `teste-reforco-blocos.js` | Os modelos `Units` não chegam para dar a tropa por perdida: confirma-se na Ágora da origem antes de apagar o registo. |
+| `teste-esquiva-margem.js` | A margem de saída inclui o tempo que a preparação leva; sobe depressa, desce devagar, travada nos 3 min. |
 | `teste-captcha.js` | Com um captcha no ecrã o ciclo pára **e** o núcleo avisa no Discord (logo, e de meia em meia hora). |
 
 ## Formatos confirmados em jogo (espia, 11/09)
