@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.6100
+// @version      2026.09.12.6300
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -566,9 +566,78 @@
     return 1.30;
   }
 
-  /* O máximo que um colonizador pode aparentar: cartografia (+10%), farol
-   * (+15%) e o feitiço (+30%), tudo junto. */
-  function tolerânciaNC() { return 1.10 * 1.15 * bonusMovimento(); }
+  /* ============ TUDO O QUE MEXE NA VELOCIDADE ==========================
+   *
+   * Cada fonte liga ou desliga, e os factores multiplicam-se. Geram-se TODAS
+   * as combinações e compara-se o tempo observado com cada uma — em vez de
+   * uma lista curta feita à mão, que deixava velocidades por explicar.
+   *
+   *   meteorologia  +10%   tropa terrestre (pesquisa)
+   *   cartografia   +10%   navios (pesquisa)
+   *   navegar       +10%   SÓ o colonizador (pesquisa)
+   *   farol         +15%   frota (edifício)
+   *   sereias        +2%   por sereia, até 4 (contam-se 0 a 4)
+   *   feitiço       +30%   todas as unidades, uma hora (lido do jogo)
+   *   grande templo +15%   só em mundos Olimpo — ligado à mão no painel
+   *
+   * De fora, porque não são factores: o elmo do Hades (esconde 10% da viagem,
+   * tratado como margem) e a velocidade do mundo (já vem nas velocidades que
+   * o jogo dá). */
+  const BONUS = {
+    meteorologia: 1.10,
+    cartografia: 1.10,
+    navegar: 1.10,
+    farol: 1.15,
+    sereia: 1.02,
+    templo: 1.15,
+  };
+  const MAX_SEREIAS = 4;
+
+  /* O visto "mundo Olimpo" do painel dos alertas. */
+  function mundoOlimpo() {
+    try {
+      const v = localStorage.getItem('grepoMaestro_olimpo_v1');
+      return v === '1' || v === 'true';
+    } catch (e) { return false; }
+  }
+
+  /* As combinações possíveis para uma unidade. Cada uma traz o factor e o
+   * nome do que a explica, para o aviso poder dizê-lo. */
+  function combinacoes(naval, ehColonizador) {
+    const out = [];
+    const mov = bonusMovimento();
+    const opcoes = naval
+      ? [['cartografia', BONUS.cartografia], ['farol', BONUS.farol]]
+      : [['meteorologia', BONUS.meteorologia]];
+    if (naval && ehColonizador) opcoes.push(['navegar', BONUS.navegar]);
+    if (mundoOlimpo()) opcoes.push(['grande templo', BONUS.templo]);
+    opcoes.push(['feitiço de movimento', mov]);
+
+    const n = opcoes.length;
+    for (let mascara = 0; mascara < (1 << n); mascara++) {
+      let f = 1;
+      const nomes = [];
+      for (let i = 0; i < n; i++) {
+        if (mascara & (1 << i)) { f *= opcoes[i][1]; nomes.push(opcoes[i][0]); }
+      }
+      /* As sereias só valem no mar, e contam-se de 0 a 4. */
+      const maxS = naval ? MAX_SEREIAS : 0;
+      for (let s = 0; s <= maxS; s++) {
+        const fs = f * Math.pow(BONUS.sereia, s);
+        out.push({
+          f: fs,
+          nome: nomes.concat(s ? [`${s} sereia(s)`] : []).join(' + ') || 'sem bónus',
+        });
+      }
+    }
+    return out;
+  }
+
+  /* O máximo que um colonizador pode aparentar: todos os bónus juntos. */
+  function tolerânciaNC() {
+    const c = combinacoes(true, true);
+    return c.reduce((m, x) => (x.f > m ? x.f : m), 1);
+  }
 
   function velocidadeColonizador() {
     try {
@@ -593,20 +662,6 @@
        *
        * Faltava o feitiço de movimento (+30%): uma velocidade que só ele
        * explica ficava por explicar, e a unidade certa não aparecia na lista. */
-      const mov = bonusMovimento();
-      const baseNavais = [
-        { f: 1, nome: 'sem bónus' },
-        { f: 1.10, nome: 'cartografia' },
-        { f: 1.15, nome: 'farol' },
-        { f: 1.10 * 1.15, nome: 'cartografia + farol' },
-      ];
-      const baseTerra = [{ f: 1, nome: '' }, { f: 1.10, nome: 'meteorologia' }];
-      const comFeitico = (lista) => lista.concat(lista.map((c) => ({
-        f: c.f * mov,
-        nome: (c.nome ? c.nome + ' + ' : '') + 'feitiço de movimento',
-      })));
-      const combosNavais = comFeitico(baseNavais);
-      const combosTerra = comFeitico(baseTerra);
 
       for (const id of Object.keys(u)) {
         const v = Number(u[id].speed) || 0;
@@ -616,7 +671,9 @@
         if (!mesmaIlha && !naval && !voadora) continue;
 
         let melhor = null;
-        for (const c of (naval ? combosNavais : combosTerra)) {
+        /* O `navegar` só acelera o colonizador: por isso as combinações são
+         * geradas POR UNIDADE, e não uma lista igual para todas. */
+        for (const c of combinacoes(naval, id === 'colonize_ship')) {
           const comBonus = v * c.f;
           const desvio = Math.abs(comBonus - velEquivalente) / comBonus;
           if (desvio > FOLGA_MEDICAO_NC) continue;
@@ -2225,7 +2282,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.6100';
+  const MAESTRO_VERSAO = '2026.09.12.6300';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -19691,9 +19748,23 @@ function makeAlertasModule(opts) {
   // até 12, e a unidade seguinte (incendiário) só começa em 15.
   function classificar(vel, mesmaIlha) {
     if (mesmaIlha) {
-      if (vel <= 12) return { cat: 'muito lenta (aríete, catapulta)', grave: false };
-      if (vel <= 22) return { cat: 'tropa a pé', grave: false };
-      return { cat: 'tropa rápida (cavalaria, carros)', grave: false };
+      /* NA MESMA ILHA NÃO DÁ PARA MEDIR — E VEM COLONIZADOR À MESMA.
+       *
+       * A velocidade calcula-se com a distância entre ILHAS, que aqui é zero:
+       * não há nada para medir. Havia três gavetas — muito lenta, a pé,
+       * rápida — e nenhuma era colonizador, com um comentário a assumir que
+       * um colonizador não vinha da própria ilha. Vem: uma conquista na
+       * própria ilha foi anunciada como "tropa terrestre a pé" (visto em
+       * jogo, 14/09, na 45.1, de 494:506 para 494:506).
+       *
+       * Sem medição possível, a única resposta honesta é dizer que não se
+       * sabe — e, como perder uma cidade é pior do que um alarme a mais,
+       * marca-se como podendo trazer colonizador. */
+      return {
+        cat: '⚠️ mesma ilha — não dá para medir a velocidade; PODE trazer colonizador',
+        grave: true, nc: true, certo: false,
+        porque: 'na mesma ilha a distância é zero e não há velocidade para comparar',
+      };
     }
 
     // Entre ilhas. Zonas limpas primeiro — são as que importam.
@@ -20211,6 +20282,13 @@ function makeAlertasModule(opts) {
   function obterIgnorados() { return lerIgnorados(); }
   function definirIgnorados(v) { guardarIgnorados(v); }
 
+  function mundoOlimpoLocal() {
+    try {
+      const v = localStorage.getItem('grepoMaestro_olimpo_v1');
+      return v === '1' || v === 'true';
+    } catch (e) { return false; }
+  }
+
   function painel(container, ctx) {
     // ---- lista de atacantes ignorados ----
     const igAtual = lerIgnorados();
@@ -20245,6 +20323,8 @@ function makeAlertasModule(opts) {
       <div style="font-size:13px;line-height:1.6">
         <label><input type="checkbox" id="alr-on"${c.ativo ? ' checked' : ''}> <b>Avisar ataques no Discord</b></label><br>
         <label><input type="checkbox" id="alr-apoios"${c.avisarApoios ? ' checked' : ''}> avisar também apoios recebidos</label><br>
+        <label><input type="checkbox" id="alr-olimpo"${mundoOlimpoLocal() ? ' checked' : ''}>
+          mundo <b>Olimpo</b> (o grande templo dá +15% de velocidade)</label><br>
         Calibração: <input type="number" id="alr-k" value="${c.K}" style="width:70px">
         <span style="opacity:.6">(afina se a estimativa puxar sempre para um lado)</span>
       </div>
@@ -20253,6 +20333,24 @@ function makeAlertasModule(opts) {
         ${lista || '<div style="font-size:13px;opacity:.6;padding-top:3px">Nada a chegar.</div>'}
       </div>
       <button id="alr-guardar" style="cursor:pointer;width:100%;margin-top:5px;background:#48d;color:#fff;padding:5px;border:none;border-radius:4px">Guardar</button>`;
+
+    /* O VISTO DO OLIMPO.
+     *
+     * O grande templo só existe nesses mundos, e dá +15% de velocidade. Entra
+     * nas combinações que explicam o tempo de um ataque — por isso tem de ser
+     * dito, não adivinhado. Fica guardado em bruto, porque o núcleo lê-o antes
+     * de os módulos arrancarem. */
+    try {
+      const el = container.querySelector('#alr-olimpo');
+      if (el) {
+        el.onchange = () => {
+          try { localStorage.setItem('grepoMaestro_olimpo_v1', el.checked ? '1' : '0'); } catch (e) {}
+          ctx.log(el.checked
+            ? 'Alertas: mundo Olimpo — o grande templo passa a contar na velocidade.'
+            : 'Alertas: mundo Olimpo desligado.');
+        };
+      }
+    } catch (e) { seErroDeCodigo(e, 'Alertas'); }
 
     // acrescentar o bloco de ignorados ao painel
     try {
@@ -24278,11 +24376,15 @@ function makeEsquivaModule(opts) {
       if (![ox, oy, ax, ay].every(Number.isFinite)) return false;
       const dist = Math.sqrt(Math.pow(ox - ax, 2) + Math.pow(oy - ay, 2));
 
-      // MESMA ILHA (distância 0): o modelo por distância não se aplica — a
-      // velocidade daria 0 e QUALQUER ataque seria tomado por colonizador,
-      // fazendo a esquiva recusar-se a agir. Um colonizador também não vem da
-      // própria ilha para conquistar desta maneira.
-      if (!(dist > 0)) return false;
+      /* MESMA ILHA: NÃO DÁ PARA MEDIR, LOGO ASSUME-SE O PIOR.
+       *
+       * Com distância zero não há velocidade para comparar. Estava aqui a
+       * assumir-se que um colonizador não vem da própria ilha — e vem: uma
+       * conquista dentro da ilha foi tratada como tropa a pé (14/09).
+       *
+       * Como não se pode medir, vale a regra da casa: perder tropa é mau,
+       * perder uma cidade é muito pior. */
+      if (!(dist > 0)) return true;
 
       /* QUANDO É QUE UM ATAQUE TRAZ COLONIZADOR.
        *
