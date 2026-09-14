@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.4600
+// @version      2026.09.12.4700
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2153,7 +2153,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.4600';
+  const MAESTRO_VERSAO = '2026.09.12.4700';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -37360,6 +37360,45 @@ function makeFundacaoModule(opts) {
     } catch (e) {}
   }
 
+  /* ============ BLOCOS DO MAPA: EM LOTE E COM TRAVÃO =================
+   *
+   * A procura de ilhas pedia um bloco de cada vez, em rajada: ao marcar uma
+   * configuração, saíram dezenas de pedidos seguidos e o servidor respondeu
+   * 429 a quase todos — e cada 429 pára o maestro inteiro dois minutos (visto
+   * em jogo, 14/09: 40 erros em poucos segundos).
+   *
+   * O `get_chunks` aceita uma LISTA de blocos: vão seis por pedido, com pausa
+   * entre pedidos, e pára-se assim que o servidor começa a recusar. */
+  function servidorTravadoAgora() {
+    try {
+      const f = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroServidorTravado;
+      return f ? !!f() : false;
+    } catch (e) { return false; }
+  }
+
+  async function pedirBlocos(lista, townIdBase) {
+    const out = [];
+    const base = Number(townIdBase) || Number(Object.keys(mUw.ITowns.towns)[0]);
+    for (let i = 0; i < lista.length; i += 6) {
+      if (servidorTravadoAgora()) break;
+      const lote = lista.slice(i, i + 6);
+      try {
+        const url = mUw.location.origin + '/game/map_data?town_id=' + base
+          + '&action=get_chunks&h=' + mUw.Game.csrfToken
+          + '&json=' + encodeURIComponent(JSON.stringify({
+              chunks: lote.map((c) => ({ x: c.x, y: c.y, timestamp: 0 })),
+              town_id: base, nl_init: true }));
+        const r = await mUw.fetch(url, {
+          headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
+        }).then(lerResposta).catch(() => null);
+        const d = (r && r.json && r.json.data) || {};
+        for (const k of Object.keys(d)) if (d[k]) out.push(d[k]);
+      } catch (e) { seErroDeCodigo(e, 'Fundacao'); break; }
+      if (i + 6 < lista.length) await new Promise((res) => setTimeout(res, 1200));
+    }
+    return out;
+  }
+
   async function infoDaIlha(islandId, townIdBase, ix, iy) {
     try {
       /* Sem `id` — as ilhas marcadas à mão no painel só têm coordenadas —
@@ -37465,6 +37504,7 @@ function makeFundacaoModule(opts) {
     const achadas = [];
     try {
       const vistos = new Set();
+      const querer = [];
       for (const id of Object.keys(mUw.ITowns.towns)) {
         const i = ilhaDe(id);
         if (!i) continue;
@@ -37475,16 +37515,13 @@ function makeFundacaoModule(opts) {
             const chave = `${cx + dx}:${cy + dy}`;
             if (vistos.has(chave)) continue;
             vistos.add(chave);
-
-            const url = mUw.location.origin + '/game/map_data?town_id=' + Number(townIdBase)
-              + '&action=get_chunks&h=' + mUw.Game.csrfToken
-              + '&json=' + encodeURIComponent(JSON.stringify({
-                  chunks: [{ x: cx + dx, y: cy + dy, timestamp: 0 }],
-                  town_id: Number(townIdBase), nl_init: true }));
-            const r = await mUw.fetch(url, { headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include' })
-              .then(lerResposta).catch(() => null);
-            const d = (r && r.json && r.json.data) || {};
-            const bloco = d[0] || d['0'];
+            querer.push({ x: cx + dx, y: cy + dy });
+          }
+        }
+      }
+      {
+        {
+          for (const bloco of await pedirBlocos(querer, townIdBase)) {
             for (const il of ((bloco && bloco.islands) || [])) {
               const ox = Number(il.x), oy = Number(il.y);
               if (!Number.isFinite(ox)) continue;
@@ -37525,37 +37562,29 @@ function makeFundacaoModule(opts) {
     const quero = Math.max(1, Number(minimo) || 12);
 
     for (let anel = 1; anel <= 4; anel++) {
+      /* Todo o anel de uma vez: seis blocos por pedido, com pausa. */
+      const querer = [];
       for (let dx = -anel; dx <= anel; dx++) {
         for (let dy = -anel; dy <= anel; dy++) {
-          /* Só a casca do anel: o interior já foi pedido na volta anterior. */
           if (anel > 1 && Math.abs(dx) < anel && Math.abs(dy) < anel) continue;
-
           const chave = `${cx + dx}:${cy + dy}`;
           if (vistos.has(chave)) continue;
           vistos.add(chave);
-
-          try {
-            const url = mUw.location.origin + '/game/map_data?town_id=' + Number(townIdBase)
-              + '&action=get_chunks&h=' + mUw.Game.csrfToken
-              + '&json=' + encodeURIComponent(JSON.stringify({
-                  chunks: [{ x: cx + dx, y: cy + dy, timestamp: 0 }],
-                  town_id: Number(townIdBase), nl_init: true }));
-            const r = await mUw.fetch(url, {
-              headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
-            }).then(lerResposta).catch(() => null);
-
-            const d = (r && r.json && r.json.data) || {};
-            const bloco = d[0] || d['0'];
-            for (const il of ((bloco && bloco.islands) || [])) {
-              const ox = Number(il.x), oy = Number(il.y);
-              if (!Number.isFinite(ox)) continue;
-              if (filtro.length && filtro.indexOf(String(oceanoDe(ox, oy))) < 0) continue;
-              if (achadas.some((a2) => a2.x === ox && a2.y === oy)) continue;
-              achadas.push({ x: ox, y: oy, id: il.id });
-            }
-          } catch (e) { seErroDeCodigo(e, 'Fundacao'); }
+          querer.push({ x: cx + dx, y: cy + dy });
         }
       }
+      try {
+        /* TODOS os blocos do lote, não só o primeiro. */
+        for (const bloco of await pedirBlocos(querer, townIdBase)) {
+          for (const il of ((bloco && bloco.islands) || [])) {
+            const ox = Number(il.x), oy = Number(il.y);
+            if (!Number.isFinite(ox)) continue;
+            if (filtro.length && filtro.indexOf(String(oceanoDe(ox, oy))) < 0) continue;
+            if (achadas.some((a2) => a2.x === ox && a2.y === oy)) continue;
+            achadas.push({ x: ox, y: oy, id: il.id });
+          }
+        }
+      } catch (e) { seErroDeCodigo(e, 'Fundacao'); }
       if (achadas.length >= quero) break;   // já chega; não se pedem mais blocos
     }
     return achadas;
