@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.6900
+// @version      2026.09.12.7000
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2436,7 +2436,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.6900';
+  const MAESTRO_VERSAO = '2026.09.12.7000';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -41493,7 +41493,13 @@ function makeFecharIlhaModule(opts) {
         if (v === false) c.ativo = false;
       }
     } catch (e) {}
-    if (!c.ativo) { rotina('Fechar ilha: está desligado.'); return; }
+    if (!c.ativo) {
+      /* Desligado, larga-se o colonizador guardado já — não se espera pela
+       * validade da marca. */
+      jaNaoQuerNC('fecharilha');
+      rotina('Fechar ilha: está desligado.');
+      return;
+    }
     if (!fb()) { rotina('Fechar ilha: sem Firebase — não dá para combinar nada.'); return; }
 
     const plano = await lerPlano();
@@ -41502,7 +41508,15 @@ function makeFecharIlhaModule(opts) {
         + 'Vê o painel para continuar ou apagar.');
       return;
     }
-    if (!plano) { rotina('Fechar ilha: não há plano nenhum.'); return; }
+    if (!plano) {
+      /* SEM PLANO, O BILHETE MANTÉM-SE.
+       *
+       * A próxima ilha pode entrar na fila a qualquer momento, e sem
+       * colonizador esta conta não entra nela. Um por conta, sempre. */
+      querNC('fecharilha', 60, 1);
+      rotina('Fechar ilha: não há plano nenhum (guardo um colonizador para a próxima ilha).');
+      return;
+    }
 
     /* O FIREBASE NÃO GUARDA OBJECTOS VAZIOS.
      *
@@ -41545,13 +41559,26 @@ function makeFecharIlhaModule(opts) {
         else if (antes) log(`Fechar ilha ${plano.chave}: deixei de estar disponível — ${disp.porque}.`);
         else rotina(`Fechar ilha ${plano.chave}: não estou disponível — ${disp.porque}.`);
       }
-      /* Disponível, o colonizador fica guardado: nem a fundação nem a
-       * rotação lhe tocam. */
-      if (disp.pode) querNC('fecharilha', 60, 1); else jaNaoQuerNC('fecharilha');
-    } else if (plano.atribuicoes[eu] != null && !plano.enviados[eu] && !enviei) {
+      /* UM COLONIZADOR GUARDADO, SEMPRE.
+       *
+       * A reserva só se marcava quando a conta estava DISPONÍVEL — e estar
+       * disponível exige ter colonizador. Se a rotação já os tinha gasto, a
+       * conta nunca ficava disponível, nunca reservava, e a rotação continuava
+       * a gastar: a ilha nunca chegava a ter as contas prontas ao mesmo tempo.
+       *
+       * Com o módulo ligado, guarda-se UM por conta — não por cidade —
+       * independentemente de haver plano ou vaga. É o bilhete para a próxima
+       * ilha; sem ele, esta conta nunca entra em nenhuma.
+       *
+       * A marca tem validade: se o módulo for desligado, cai sozinha e a
+       * rotação volta a dispor de tudo. */
       querNC('fecharilha', 60, 1);
+      void disp;
     } else {
-      jaNaoQuerNC('fecharilha');
+      /* Mesmo sem lugar atribuído, o bilhete mantém-se: a próxima ilha pode
+       * entrar na fila a qualquer momento. Quem desliga a reserva é o módulo
+       * ao ser desligado — a marca expira sozinha. */
+      querNC('fecharilha', 60, 1);
     }
 
     const meuLugar = plano.atribuicoes[eu];
