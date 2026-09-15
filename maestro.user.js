@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.7200
+// @version      2026.09.12.7400
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2453,7 +2453,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.7200';
+  const MAESTRO_VERSAO = '2026.09.12.7400';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -35248,6 +35248,45 @@ function makeApoioModule(opts) {
     catch (e) { seErroDeCodigo(e, 'Apoio'); }
   }
 
+  /* ============ TECTO DE 14 HORAS POR ALVO =============================
+   *
+   * Um alvo sai da lista quando a revolta acaba — mas isso exige LER, e a
+   * leitura falha. Alvos ficavam presos e as contas continuavam a mandar
+   * tropa para cidades que já não precisavam (15/09).
+   *
+   * Uma revolta dura no máximo 14 h: 7 da primeira fase e 7 da segunda
+   * (pt126). Passado esse tempo desde que o alvo entrou na lista, sai — haja
+   * ou não leitura. Vale para os alvos detectados e para os postos à mão: uma
+   * cidade que se queira apoiar mais tempo volta a pôr-se.
+   *
+   * Sai antes, como sempre, se a revolta acabar e isso for lido. */
+  const TECTO_ALVO_MS = 14 * 3600 * 1000;
+  const ENTRADAS_KEY = 'grepoApoio_entradaAlvo_v1';
+
+  function lerEntradas() {
+    try { return JSON.parse(armazem.getItem(ENTRADAS_KEY) || '{}') || {}; } catch (e) { return {}; }
+  }
+  function marcarEntrada(alvos) {
+    try {
+      const d = lerEntradas();
+      const agoraMs = Date.now();
+      let mexeu = false;
+      for (const id of (alvos || []).map(Number)) {
+        if (!d[id]) { d[id] = agoraMs; mexeu = true; }
+      }
+      /* Os que já não estão na lista deixam de contar. */
+      const vivos = new Set((alvos || []).map(Number));
+      for (const k of Object.keys(d)) if (!vivos.has(Number(k))) { delete d[k]; mexeu = true; }
+      if (mexeu) armazem.setItem(ENTRADAS_KEY, JSON.stringify(d));
+    } catch (e) { seErroDeCodigo(e, 'Apoio'); }
+  }
+  function alvosPassadosDoTecto(alvos) {
+    const d = lerEntradas();
+    const agoraMs = Date.now();
+    return (alvos || []).map(Number)
+      .filter((id) => d[id] && (agoraMs - Number(d[id])) > TECTO_ALVO_MS);
+  }
+
   function faltaRepor(alvoId) {
     const foi = (lerEnviado()[String(alvoId)]) || {};
     const ha = tenhoEm(alvoId);
@@ -36486,7 +36525,7 @@ function makeApoioModule(opts) {
       }
     } catch (e) { seErroDeCodigo(e, 'Apoio'); }
 
-    const alvos = (lista.alvos || lista.targets || []).map(Number).filter(Boolean);
+    let alvos = (lista.alvos || lista.targets || []).map(Number).filter(Boolean);
 
     /* ============ TRANSPORTES A MAIS VOLTAM SOZINHOS ==================
      *
@@ -36752,6 +36791,20 @@ function makeApoioModule(opts) {
      * às cegas — e tornava impossível dizer quantos alvos a frota ainda
      * aguenta. Foi retirado: quem não tiver objectivo próprio usa o padrão do
      * painel. */
+    /* O tecto das 14 h: marca-se a entrada de cada alvo e tiram-se os que já
+     * lá estão há mais tempo do que uma revolta pode durar. */
+    try {
+      marcarEntrada(alvos);
+      const velhos = alvosPassadosDoTecto(alvos);
+      if (velhos.length) {
+        const restam = alvos.filter((id) => velhos.indexOf(Number(id)) < 0);
+        log(`⏳ Apoio: ${velhos.join(', ')} está(ão) na lista há mais de 14 h `
+          + '(o máximo de uma revolta) — tiro da lista. Se ainda precisares, volta a pôr.');
+        await escreverLista(Object.assign({}, lista, { alvos: restam }));
+        alvos = restam;
+      }
+    } catch (e) { seErroDeCodigo(e, 'Apoio'); }
+
     const objetivoDe = (alvoId) => {
       const auto = (lista.revoltasAuto || {})[String(alvoId)];
       if (auto) return c.objetivoRevolta || {};
@@ -43456,18 +43509,51 @@ function makeReforcoModule(opts) {
      * para casa com um ataque ainda a caminho, que é o pior resultado
      * possível. A tropa fica, e vem quando a conta tiver Administrador ou
      * quando a tirares à mão. */
+    /* SEM ADMINISTRADOR TAMBÉM SE RECOLHE — PELA ORDEM MARCADA.
+     *
+     * Antes não se recolhia nestas contas, e a razão era boa enquanto a
+     * retirada dependia de LER: a colecção `Attack` diz quais as cidades
+     * atacadas, mas não é tão completa como a visão geral, e trazer tropa com
+     * informação incompleta podia desguarnecer uma cidade.
+     *
+     * Com a ordem marcada no envio isso mudou: a retirada não lê nada, cumpre
+     * uma hora decidida quando a tropa saiu. E para adiar, a colecção `Attack`
+     * chega — se ela mostrar outro ataque à mesma cidade, a ordem espera.
+     *
+     * Era esta a metade que faltava para as multis sem Administrador
+     * funcionarem de ponta a ponta (15/09). */
     if (semAdministrador && Object.keys(envios).length) {
-      rotina(`Reforço: sem Administrador não trago tropa de volta `
-        + `(${Object.keys(envios).length} envio(s) por recolher) — mandar, mando.`);
+      rotina(`Reforço: sem Administrador — recolho pela hora marcada no envio `
+        + `(${Object.keys(envios).length} envio(s) em carteira).`);
     }
 
     for (const k of Object.keys(envios)) {
-      if (semAdministrador) break;
       const e = envios[k] || {};
-      if (Number(e.impacto) > agora()) continue;          // ainda não bateu
+
+      /* A HORA MARCADA AO ENVIAR É QUE MANDA.
+       *
+       * Sem ela (envios de versões anteriores), vale a regra antiga: depois do
+       * impacto. */
+      const horaOrdem = Number(e.retirarAs) || (Number(e.impacto) ? Number(e.impacto) + 60 : 0);
+      if (horaOrdem && agora() < horaOrdem) continue;      // ainda não é hora
+      if (!horaOrdem && Number(e.impacto) > agora()) continue;
+
+      /* OUTRO ATAQUE À MESMA CIDADE ADIA A ORDEM.
+       *
+       * Só se adia pelo que se CONSEGUE ver. Sem leitura, a ordem cumpre-se —
+       * é o preço de não deixar a tropa presa para sempre. */
       if (aindaAtacadas.has(Number(e.destino))) {
-        rotina(`Reforço: a tropa fica em ${e.destino} — há outro ataque a caminho.`);
-        continue;
+        const proximo = ataques
+          .filter((a) => Number(a.alvo) === Number(e.destino) && Number(a.chega) > agora())
+          .map((a) => Number(a.chega))
+          .sort((x, y) => x - y)[0];
+        if (proximo) {
+          e.retirarAs = proximo + 60;
+          gravarEnvios(envios);
+          rotina(`Reforço: a tropa fica em ${e.destino} — há outro ataque a caminho; `
+            + 'retirada adiada.');
+          continue;
+        }
       }
       /* TRAZER A TROPA DE VOLTA.
        *
@@ -43716,10 +43802,24 @@ function makeReforcoModule(opts) {
         for (const u of Object.keys(carga)) {
           somada[u] = (Number(somada[u]) || 0) + (Number(carga[u]) || 0);
         }
+        const impactoNovo = Math.max(Number(a.chega) || 0, Number(antes && antes.impacto) || 0);
         envios[chaveEnv] = {
           destino: id, origem: Number(origem.id), carga: somada,
-          impacto: Math.max(Number(a.chega) || 0, Number(antes && antes.impacto) || 0),
+          impacto: impactoNovo,
           quando: agora(),
+          /* ORDEM DE RETIRADA, MARCADA AO ENVIAR.
+           *
+           * A retirada dependia de LER o estado — a visão geral para saber se
+           * ainda há ataques, a Ágora para ver a tropa. Quando a leitura falha
+           * (sem Administrador, 429, máquina lenta), a tropa fica no alvo
+           * indefinidamente: foi o que se viu nas multis (15/09).
+           *
+           * Marca-se a hora da retirada no momento do envio: um minuto depois
+           * do impacto. Não depende de ler nada. Se entretanto se vir outro
+           * ataque à mesma cidade, a ordem é adiada — mas só com base no que
+           * se conseguir ver; o que não se vê já não prende a tropa lá para
+           * sempre. */
+          retirarAs: impactoNovo ? impactoNovo + 60 : 0,
         };
         gravarEnvios(envios);
 
