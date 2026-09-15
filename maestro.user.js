@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.8000
+// @version      2026.09.12.8100
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2496,7 +2496,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.8000';
+  const MAESTRO_VERSAO = '2026.09.12.8100';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -39158,6 +39158,47 @@ function makeFundacaoModule(opts) {
       const paraTudo = new RegExp('colonizad|cultura|pontos|porto|academia|docks|academy'
         + '|premium|ouro|unidades suficientes|not enough units', 'i');
 
+      /* ============ O QUE ESTÁ GUARDADO NÃO SE GASTA ====================
+       *
+       * A reserva de colonizadores travava a ROTAÇÃO, mas a fundação nunca a
+       * consultava: com um colonizador guardado para fechar uma ilha, ela
+       * mandou-o fundar noutro sítio (15/09).
+       *
+       * E a vaga de cidade conta tanto como o colonizador: é ela que a
+       * fundação gastou e que fez a conta deixar de poder entrar no plano.
+       * ================================================================== */
+      const travaDoFecharIlha = (() => {
+        try {
+          const alvo = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window);
+
+          /* Colonizadores guardados por quem tem prioridade sobre a fundação. */
+          const guardados = (typeof quantosNCReservados === 'function')
+            ? quantosNCReservados('fundacao') : 0;
+          let emCasa = 0;
+          for (const t2 of Object.values(mUw.ITowns.towns)) {
+            try { emCasa += Number((mUw.ITowns.getTown(t2.id).units() || {}).colonize_ship) || 0; }
+            catch (e) {}
+          }
+          if (guardados > 0 && emCasa - guardados < 1) {
+            return `há ${guardados} colonizador(es) guardado(s) para fechar ilha e só tenho ${emCasa}`;
+          }
+
+          /* A última vaga é de quem está inscrito num plano. */
+          const espera = Number(alvo.__maestroFecharIlhaEspera) || 0;
+          if (espera && (Date.now() - espera) < 15 * 60 * 1000) {
+            const v = vagaParaCidade();
+            const sobram = Math.max(0, Number(v.limite) - Number(v.tenho) - Number(v.aCaminho));
+            if (sobram <= 1) return 'a minha última vaga está reservada para fechar uma ilha';
+          }
+        } catch (e) { seErroDeCodigo(e, 'Fundacao'); }
+        return '';
+      })();
+
+      if (travaDoFecharIlha) {
+        (ctx.logRotina || log)(`Fundação: não fundo agora — ${travaDoFecharIlha}.`);
+        return;
+      }
+
       /* SEGURANÇA À BEIRA DO ENVIO.
        *
        * A regra de uma cidade por ilha é verificada mais acima, quando a lista
@@ -41968,6 +42009,19 @@ function makeFecharIlhaModule(opts) {
        * A marca tem validade: se o módulo for desligado, cai sozinha e a
        * rotação volta a dispor de tudo. */
       querNC('fecharilha', 60, 1);
+
+      /* ESTA CONTA ESTÁ À ESPERA DE UMA VAGA PARA FECHAR UMA ILHA.
+       *
+       * A vaga de cidade é o recurso escasso: com uma só, fundar numa ilha
+       * nova e fechar uma ilha competem pela mesma. Aconteceu em jogo (15/09):
+       * a main declarou-se disponível às 14:54, a fundação gastou a vaga às
+       * 15:25, e a partir daí já não podia entrar no plano.
+       *
+       * Fica a marca; a fundação vê-a antes de gastar a última vaga. */
+      try {
+        const alvo = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window);
+        alvo.__maestroFecharIlhaEspera = disp.pode ? Date.now() : 0;
+      } catch (e) {}
       void disp;
     } else {
       /* Mesmo sem lugar atribuído, o bilhete mantém-se: a próxima ilha pode
