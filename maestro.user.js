@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.7400
+// @version      2026.09.12.7500
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2453,7 +2453,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.7400';
+  const MAESTRO_VERSAO = '2026.09.12.7500';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -41723,7 +41723,19 @@ function makeFecharIlhaModule(opts) {
       const minhaFalha = (plano.falhados || {})[eu];
       const falhaVelha = (() => {
         if (!minhaFalha) return false;
-        if (!/tentativas/i.test(String(minhaFalha))) return false;
+        /* QUALQUER DESISTÊNCIA CADUCA, NÃO SÓ AS DE "TENTATIVAS".
+         *
+         * A primeira versão desta regra só levantava desistências cujo texto
+         * falasse em tentativas. Uma conta que tivesse desistido com "sem
+         * lugares livres" ficava presa para sempre — e ficou: a ilha 351:499
+         * tinha 17 lugares por ocupar e 15 contas atribuídas, todas a repetir
+         * "já desisti (sem lugares livres)" de passagem em passagem
+         * (visto em jogo, 15/09).
+         *
+         * As desistências dizem respeito a um MOMENTO: a ilha estava cheia, o
+         * lugar foi ocupado, o pedido falhou. Meia hora depois já não dizem
+         * nada sobre agora. O que é estável — não tenho colonizador, já tenho
+         * cidade nesta ilha — está no `abortado`, e esse mantém-se. */
         const rec = (registosContas.chave === plano.chave
           && registosContas.dados[chaveSegura(eu)]) || null;
         const quando = Number(rec && rec.quando) || 0;
