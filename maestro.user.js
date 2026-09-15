@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.8100
+// @version      2026.09.12.8200
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1006,6 +1006,7 @@
 
   async function refrescarApoioFora(idsDasMinhasCidades, quantas) {
     ultimaLeitura = { tentadas: 0, lidas: 0, falhadas: 0, quando: Date.now() };
+    const minhas = new Set((idsDasMinhasCidades || []).map(Number).filter(Boolean));
     /* Tenta primeiro a via rápida: se der, fica tudo fresco de uma vez. */
     const deUmaVez = await apoioForaDeUmaVez();
     if (deUmaVez) {
@@ -1038,6 +1039,8 @@
     let lidas = 0;
     let falhadas = 0;
     for (const id of alvo) {
+      if (minhas.size && !minhas.has(Number(id))) continue;   // não é desta conta
+
       const blocos = await apoioForaDaCidade(id);
       if (blocos == null) { falhadas++; continue; }   // não sei: fica a leitura antiga
       cache[id] = { quando: Date.now(), blocos };
@@ -1089,19 +1092,36 @@
    * modelos e já não é "desconhecida". */
   function cidadesComApoioFora(minhasIds) {
     const out = new Set();
+
+    /* SÓ AS CIDADES DESTA CONTA.
+     *
+     * Os modelos `Units` incluem blocos de apoio que estão NAS minhas cidades
+     * mas pertencem a outras contas — as multis a apoiar a main, por exemplo.
+     * O `home_town_id` desses blocos é uma cidade que não é minha, e ela
+     * entrava na lista: o Maestro pedia a Ágora dela e o jogo respondia "esta
+     * cidade não lhe pertence", passagem após passagem (visto em jogo, 15/09,
+     * na main do pt126 com as cidades 3104 e 5277).
+     *
+     * Cada pedido desses é um pedido gasto a não fazer nada — e o aviso que
+     * saía dava a entender que a leitura estava avariada, quando o que estava
+     * errado era a pergunta. */
+    const minhas = new Set((minhasIds || []).map(Number).filter(Boolean));
+    const ehMinha = (id) => !minhas.size || minhas.has(Number(id));
+
     try {
       const mods = uw.MM.getModels().Units || {};
       for (const k of Object.keys(mods)) {
         const a2 = mods[k].attributes || {};
         const casa = Number(a2.home_town_id);
         const onde = Number(a2.current_town_id);
-        if (casa && onde && casa !== onde) out.add(casa);
+        if (casa && onde && casa !== onde && ehMinha(casa)) out.add(casa);
       }
     } catch (e) {}
 
     const cache = lerCacheApoioFora();
     try {
       for (const id of Object.keys(cache)) {
+        if (!ehMinha(id)) continue;
         if (((cache[id] || {}).blocos || []).length) out.add(Number(id));
       }
     } catch (e) {}
@@ -2496,7 +2516,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.8100';
+  const MAESTRO_VERSAO = '2026.09.12.8200';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
