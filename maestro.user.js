@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.7800
+// @version      2026.09.12.7900
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1310,6 +1310,49 @@
   }
   try { uw.__maestroLigado = moduloLigadoNoPainel; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
+  /* ============ O QUE ERA PARTILHADO PELO GIST ==========================
+   *
+   * O Gist partilhava 46 ficheiros entre as contas, com o perfil e o mundo no
+   * PRÓPRIO NOME: `recrutamento-templates-main-pt126`, `-multi-pt126`. O
+   * token expirou e a partilha parou.
+   *
+   * Passa para o Firebase, com a MESMA chave — o nome do ficheiro. Não há
+   * perfil novo a inventar: quem separa a main das multis é o nome que os
+   * módulos já constroem, e que já estava certo.
+   *
+   * (Na 7600 inventei um caminho com um perfil lido de uma chave que não
+   * existe, e a main ficou com os alvos das multis. Não se repete.) */
+  function chaveGistNoFirebase(nomeFicheiro) {
+    const n = String(nomeFicheiro || '').replace(/\.json$/, '');
+    return 'gist/' + n.replace(/[.#$\[\]\/:]/g, '_');
+  }
+
+  async function lerPartilhado(nomeFicheiro) {
+    try {
+      const f = uw.__maestroFb;
+      if (!f || !f.url || !f.url()) return null;
+      const d = await f.ler(chaveGistNoFirebase(nomeFicheiro));
+      return (d && typeof d === 'object' && Object.keys(d).length) ? d : null;
+    } catch (e) { return null; }
+  }
+
+  async function escreverPartilhado(nomeFicheiro, dados) {
+    try {
+      const f = uw.__maestroFb;
+      if (!f || !f.url || !f.url()) return { ok: false, msg: 'sem Firebase' };
+      await f.escrever(chaveGistNoFirebase(nomeFicheiro), dados);
+      return { ok: true };
+    } catch (e) { return { ok: false, msg: e.message }; }
+  }
+
+  try {
+    uw.__maestroPartilha = {
+      chave: chaveGistNoFirebase,
+      ler: lerPartilhado,
+      escrever: escreverPartilhado,
+    };
+  } catch (e) {}
+
   /* ============ CAIXA NEGRA ============================================
    *
    * O registo do ecrã perde-se ao recarregar a página, e a VPS recarrega de
@@ -2453,7 +2496,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.7800';
+  const MAESTRO_VERSAO = '2026.09.12.7900';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -11291,6 +11334,20 @@ function makeRecrutamentoModule(opts) {
     // não segurar o processo (importante nos testes)
     try { if (typeof t2 !== 'undefined' && t2 && t2.unref) t2.unref(); } catch (e) { seErroDeCodigo(e, 'Recrutamento'); }
 
+    /* PRIMEIRO O FIREBASE, COM O NOME DO FICHEIRO.
+     *
+     * A chave é o mesmo nome que o Gist usava — `recrutamento-templates-main-pt126`,
+     * `-multi-pt126` — e é ele que separa a main das multis. Não há perfil
+     * novo a inventar: foi isso que correu mal na 7600, e a main ficou com os
+     * alvos das multis. */
+    try {
+      const p = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroPartilha;
+      if (p) {
+        const d = await p.ler(ficheiroGist());
+        if (d) { saveLocal(d); return d; }
+      }
+    } catch (e) { seErroDeCodigo(e, 'Recrutamento'); }
+
     if (!GIST.id) return loadLocal();
     try {
       const r = await mUw.fetch('https://api.github.com/gists/' + GIST.id, { headers: cabecalhoGist() });
@@ -11309,6 +11366,15 @@ function makeRecrutamentoModule(opts) {
       }
       const t = JSON.parse(__txt || '{}');
       saveLocal(t);
+
+    /* A GRAVAÇÃO VAI PARA O FIREBASE, com a mesma chave da leitura. */
+    try {
+      const p = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroPartilha;
+      if (p) {
+        const r = await p.escrever(ficheiroGist(), t);
+        if (r && r.ok) return { ok: true };
+      }
+    } catch (e) { seErroDeCodigo(e, 'Recrutamento'); }
       return t;
     } catch (e) { return loadLocal(); }
   }
