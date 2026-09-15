@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.8600
+// @version      2026.09.12.8700
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2536,7 +2536,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.8600';
+  const MAESTRO_VERSAO = '2026.09.12.8700';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -26173,7 +26173,19 @@ function makeEsquivaModule(opts) {
      * arriscava perder um ataque a sério. */
     const DESMENTIDAS_ATE_DESISTIR = 10;
 
+    /* SÓ AS CIDADES DESTA CONTA.
+     *
+     * A lista chegou a trazer cidades que não são da conta — 650 e 5123, numa
+     * conta onde nenhuma delas existe (visto em jogo, 15/09). Perguntava-se
+     * por elas ao servidor, que devolvia comandos sem nenhum para lá, e a
+     * mensagem dizia "nenhum para esta cidade" como se fosse um mistério.
+     *
+     * Cada uma dessas perguntas é um pedido gasto a não fazer nada — e é
+     * quando o servidor começa a recusar que eles fazem falta. */
+    const saoMinhas = new Set(Object.keys(mUw.ITowns.towns || {}).map(Number));
+
     const emFalta = Object.keys(esperados)
+      .filter((tid) => saoMinhas.has(Number(tid)))
       .filter((tid) => (contadosLocal[tid] || 0) < esperados[tid])
       .filter((tid) => {
         const d = desmentidas[tid];
@@ -26272,7 +26284,10 @@ function makeEsquivaModule(opts) {
         /* O servidor não confirmou nenhum ataque a esta cidade: a colecção
          * `Attack` está a mentir. Fica de quarentena para não se perguntar
          * outra vez já a seguir. */
-        const paraEsta = cmds.filter((cd) => Number(cd.target_town_id) === Number(tid));
+        /* Comandos sem destino não dizem nada: apareceram seis numa leitura
+         * de 254 (15/09). Ignoram-se em vez de contarem para o desmentido. */
+        const comDestino = cmds.filter((cd) => Number(cd.target_town_id) > 0);
+        const paraEsta = comDestino.filter((cd) => Number(cd.target_town_id) === Number(tid));
         const k = String(tid);
 
         /* PORQUE É QUE O SERVIDOR NÃO CONFIRMOU.
