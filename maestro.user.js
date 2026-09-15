@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.7900
+// @version      2026.09.12.8000
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2496,7 +2496,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.7900';
+  const MAESTRO_VERSAO = '2026.09.12.8000';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -3317,7 +3317,15 @@
   }
 
   async function publicarPerfil(nome) {
-    if (!GIST_ID_GLOBAL || !GIST_TOKEN_GLOBAL) return { ok: false, msg: 'sem Gist configurado' };
+    /* O PERFIL TAMBÉM VIAJA PELO FIREBASE.
+     *
+     * É a peça mais importante da partilha: leva as definições da conta
+     * principal para as outras dezanove. A chave é o mesmo nome de ficheiro —
+     * `perfil-main-pt126`, `perfil-multi-pt126` — que já separa os perfis.
+     *
+     * O Gist continua a ser escrito quando estiver configurado, para não se
+     * perder nada durante a mudança. */
+    const semGist = !GIST_ID_GLOBAL || !GIST_TOKEN_GLOBAL;
     const locais = new Set(CHAVES_LOCAIS_DO_PERFIL);
     const chaves = {};
     try {
@@ -3374,6 +3382,16 @@
       body.files[ficheiroPerfil(nome)] = {
         content: JSON.stringify({ perfil: nome, mundo: WORLD, quando: Date.now(), chaves }, null, 1),
       };
+      /* Firebase primeiro. */
+      try {
+        const p = uw.__maestroPartilha;
+        if (p) {
+          const rr = await p.escrever(ficheiroPerfil(nome), chaves);
+          if (rr && rr.ok && semGist) return { ok: true, n: Object.keys(chaves).length };
+        }
+      } catch (e) { seErroDeCodigo(e, 'núcleo'); }
+      if (semGist) return { ok: false, msg: 'sem Firebase nem Gist' };
+
       const r = await pedirFora(`https://api.github.com/gists/${GIST_ID_GLOBAL}`, {
         method: 'PATCH',
         headers: {
@@ -3388,14 +3406,26 @@
   }
 
   async function buscarPerfil(nome) {
-    if (!GIST_ID_GLOBAL) return { ok: false, msg: 'sem Gist configurado' };
+    /* Firebase primeiro, com a mesma chave — mas o que vem de lá segue o
+     * MESMO caminho de aplicação do que vinha do Gist. Devolver aqui saltava
+     * a aplicação das chaves e o perfil não chegava a ser aplicado. */
+    let dadosFb = null;
     try {
-      const r = await pedirFora(`https://api.github.com/gists/${GIST_ID_GLOBAL}`, {
+      const p = uw.__maestroPartilha;
+      if (p) dadosFb = await p.ler(ficheiroPerfil(nome));
+    } catch (e) { seErroDeCodigo(e, 'núcleo'); }
+
+    if (!dadosFb && !GIST_ID_GLOBAL) return { ok: false, msg: 'sem Firebase nem Gist' };
+    try {
+      let conteudoFb = null;
+      if (dadosFb) conteudoFb = JSON.stringify(dadosFb);
+
+      const r = conteudoFb ? null : await pedirFora(`https://api.github.com/gists/${GIST_ID_GLOBAL}`, {
         headers: cabecalhoGist(),
       });
-      if (!r.ok) return { ok: false, msg: 'não consegui ler o Gist' };
-      const j = await r.json();
-      const f = (j.files || {})[ficheiroPerfil(nome)];
+      if (!conteudoFb && (!r || !r.ok)) return { ok: false, msg: 'não consegui ler o Gist' };
+      const j = conteudoFb ? null : await r.json();
+      const f = conteudoFb ? { content: conteudoFb } : (j.files || {})[ficheiroPerfil(nome)];
       if (!f) return { ok: false, msg: `o perfil "${nome}" ainda não foi publicado` };
 
       /* FICHEIROS GRANDES vêm TRUNCADOS.
@@ -6975,6 +7005,18 @@ function makeConstrucaoModule(opts) {
   }
   // Lê os templates do Gist (partilhado). Se falhar, usa a cache local.
   async function readTemplatesGist() {
+    /* PRIMEIRO O FIREBASE, com a MESMA chave do Gist (o nome do ficheiro).
+     *
+     * É o nome que separa a main das multis — `...-main-pt126` contra
+     * `...-multi-pt126`. Nada de perfis inventados: foi isso que correu mal na
+     * 7600 e trocou os alvos da main. */
+    try {
+      const p = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroPartilha;
+      if (p) {
+        const d = await p.ler(ficheiroGist());
+        if (d) { saveTemplatesLocal(d); return d; }
+      }
+    } catch (e) { seErroDeCodigo(e, 'Construcao'); }
     // não segurar o processo (importante nos testes)
     try { if (typeof t2 !== 'undefined' && t2 && t2.unref) t2.unref(); } catch (e) { seErroDeCodigo(e, 'Construcao'); }
     if (!GIST.id) return loadTemplatesLocal();
@@ -7003,6 +7045,14 @@ function makeConstrucaoModule(opts) {
   const travaoGist = { aEsperar: false, pendente: null };
 
   async function writeTemplatesGist(tpls) {
+    /* A GRAVAÇÃO VAI PARA O FIREBASE, com a mesma chave da leitura. */
+    try {
+      const p = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroPartilha;
+      if (p) {
+        const r = await p.escrever(ficheiroGist(), tpls);
+        if (r && r.ok) return { ok: true };
+      }
+    } catch (e) { seErroDeCodigo(e, 'Construcao'); }
     /* Endireitar antes de publicar, senão o estrago viaja para as outras
      * contas. */
     try { for (const k of Object.keys(tpls || {})) endireitarBlocos(tpls[k]); } catch (e) { seErroDeCodigo(e, 'Construcao'); }
@@ -9017,6 +9067,18 @@ function makePesquisaModule(opts) {
     try { armazem.setItem(CACHE_KEY, JSON.stringify(t)); } catch (e) { seErroDeCodigo(e, 'Pesquisa'); }
   }
   async function readTemplatesGist() {
+    /* PRIMEIRO O FIREBASE, com a MESMA chave do Gist (o nome do ficheiro).
+     *
+     * É o nome que separa a main das multis — `...-main-pt126` contra
+     * `...-multi-pt126`. Nada de perfis inventados: foi isso que correu mal na
+     * 7600 e trocou os alvos da main. */
+    try {
+      const p = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroPartilha;
+      if (p) {
+        const d = await p.ler(ficheiroGist());
+        if (d) { saveTemplatesLocal(d); return d; }
+      }
+    } catch (e) { seErroDeCodigo(e, 'Pesquisa'); }
     // não segurar o processo (importante nos testes)
     try { if (typeof t2 !== 'undefined' && t2 && t2.unref) t2.unref(); } catch (e) { seErroDeCodigo(e, 'Pesquisa'); }
     if (!GIST.id) return loadTemplatesLocal();
@@ -9043,6 +9105,14 @@ function makePesquisaModule(opts) {
   const travaoGist = { aEsperar: false, pendente: null };
 
   async function writeTemplatesGist(t) {
+    /* A GRAVAÇÃO VAI PARA O FIREBASE, com a mesma chave da leitura. */
+    try {
+      const p = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroPartilha;
+      if (p) {
+        const r = await p.escrever(ficheiroGist(), t);
+        if (r && r.ok) return { ok: true };
+      }
+    } catch (e) { seErroDeCodigo(e, 'Pesquisa'); }
     /* TRAVÃO: o GitHub limita as escritas por hora e várias gravações seguidas
      * esgotam-no (403 "API rate limit exceeded"). Se a última foi há menos de
      * 30 s, guarda-se e sobe só a última versão.
@@ -14234,6 +14304,18 @@ function makeHeroisModule(opts) {
   function loadLocal() { try { return JSON.parse(armazem.getItem(CACHE_KEY) || '{}'); } catch (e) { return {}; } }
   function saveLocal(c) { try { armazem.setItem(CACHE_KEY, JSON.stringify(c)); } catch (e) { seErroDeCodigo(e, 'Herois'); } }
   async function readGist() {
+    /* PRIMEIRO O FIREBASE, com a MESMA chave do Gist (o nome do ficheiro).
+     *
+     * É o nome que separa a main das multis — `...-main-pt126` contra
+     * `...-multi-pt126`. Nada de perfis inventados: foi isso que correu mal na
+     * 7600 e trocou os alvos da main. */
+    try {
+      const p = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroPartilha;
+      if (p) {
+        const d = await p.ler(ficheiroGist());
+        if (d) { saveLocal(d); return d; }
+      }
+    } catch (e) { seErroDeCodigo(e, 'Herois'); }
     // não segurar o processo (importante nos testes)
     try { if (typeof t2 !== 'undefined' && t2 && t2.unref) t2.unref(); } catch (e) { seErroDeCodigo(e, 'Herois'); }
     if (!GIST.id) return loadLocal();
@@ -14260,6 +14342,14 @@ function makeHeroisModule(opts) {
   const travaoGist = { aEsperar: false, pendente: null };
 
   async function writeGist(c) {
+    /* A GRAVAÇÃO VAI PARA O FIREBASE, com a mesma chave da leitura. */
+    try {
+      const p = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroPartilha;
+      if (p) {
+        const r = await p.escrever(ficheiroGist(), c);
+        if (r && r.ok) return { ok: true };
+      }
+    } catch (e) { seErroDeCodigo(e, 'Herois'); }
     /* TRAVÃO: o GitHub limita as escritas por hora e várias gravações seguidas
      * esgotam-no (403 "API rate limit exceeded"). Se a última foi há menos de
      * 30 s, guarda-se e sobe só a última versão.
@@ -21242,6 +21332,18 @@ function makeDeusesModule(opts) {
 
 
   async function lerGist() {
+    /* PRIMEIRO O FIREBASE, com a MESMA chave do Gist (o nome do ficheiro).
+     *
+     * É o nome que separa a main das multis — `...-main-pt126` contra
+     * `...-multi-pt126`. Nada de perfis inventados: foi isso que correu mal na
+     * 7600 e trocou os alvos da main. */
+    try {
+      const p = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroPartilha;
+      if (p) {
+        const d = await p.ler(ficheiroGist());
+        if (d) { guardarLocal(d); return d; }
+      }
+    } catch (e) { seErroDeCodigo(e, 'Deuses'); }
     // não segurar o processo (importante nos testes)
     try { if (typeof t2 !== 'undefined' && t2 && t2.unref) t2.unref(); } catch (e) { seErroDeCodigo(e, 'Deuses'); }
     if (!GIST.id) return cfgLocal();
@@ -21258,6 +21360,14 @@ function makeDeusesModule(opts) {
   const travaoGist = { aEsperar: false, pendente: null };
 
   async function escreverGist(c) {
+    /* A GRAVAÇÃO VAI PARA O FIREBASE, com a mesma chave da leitura. */
+    try {
+      const p = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroPartilha;
+      if (p) {
+        const r = await p.escrever(ficheiroGist(), c);
+        if (r && r.ok) return { ok: true };
+      }
+    } catch (e) { seErroDeCodigo(e, 'Deuses'); }
     /* TRAVÃO: o GitHub limita as escritas por hora e várias gravações seguidas
      * esgotam-no (403 "API rate limit exceeded"). Se a última foi há menos de
      * 30 s, guarda-se e sobe só a última versão.
@@ -33432,6 +33542,17 @@ function makeColonosModule(opts) {
   const FICHEIRO = () => `colonos_${mWorld}.json`;
 
   async function lerPartilha() {
+    /* PRIMEIRO O FIREBASE, com a MESMA chave do Gist (o nome do ficheiro).
+     *
+     * É o nome que separa a main das multis. Nada de perfis inventados: foi
+     * isso que correu mal na 7600. */
+    try {
+      const p = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroPartilha;
+      if (p) {
+        const d = await p.ler(FICHEIRO());
+        if (d) return d;
+      }
+    } catch (e) { seErroDeCodigo(e, 'Colonos'); }
     if (!GIST_ID || !GIST_TOKEN) return {};
     try {
       const r = await pedirForaM(`https://api.github.com/gists/${GIST_ID}`, {
@@ -33449,6 +33570,14 @@ function makeColonosModule(opts) {
   const ULTIMA_PARTILHA_KEY = 'grepoColonos_ultimaPartilha_v1';
 
   async function escreverPartilha(dados) {
+    /* A GRAVAÇÃO VAI PARA O FIREBASE, com a mesma chave da leitura. */
+    try {
+      const p = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroPartilha;
+      if (p) {
+        const r = await p.escrever(FICHEIRO(), dados);
+        if (r && r.ok) return true;
+      }
+    } catch (e) { seErroDeCodigo(e, 'Colonos'); }
     // não segurar o processo (importante nos testes)
     try { if (typeof t2 !== 'undefined' && t2 && t2.unref) t2.unref(); } catch (e) { seErroDeCodigo(e, 'Colonos'); }
     if (!GIST_ID || !GIST_TOKEN) return false;
