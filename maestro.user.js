@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.8300
+// @version      2026.09.12.8400
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2536,7 +2536,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.8300';
+  const MAESTRO_VERSAO = '2026.09.12.8400';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -3243,7 +3243,9 @@
    * nas vinte — nada, agora que as leituras vão autenticadas. */
   async function talvezApanharPerfil() {
     try {
-      if (souPrincipal() || !GIST_ID_GLOBAL) return;
+      /* Buscar não precisa do Gist: o perfil está no Firebase desde a 8000. */
+      const temFb = !!(uw.__maestroFb && uw.__maestroFb.url && uw.__maestroFb.url());
+      if (souPrincipal() || (!GIST_ID_GLOBAL && !temFb)) return;
       const esc = lerEscolhas();
       const perfil = (esc && esc.perfil) || '';
       if (!perfil) return;
@@ -3266,7 +3268,7 @@
 
   async function aplicarPerfilAoArrancar() {
     if (souPrincipal()) return;                 // a principal não busca
-    if (!GIST_ID_GLOBAL) return;
+    if (!GIST_ID_GLOBAL && !(uw.__maestroFb && uw.__maestroFb.url && uw.__maestroFb.url())) return;
 
     const esc = lerEscolhas();
     const perfil = (esc && esc.perfil) || '';
@@ -3747,16 +3749,52 @@
        *
        * Só ela publica: com 20 contas a escrever, o GitHub corta as escritas —
        * já nos aconteceu. */
+      /* A PUBLICAÇÃO NÃO PODE DEPENDER DO GIST.
+       *
+       * Exigia `GIST_ID_GLOBAL` e `GIST_TOKEN_GLOBAL`: ao tirar as credenciais
+       * do Gist, a conta principal deixou de publicar e as multis ficaram com
+       * as definições antigas — uma mudança no painel da principal não chegava
+       * a lado nenhum (15/09).
+       *
+       * Agora basta haver Firebase. E em vez de publicar de meia em meia hora
+       * a torto e a direito, olha-se primeiro se ALGUMA COISA MUDOU: sem
+       * mudanças não se escreve nada, com mudanças publica-se em minutos.
+       * Assim é mais rápido para ti e mais leve para a base de dados. */
+      let assinaturaPublicada = '';
+      const assinaturaDasDefinicoes = () => {
+        try {
+          const partes = [];
+          for (let i = 0; i < localStorage.length; i++) {
+            const k = localStorage.key(i);
+            if (!k || !/^grepo/i.test(k)) continue;
+            partes.push(k + ':' + (localStorage.getItem(k) || '').length);
+          }
+          return partes.sort().join('|');
+        } catch (e) { return ''; }
+      };
+
       setInterval(async () => {
-        if (!souPrincipal() || !GIST_ID_GLOBAL || !GIST_TOKEN_GLOBAL) return;
+        if (!souPrincipal()) return;
+        const temFirebase = !!(uw.__maestroFb && uw.__maestroFb.url && uw.__maestroFb.url());
+        if (!temFirebase && (!GIST_ID_GLOBAL || !GIST_TOKEN_GLOBAL)) return;
+
         const esc = lerEscolhas();
         const perfil = (esc && esc.perfil) || '';
         if (!perfil) return;
+
+        /* Nada mudou desde a última publicação: não se escreve. */
+        const agora = assinaturaDasDefinicoes();
+        if (agora && agora === assinaturaPublicada) return;
+
         try {
           const r = await publicarPerfil(perfil);
-          if (r && r.ok) log('core', `Perfil "${perfil}" publicado (${r.n} definição(ões)).`);
+          if (r && r.ok) {
+            assinaturaPublicada = agora;
+            log('core', `Perfil "${perfil}" publicado (${r.n} definição(ões)) — as outras contas `
+              + 'apanham-no na próxima passagem.');
+          }
         } catch (e) { seErroDeCodigo(e, 'núcleo'); }
-      }, 30 * 60 * 1000);
+      }, 5 * 60 * 1000);
       // e também ao fechar a página
       uw.addEventListener('beforeunload', () => {
         const p2 = perfilAtual();
