@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.8700
+// @version      2026.09.12.8800
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2536,7 +2536,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.8700';
+  const MAESTRO_VERSAO = '2026.09.12.8800';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -37233,6 +37233,19 @@ function makeApoioModule(opts) {
      * lá estão há mais tempo do que uma revolta pode durar. */
     try {
       marcarEntrada(alvos);
+
+      /* O reforço de um alvo que saiu da lista não tem onde ser entregue:
+       * apaga-se, para não ficar a inflacionar quotas de alvos que já não
+       * existem. */
+      try {
+        const extra = lerReforco();
+        const vivos = new Set((alvos || []).map(Number));
+        let mexeu = false;
+        for (const k of Object.keys(extra)) {
+          if (!vivos.has(Number(k))) { delete extra[k]; mexeu = true; }
+        }
+        if (mexeu) gravarReforco(extra);
+      } catch (e) { seErroDeCodigo(e, 'Apoio'); }
       const velhos = alvosPassadosDoTecto(alvos);
       if (velhos.length) {
         const restam = alvos.filter((id) => velhos.indexOf(Number(id)) < 0);
@@ -37286,6 +37299,18 @@ function makeApoioModule(opts) {
       } catch (e) { doPerfil = 0; }
       return Math.max(contasVivas, doPerfil, 2);
     })();
+    /* A QUOTA INCLUI O REFORÇO PEDIDO NO PAINEL.
+     *
+     * O reforço soma-se ao objectivo de propósito — é tropa a mais, pedida à
+     * mão. Mas a retirada do excesso continuava a olhar só para o objectivo:
+     * cada conta mandava os 200 extra e, na passagem seguinte, via-se acima da
+     * parte dela e retirava-os. Uma parte do módulo mandava, a outra tirava
+     * (visto em jogo, 15/09, numa revolta com 4500 de objectivo e 200 de
+     * reforço por conta).
+     *
+     * O reforço vale enquanto o alvo estiver na lista — e a lista tem o tecto
+     * das 14 horas, que é o que uma revolta pode durar. Quando o alvo sai,
+     * sai com ele. */
     const quotaDe = (alvoId) => {
       const obj = objetivoDe(alvoId);
       const out = {};
@@ -37293,6 +37318,13 @@ function makeApoioModule(opts) {
         const n = Number(obj[u]) || 0;
         if (n > 0) out[u] = Math.ceil(n / divisorContas);
       }
+      try {
+        const extra = lerReforco()[alvoId] || {};
+        for (const u of Object.keys(extra)) {
+          const n = Number(extra[u]) || 0;
+          if (n > 0) out[u] = (out[u] || 0) + n;     // o reforço é POR CONTA
+        }
+      } catch (e) { seErroDeCodigo(e, 'Apoio'); }
       return out;
     };
     /* O LIMITE DE CIDADES É POR ALVO.
@@ -37445,19 +37477,20 @@ function makeApoioModule(opts) {
       }
       const servindoObjetivo = comObjetivo;
 
-      /* O REFORÇO PEDIDO NO PAINEL SOMA-SE AO OBJECTIVO.
+      /* O REFORÇO JÁ ESTÁ NA QUOTA — não se soma aqui outra vez.
        *
-       * É tropa a mais, de propósito: serve para engrossar um alvo que está a
-       * levar porrada sem mexer no objectivo de todos. */
+       * Somava-se nos dois sítios: na quota (que diz quanto esta conta deve
+       * ter no alvo) e aqui (no que falta mandar). Cada conta mandaria o dobro
+       * do reforço pedido.
+       *
+       * A quota é o sítio certo: é dela que sai tanto o que falta mandar como
+       * o que conta por excesso — e era essa diferença que fazia a tropa do
+       * reforço ser retirada a seguir a chegar (15/09). */
       try {
         const extra = lerReforco()[alvo];
         if (extra && Object.keys(extra).length) {
-          porMandar = porMandar || {};
-          for (const u of Object.keys(extra)) {
-            porMandar[u] = (Number(porMandar[u]) || 0) + (Number(extra[u]) || 0);
-          }
           rotina(`Apoio: ${alvo} leva também o reforço pedido no painel `
-            + `(${Object.keys(extra).map((u) => `${extra[u]} ${u}`).join(', ')}).`);
+            + `(${Object.keys(extra).map((u) => `${extra[u]} ${u}`).join(', ')} por conta).`);
         }
       } catch (e) { seErroDeCodigo(e, 'Apoio'); }
 
