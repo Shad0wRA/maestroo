@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.9000
+// @version      2026.09.12.9100
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2536,7 +2536,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.9000';
+  const MAESTRO_VERSAO = '2026.09.12.9100';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -42378,8 +42378,9 @@ function makeFecharIlhaModule(opts) {
            * engana-se: numa ilha de 20 lugares chegavam a sair números que
            * não existem. Um plano criado antes disso tem lugares a mais e as
            * contas iam falhar um a um. Peça-se sempre ao jogo. */
-          let lugar = -1;
-          if (!(Number(lugar) >= 0)) {
+          /* O lugar veio do dono. Só se pede ao jogo quando não veio nenhum. */
+          let lugar = Number(meuLugar);
+          if (!(lugar >= 0)) {
             const usados = new Set(Object.keys(plano.atribuicoes)
               .map((n) => Number(plano.atribuicoes[n])).filter((n) => n >= 0));
             const esc = await lugarLivrePorUsar(cidade, plano.x, plano.y, usados);
@@ -42608,16 +42609,46 @@ function makeFecharIlhaModule(opts) {
       return;
     }
 
-    /* O LUGAR JÁ NÃO SE REPARTE AQUI.
+    /* O DONO REPARTE OS LUGARES OUTRA VEZ.
      *
-     * Repartiam-se números lidos do mapa — e o mapa engana-se nos dois
-     * sentidos. Como o jogo aceita fundar em qualquer lugar livre e propõe um
-     * diferente a cada pedido, cada conta pergunta-lhe o seu na altura de
-     * enviar e evita os que as outras já usaram. Aqui só se decide QUEM vai.
-     * O `-1` marca "vais, o lugar pede-o tu". */
+     * Entre a 3600 e agora, cada conta pedia o lugar ao jogo e evitava os que
+     * as outras já tinham. Isso funcionava numa ilha com cidades, onde o jogo
+     * propunha lugares diferentes a cada pedido — mas numa ilha VAZIA propõe
+     * sempre o primeiro livre: as vinte contas recebiam o lugar 0 e ficavam
+     * à espera umas das outras (visto em jogo, 15/09, na 410:661).
+     *
+     * O jogo aceita o lugar que se lhe pede — confirmado com a espia: pedi 0,
+     * 3, 7 e 19 e devolveu 0, 3, 7 e 19. Por isso volta-se a repartir.
+     *
+     * O que era errado em 3600 não era repartir: era repartir números lidos do
+     * MAPA, que se engana. As vagas agora vêm do jogo, e os lugares de uma
+     * ilha são 0 até ao total menos um. */
     const escolhidas = prontas.slice(0, faltam);
     const atribuicoes = {};
-    escolhidas.forEach((n) => { atribuicoes[n] = -1; });
+
+    /* Os lugares que a ilha tem, menos os que já estão ocupados. O jogo diz
+     * quantas vagas há; os números vão de 0 ao total de lugares. */
+    const totalLugares = Math.max(Number(vg.cidades) + Number(vg.vagas), Number(vg.vagas));
+    const ocupados = new Set();
+    try {
+      const ilha2 = await estadoDaIlha(plano.x, plano.y, towns[0].id);
+      if (ilha2 && ilha2.lido) {
+        for (let n2 = 0; n2 < (ilha2.total || totalLugares); n2++) {
+          if (ilha2.livres.indexOf(n2) < 0) ocupados.add(n2);
+        }
+      }
+    } catch (e) { seErroDeCodigo(e, 'FecharIlha'); }
+
+    const livres = [];
+    for (let n2 = 0; n2 < totalLugares && livres.length < faltam; n2++) {
+      if (!ocupados.has(n2)) livres.push(n2);
+    }
+
+    escolhidas.forEach((n, i) => {
+      /* Sem lugar para esta conta (a leitura do mapa pode estar incompleta),
+       * o `-1` mantém o comportamento antigo: pede-o ela ao jogo. */
+      atribuicoes[n] = (i < livres.length) ? livres[i] : -1;
+    });
     /* Um plano criado antes da 3800 pode ter mais contas do que vagas: o
      * mapa dava lugares a mais. Fica-se pelas vagas que o jogo diz. */
     if (Object.keys(atribuicoes).length > faltam) {
