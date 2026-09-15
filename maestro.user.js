@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.7600
+// @version      2026.09.12.7700
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2453,7 +2453,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.7600';
+  const MAESTRO_VERSAO = '2026.09.12.7700';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -42161,6 +42161,10 @@ function makeFecharIlhaModule(opts) {
 
     container.innerHTML = `
       <div class="mCaixa" style="margin-bottom:8px">
+        <label style="display:flex;gap:6px;align-items:center;font-size:13px;margin-bottom:6px">
+          <input type="checkbox" id="fi-on"${c.ativo ? ' checked' : ''}>
+          <b>Fechar ilha ligado</b>
+        </label>
         <div style="font-size:12px;opacity:.75">
           Marca uma ilha. Quando houver contas com colonizador e vaga para
           todos os lugares livres, fundam todas ao mesmo tempo, cada uma num
@@ -42184,6 +42188,28 @@ function makeFecharIlhaModule(opts) {
       <button id="fi-apagar" style="cursor:pointer;font-size:11px;margin-top:8px">
         limpar a fila toda
       </button>`;
+
+    /* O VISTO PRÓPRIO DO FECHAR ILHA.
+     *
+     * Este módulo corre dentro do Expansão e não aparece na lista de módulos
+     * do painel: o visto do canto é do Expansão, e a pergunta ao painel por
+     * "fecharilha" devolvia vazio. O módulo ficava a valer o `ativo` dele,
+     * que ninguém gravava — o painel mostrava ligado e a rotina dizia
+     * "está desligado", para sempre (visto em jogo, 15/09, no pt127: não havia
+     * chave de configuração nenhuma na conta).
+     *
+     * Agora tem visto seu, e é ele que manda. */
+    const btOn = container.querySelector('#fi-on');
+    if (btOn) {
+      btOn.onchange = () => {
+        const cc = cfg();
+        cc.ativo = !!btOn.checked;
+        guardarCfg(cc);
+        ctx.log(cc.ativo
+          ? 'Fechar ilha: ligado — guardo um colonizador e entro nos planos da fila.'
+          : 'Fechar ilha: desligado — largo o colonizador guardado.');
+      };
+    }
 
     container.querySelector('#fi-criar').onclick = async () => {
       const x = Number(container.querySelector('#fi-x').value);
