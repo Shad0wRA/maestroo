@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.8800
+// @version      2026.09.12.9000
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2536,7 +2536,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.8800';
+  const MAESTRO_VERSAO = '2026.09.12.9000';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -34014,11 +34014,33 @@ function makeColonosModule(opts) {
     const alvo = depositoDaMinhaEquipa(c, partilha);
     if (!alvo) { log('Colonos: não sei qual é o depósito da minha equipa.'); return 0; }
 
+    /* O QUE ESTÁ RESERVADO FICA MESMO EM CASA.
+     *
+     * A reserva era calculada e escrita na rotina — "1 colonizador reservado
+     * por outro módulo, mando os que sobrarem" — e a seguir mandava-se TUDO:
+     * o número nunca era descontado. O fechar ilha ficou sem colonizador
+     * nenhum com a reserva activa e válida (visto em jogo, 15/09: os últimos
+     * dois saíram às 22:21 e às 22:41 já não havia nenhum).
+     *
+     * Conta-se por CONTA, não por cidade: guarda-se o total reservado e o
+     * resto segue viagem. */
+    let porGuardar = Math.max(0, Number(reservados) || 0);
+
     let enviados = 0;
     for (const t of ctx.getMyTowns()) {
       if (Number(t.id) === Number(alvo.townId)) continue;   // já lá está
-      const n = colonizadoresEm(t.id);
-      if (n <= 0) continue;
+      const temAqui = colonizadoresEm(t.id);
+      if (temAqui <= 0) continue;
+
+      /* Deixa-se em casa o que falta guardar; o resto vai. */
+      const fica = Math.min(porGuardar, temAqui);
+      const n = temAqui - fica;
+      porGuardar -= fica;
+      if (n <= 0) {
+        (ctx.logRotina || log)(`Colonos: ${t.name} fica com ${fica} colonizador(es) `
+          + '— estão reservados.');
+        continue;
+      }
 
       const carga = {}; carga[NC] = n;
       const r = await enviarUnidades(t.id, alvo.townId, carga, 'support');
@@ -42009,10 +42031,18 @@ function makeFecharIlhaModule(opts) {
        *
        * Um lugar válido tem de vir mesmo na resposta. Sem ele, diz-se que não
        * se conseguiu, e tenta-se outra vez. */
+      /* O LUGAR 0 É UM LUGAR.
+       *
+       * Cheguei a recusá-lo, porque o vi vir de um campo vazio. Mas numa ilha
+       * vazia o jogo propõe mesmo o número 0 — confirmado com a espia (15/09:
+       * 20 vagas, lugar proposto 0) — e as cidades de uma ilha ocupam os
+       * lugares 0 a 19.
+       *
+       * O que não serve é o campo AUSENTE ou vazio; o zero serve. */
       const lugarBruto = d.target_number_on_island;
       const lugar = (lugarBruto === null || lugarBruto === undefined || lugarBruto === '')
         ? null : Number(lugarBruto);
-      if (lugar === null || !Number.isFinite(lugar)) {
+      if (lugar === null || !Number.isFinite(lugar) || lugar < 0) {
         return { ok: false, msg: 'o jogo não disse que lugar usar' };
       }
 
