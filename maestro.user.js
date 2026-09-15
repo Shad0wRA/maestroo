@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.8400
+// @version      2026.09.12.8600
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2536,7 +2536,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.8400';
+  const MAESTRO_VERSAO = '2026.09.12.8600';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -17127,7 +17127,16 @@ function makeFeiticosModule(opts) {
         ok: !j.error,
         msg: j.error || j.success || 'ok',
         /* "Já foi lançado um poder divino sobre este ataque" — é preciso
-         * purificar antes. */
+         * purificar antes.
+         *
+         * E "Ocorreu um erro interno!" também: foi o que o jogo respondeu à
+         * Ira de Zeus num ataque que já tinha feitiço (visto em jogo, 15/09).
+         * O jogo não explica; a purificação resolve. Como a purificação é
+         * barata ao lado do que a Ira faz — 10 a 30% da tropa terrestre do
+         * atacante — vale a pena tentar mesmo sem certeza. */
+        /* O "erro interno" NÃO é alvo ocupado — cheguei a pô-lo aqui e estava
+         * errado: purificou-se e o alvo estava limpo, e a Ira falhou na mesma
+         * (15/09). Era outra coisa: o identificador do comando. */
         ocupado: /j[áa] foi lan[çc]ado|already.*cast/i.test(String(j.error || '')),
         relatorio: Number(j.report_id) || 0,
       };
@@ -17248,6 +17257,25 @@ function makeFeiticosModule(opts) {
     try { return mUw.GameData.powers || {}; } catch (e) { return {}; }
   }
 
+  /* QUE FEITIÇOS FICAM ACTIVOS NO COMANDO.
+   *
+   * A Ira de Zeus mata e acaba — não deixa nada. A Saudade da Hera fica lá até
+   * o ataque chegar, e purificar deitá-la-ia fora. É esta diferença que decide
+   * se vale a pena purificar para lançar outro. */
+  const FICAM_ACTIVOS = [
+    'ares_army',              // Exército de Ares
+    'bloodlust',              // Sede de Sangue
+    'fair_wind',              // Vento favorável
+    'desire',                 // Saudade
+    'strength_of_heroes',     // Poder heroico
+    'resurrection',           // Retorno do mundo dos mortos
+    'cap_of_invisibility',    // Elmo da invisibilidade
+    'effort_of_the_huntress', // Alvo da caçadora
+  ];
+  /* A tempestade no mar e a Ira de Zeus NÃO ficam activas: acontecem e
+   * acabam. Purificar depois delas não deita nada fora. */
+  function feiticoFicaActivo(id) { return FICAM_ACTIVOS.indexOf(String(id)) >= 0; }
+
   function nomeDoFeitico(id) {
     try { return (todosOsFeiticos()[id] || {}).name || id; } catch (e) { return id; }
   }
@@ -17320,12 +17348,22 @@ function makeFeiticosModule(opts) {
         if (!/attack/i.test(String(a2.type || ''))) continue;
         if (!minhas.has(Number(a2.target_town_id))) continue;
         if (doGrupo.has(Number(a2.home_town_id))) continue;      // é meu
+        /* O IDENTIFICADOR DOS MODELOS NÃO SERVE PARA LANÇAR FEITIÇOS.
+         *
+         * Os modelos dão números enormes (2002173953); o servidor dá números
+         * pequenos (614071), e é esse que o jogo aceita no `cast`. Lançar com
+         * o dos modelos dá "Ocorreu um erro interno!" — foi isso que andou a
+         * falhar o dia todo (visto em jogo, 15/09: o mesmo ataque falhou pelo
+         * maestro e passou à mão, com identificadores diferentes).
+         *
+         * Guarda-se o ataque à mesma, para saber que existe; mas sem
+         * identificador do servidor não se lança nada nele. */
         const cid = Number(a2.id || a2.command_id) || 0;
         if (!cid) continue;
         const origem = String(a2.town_name_origin || a2.home_town_id || '?');
         const destino = String(a2.town_name_destination || a2.target_town_id);
         const chega = Number(a2.arrival_at) || 0;
-        out.set(chaveDe(origem, destino, chega), { cid, origem, destino, chega });
+        out.set(chaveDe(origem, destino, chega), { cid, origem, destino, chega, doServidor: false });
       }
     } catch (e) { seErroDeCodigo(e, 'Feiticos'); }
 
@@ -17349,8 +17387,9 @@ function makeFeiticosModule(opts) {
           const destino = String(x.destination_town_name || x.destination_town_id);
           const chega = Number(x.arrival_at) || 0;
           const k2 = chaveDe(origem, destino, chega);
-          if (out.has(k2)) continue;                 // já veio pelos modelos
-          out.set(k2, { cid, origem, destino, chega });
+          /* O do SERVIDOR manda, mesmo que já tenha vindo pelos modelos: é o
+           * identificador dele que o `cast` aceita. */
+          out.set(k2, { cid, origem, destino, chega, doServidor: true });
         }
       }
     } catch (e) { seErroDeCodigo(e, 'Feiticos'); }
@@ -17626,6 +17665,14 @@ function makeFeiticosModule(opts) {
               break;
             }
 
+            /* Sem o identificador do servidor não se lança: o dos modelos dá
+             * "erro interno" e gasta-se favor a tentar (15/09). */
+            if (a.doServidor === false) {
+              rotina(`Feitiços: a tempestade em ${cmdId} fica para quando a visão geral `
+                + 'trouxer o comando (o número dos modelos não serve para feitiços).');
+              continue;
+            }
+
             let r = await lancarNoAtaque('sea_storm', cmdId, dePoseidon.id);
 
             /* Ocupado por um feitiço do atacante: purificar e repetir. */
@@ -17742,10 +17789,42 @@ function makeFeiticosModule(opts) {
             const jaFoi = Number(est.marcados[chaveT]) || 0;
             if (jaFoi >= (c.maxPorAtaque || 3)) continue;
 
+            /* Sem o identificador do servidor, o `cast` seria recusado com
+             * "erro interno" — e gastava-se favor a tentar. */
+            if (a.doServidor === false) {
+              rotina(`Feitiços: ${nomeDoFeitico(powerId)} em ${cmdId} fica para quando `
+                + 'a visão geral trouxer o comando (o número dos modelos não serve para feitiços).');
+              continue;
+            }
+
             let r = await lancarNoAtaque(powerId, cmdId, donde.id);
 
-            /* Ocupado por um feitiço do adversário: purificar e repetir. */
-            if (r.ocupado) {
+            /* Ocupado: purificar e repetir — mas não por cima do que é MEU.
+             *
+             * A purificação limpa os feitiços ACTIVOS no comando, sejam de
+             * quem forem. A Ira de Zeus não deixa nada activo, mas a Saudade
+             * da Hera sim: purificar a seguir a tê-la lançado seria deitá-la
+             * fora.
+             *
+             * O jogo não diz que feitiços estão activos num comando (a espia
+             * de 15/09 confirmou-o), por isso conta-se com o que o próprio
+             * Maestro lançou. */
+            const meuActivo = (() => {
+              try {
+                const dur = (est.marcados || {});
+                for (const k of Object.keys(dur)) {
+                  const [cmd, pw] = String(k).split(':');
+                  if (Number(cmd) !== Number(cmdId)) continue;
+                  if (pw && pw !== powerId && feiticoFicaActivo(pw)) return pw;
+                }
+              } catch (e) {}
+              return '';
+            })();
+
+            if (r.ocupado && meuActivo) {
+              rotina(`Feitiços: ${nomeDoFeitico(powerId)} não entrou no ${cmdId}, mas já lá tenho `
+                + `${nomeDoFeitico(meuActivo)} — não purifico para não o deitar fora.`);
+            } else if (r.ocupado) {
               const deArtemis2 = cidadeCom('artemis', towns);
               if (deArtemis2 && favorDe('artemis') >= 200) {
                 const rp = await lancarNoAtaque('cleanse', cmdId, deArtemis2.id);
@@ -42425,9 +42504,29 @@ function makeFecharIlhaModule(opts) {
     }
 
     if (prontas.length < faltam) {
+      /* DIZER QUEM FALTA E PORQUÊ.
+       *
+       * "Faltam 3" não dizia nem quem nem o quê — obrigava a ir ver à mão.
+       * Cada conta publica o motivo da recusa quando se declara; usa-se. */
+      const emFalta = Object.keys(disp)
+        .filter((n) => disp[n] && !disp[n].pode)
+        .map((n) => `${n} (${disp[n].porque || 'não disse porquê'})`);
+      const resumo = (() => {
+        const porMotivo = {};
+        for (const n of Object.keys(disp)) {
+          const x = disp[n] || {};
+          if (x.pode) continue;
+          const m = String(x.porque || 'sem motivo').replace(/\s*\(.*\)$/, '');
+          porMotivo[m] = (porMotivo[m] || 0) + 1;
+        }
+        return Object.keys(porMotivo).map((m) => `${porMotivo[m]}× ${m}`).join(' · ');
+      })();
+
       rotina(`Fechar ilha ${plano.chave}: ${faltam} vaga(s) `
-        + `(${vg.cidades} cidade(s) na ilha) e ${prontas.length} `
-        + `conta(s) com colonizador e vaga — falta(m) ${faltam - prontas.length}.`);
+        + `(${vg.cidades} cidade(s) na ilha) · ${prontas.length} conta(s) prontas — `
+        + `faltam ${faltam - prontas.length}`
+        + (resumo ? `. Das que não podem: ${resumo}.` : '.')
+        + (emFalta.length && emFalta.length <= 5 ? ` [${emFalta.join('; ')}]` : ''));
       return;
     }
 
