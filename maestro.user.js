@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.8200
+// @version      2026.09.12.8300
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -872,6 +872,25 @@
   const APOIO_FORA_KEY = 'grepoMaestro_apoioFora_v1';
   const APOIO_FORA_VALIDADE = 30 * 60 * 1000;   // 30 min (era 15: ver o captcha)
 
+  /* A CACHE SÓ GUARDA CIDADES DESTA CONTA.
+   *
+   * Tinha 226 entradas numa conta com 60 cidades: o resto eram cidades de
+   * outras contas, que lá entraram pelos blocos de apoio dos modelos (15/09).
+   * Além de ocuparem espaço, faziam contas como "quantas das minhas estão
+   * lidas" dar números sem sentido. */
+  function limparCacheApoioFora() {
+    try {
+      const minhas = new Set(Object.keys(uw.ITowns.towns || {}).map(Number));
+      if (!minhas.size) return;
+      const cache = lerCacheApoioFora();
+      let mexeu = false;
+      for (const id of Object.keys(cache)) {
+        if (!minhas.has(Number(id))) { delete cache[id]; mexeu = true; }
+      }
+      if (mexeu) gravarCacheApoioFora(cache);
+    } catch (e) {}
+  }
+
   function lerCacheApoioFora() {
     try { return JSON.parse(localStorage.getItem(APOIO_FORA_KEY) || '{}') || {}; }
     catch (e) { return {}; }
@@ -1007,6 +1026,7 @@
   async function refrescarApoioFora(idsDasMinhasCidades, quantas) {
     ultimaLeitura = { tentadas: 0, lidas: 0, falhadas: 0, quando: Date.now() };
     const minhas = new Set((idsDasMinhasCidades || []).map(Number).filter(Boolean));
+    limparCacheApoioFora();
     /* Tenta primeiro a via rápida: se der, fica tudo fresco de uma vez. */
     const deUmaVez = await apoioForaDeUmaVez();
     if (deUmaVez) {
@@ -2516,7 +2536,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.8200';
+  const MAESTRO_VERSAO = '2026.09.12.8300';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -15420,10 +15440,20 @@ function makeSentinelasModule(opts) {
       const u = ((fora[Number(townId)] || {}).unidades) || {};
       if (Object.keys(u).some((k) => Number(u[k]) > 0)) return true;
 
-      const minhas = Object.keys(mUw.ITowns.towns || {}).map(Number);
-      const lidas = new Set(((api.lidas && api.lidas()) || []).map(Number));
-      const porLer = minhas.filter((id) => !lidas.has(id));
-      if (porLer.length) return null;               // pode estar numa que falta ler
+      /* A PERGUNTA É SOBRE A CIDADE ALIADA, NÃO SOBRE AS MINHAS.
+       *
+       * A primeira versão exigia que TODAS as minhas cidades estivessem lidas
+       * antes de dizer que uma aliada está a descoberto. Com 60 cidades e a
+       * leitura a ir a duas por passagem, isso nunca acontecia: 208 aliadas
+       * ficavam "por confirmar" e o módulo não mandava nada (visto em jogo,
+       * 15/09).
+       *
+       * O que interessa é se a leitura está FRESCA. Se está, e não mostra
+       * tropa minha naquela aliada, é porque não lá está — a leitura cobre
+       * todos os destinos das cidades que leu. Sem leitura fresca nenhuma,
+       * aí sim, não se sabe. */
+      const frescas = ((api.lidas && api.lidas(35 * 60 * 1000)) || []).length;
+      if (!frescas) return null;                    // nada fresco: não sei
       return false;
     } catch (e) { seErroDeCodigo(e, 'Sentinelas'); return null; }
   }
