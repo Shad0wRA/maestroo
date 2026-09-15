@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.7100
+// @version      2026.09.12.7200
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1000,7 +1000,12 @@
     } catch (e) { seErroDeCodigo(e, 'Apoio'); return null; }
   }
 
+  /* O que aconteceu na última tentativa de refrescar: quantas se tentaram,
+   * quantas deram, quantas falharam. */
+  let ultimaLeitura = { tentadas: 0, lidas: 0, falhadas: 0, quando: 0 };
+
   async function refrescarApoioFora(idsDasMinhasCidades, quantas) {
+    ultimaLeitura = { tentadas: 0, lidas: 0, falhadas: 0, quando: Date.now() };
     /* Tenta primeiro a via rápida: se der, fica tudo fresco de uma vez. */
     const deUmaVez = await apoioForaDeUmaVez();
     if (deUmaVez) {
@@ -1021,15 +1026,26 @@
       .sort((a, b) => Number((cache[a] || {}).quando || 0) - Number((cache[b] || {}).quando || 0))
       .slice(0, Math.max(1, Number(quantas) || 3));
 
+    /* ZERO LIDAS TEM DOIS SIGNIFICADOS, E ERAM O MESMO NÚMERO.
+     *
+     * "Não havia nada a refrescar" e "tentei e não consegui" devolviam ambos
+     * zero — e quem chama dizia "as leituras ainda estão frescas". Numa conta
+     * em que a Ágora falhava, as leituras envelheceram CINCO HORAS a dizer
+     * que estavam frescas, e o apoio decidiu com esses números (visto em jogo,
+     * 15/09: cidades entre 227 e 519 minutos).
+     *
+     * Passa a contar-se o que se tentou. Quem chama distingue os dois casos. */
     let lidas = 0;
+    let falhadas = 0;
     for (const id of alvo) {
       const blocos = await apoioForaDaCidade(id);
-      if (blocos == null) continue;            // não sei: fica a leitura antiga
+      if (blocos == null) { falhadas++; continue; }   // não sei: fica a leitura antiga
       cache[id] = { quando: Date.now(), blocos };
       lidas++;
       await new Promise((r) => setTimeout(r, 400 + Math.floor(Math.random() * 500)));
     }
     if (lidas) gravarCacheApoioFora(cache);
+    ultimaLeitura = { tentadas: alvo.length, lidas, falhadas, quando: Date.now() };
     return lidas;
   }
 
@@ -1109,6 +1125,7 @@
        * O `porAlvo` junta o que se leu, mas não diz de onde NÃO se leu. Quem
        * conclui "não tenho lá tropa" precisa de saber isso: uma sentinela
        * enviada de uma cidade por ler não aparece, e mandar outra é duplicá-la. */
+      ultimaLeitura: () => Object.assign({}, ultimaLeitura),
       lidas: (validadeMs) => {
         const cache = lerCacheApoioFora();
         const limite = Number(validadeMs) || (APOIO_FORA_VALIDADE * 4);
@@ -2436,7 +2453,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.7100';
+  const MAESTRO_VERSAO = '2026.09.12.7200';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -34832,6 +34849,25 @@ function makeApoioModule(opts) {
     const limite = Number((e || {}).chega)
       ? Number(e.chega) * 1000 + MARGEM_CHEGADA_MS
       : (Number((e || {}).t) || 0) + SEM_CHEGADA_MS;
+
+    /* UM ENVIO POR VER NÃO PRENDE PARA SEMPRE.
+     *
+     * Enquanto a Ágora não mostra um envio, não se retira nada daquele alvo —
+     * e é a regra certa: retirar sem ver o que lá está é às cegas.
+     *
+     * Só que a leitura vai a duas cidades por passagem. Com 23 cidades e
+     * leituras a falhar, um envio ficava "por ver" horas a fio e o alvo ficava
+     * trancado: nada saía, nada entrava (visto em jogo, 15/09 — "há envios
+     * meus que a Ágora ainda não mostra" em todas as passagens).
+     *
+     * Passadas DUAS HORAS da chegada, deixa de prender. A essa distância, ou
+     * a tropa lá está (e a leitura seguinte mostra-a), ou morreu — em
+     * qualquer dos casos, continuar à espera não traz informação nenhuma. */
+    const chegouHa = Number((e || {}).chega)
+      ? Date.now() - (Number(e.chega) * 1000)
+      : Date.now() - (Number((e || {}).t) || 0);
+    if (chegouHa > 2 * 3600 * 1000) return false;
+
     return lidoEm < limite;
   }
 
@@ -35687,6 +35723,19 @@ function makeApoioModule(opts) {
     return out;
   }
 
+  /* A leitura mais velha que estou a usar, em minutos. Serve para não decidir
+   * retiradas com números de há horas. */
+  function idadeDaAgoraMin() {
+    try {
+      const api = mUw.__maestroApoioFora;
+      if (!api || !api.lidas) return null;
+      const frescas = api.lidas(35 * 60 * 1000).length;   // dentro da validade
+      const todas = api.lidas(24 * 3600 * 1000).length;
+      if (!todas) return null;
+      return frescas ? 0 : 999;            // 999 = nenhuma está fresca
+    } catch (e) { return null; }
+  }
+
   /* ---------------------- envio ----------------------------------------- */
 
   async function enviarApoio(origemId, alvoId, unidades) {
@@ -36021,7 +36070,15 @@ function makeApoioModule(opts) {
      * "li a Ágora de 0 cidade(s)" e parecia uma avaria, com apoio espalhado
      * por 25 cidades. */
     if (!lidas) {
-      (ctx.logRotina || log)('Apoio: as leituras da Ágora ainda estão frescas — nada a refrescar.');
+      const u = (api.ultimaLeitura && api.ultimaLeitura()) || {};
+      if (Number(u.falhadas) > 0) {
+        /* Tentou e não conseguiu: dizê-lo. Com a mensagem antiga, as leituras
+         * envelheciam horas e o apoio decidia com números velhos (15/09). */
+        log(`⚠️ Apoio: não consegui ler a Ágora de ${u.falhadas} cidade(s) — `
+          + 'os números que uso podem estar velhos. Tento na próxima passagem.');
+      } else {
+        (ctx.logRotina || log)('Apoio: as leituras da Ágora ainda estão frescas — nada a refrescar.');
+      }
     } else {
       log(`Apoio: li a Ágora de ${lidas} cidade(s) — os números passam a ser os do servidor.`);
     }
@@ -37085,13 +37142,26 @@ function makeApoioModule(opts) {
         const minha = minhaParteEm(alvo, reg);
         if (minha.incerto) {
           rotina(`Apoio: ${alvo} — há envios meus que a Ágora ainda não mostra; `
-            + 'não retiro nada daí até os ver.');
+            + 'não retiro nada daí até os ver (ao fim de 2 h deixa de prender).');
           continue;
         }
 
         const tenho = Object.assign({}, minha.parado);
         const acima = Object.keys(quota).some((u) => (Number(tenho[u]) || 0) > quota[u]);
         if (!acima) continue;
+
+        /* NÃO SE RETIRA COM NÚMEROS VELHOS.
+         *
+         * O que está no alvo vem da leitura da Ágora. Se nenhuma leitura
+         * estiver dentro da validade, esses números podem ser de há horas —
+         * e tirar tropa de um alvo com base neles é o pior dos erros: pode
+         * deixá-lo a descoberto. Numa conta, as leituras chegaram às cinco
+         * horas enquanto o módulo dizia que estavam frescas (15/09). */
+        if (idadeDaAgoraMin() === 999) {
+          rotina(`Apoio: ${alvo} parece ter tropa a mais, mas a leitura da Ágora está velha — `
+            + 'não retiro nada até conseguir ler.');
+          continue;
+        }
 
         const popDe = (u2) => Object.keys(u2 || {})
           .reduce((s2, u) => s2 + (Number(u2[u]) || 0) * popDaUnidade(u), 0);
