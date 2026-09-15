@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.7000
+// @version      2026.09.12.7100
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2436,7 +2436,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.7000';
+  const MAESTRO_VERSAO = '2026.09.12.7100';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -42792,6 +42792,11 @@ function makeReforcoModule(opts) {
   /* Devolve a lista, ou `null` se não conseguiu ler — nunca lista vazia por
    * falha: vazia, o passo 1 do `run` trazia de volta a tropa de uma cidade
    * com outro ataque a caminho que só não se tinha conseguido ler. */
+  let ctx0 = null;   // para as linhas de rotina de dentro da leitura
+  /* A última leitura veio da página (sem Administrador) e não da visão geral:
+   * serve para MANDAR, não para trazer de volta. */
+  let semAdministrador = false;
+
   async function ataquesContraMim() {
     const out = new Map();
     const minhas = new Set(Object.keys(mUw.ITowns.towns || {}).map(Number));
@@ -42815,9 +42820,78 @@ function makeReforcoModule(opts) {
 
     /* Pelo leitor único do núcleo: trata do 429 e da cópia partilhada. */
     razaoLeitura = '';
+    semAdministrador = false;
     try {
       const vgF = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroVisaoGeral;
       const vg = vgF ? await vgF() : { ok: false, razao: 'o núcleo não tem o leitor da visão geral' };
+
+      /* ============ SEM ADMINISTRADOR, PELO QUE A PÁGINA TEM ============
+       *
+       * Sem Administrador não há visão geral, e o reforço parava por completo
+       * nas multis — que são precisamente as contas que servem de reserva.
+       *
+       * Os modelos `MovementsUnits` não servem sozinhos: num ataque vêm sem
+       * `return`, sem `origin_town_id` e sem `destination_town_id`, por isso
+       * não dá para distinguir um ataque a chegar de tropa minha a voltar —
+       * foi por isso que foram retirados daqui.
+       *
+       * Mas a colecção `Attack` diz, sem pedido nenhum e sem Administrador,
+       * QUANTOS ataques cada cidade tem a chegar. Não diz a hora nem a
+       * origem; cruzando-a com os movimentos, fica-se com as chegadas às
+       * cidades que ela marca — e o que ela marca é de confiança.
+       *
+       * Limitação, dita à cabeça: se os modelos não trouxerem o movimento, a
+       * cidade fica marcada como atacada mas sem hora, e usa-se a chegada
+       * mais próxima que houver. É melhor do que não reforçar nada, mas é
+       * menos fiável do que a visão geral. */
+      if (!vg.ok && vg.razao === 'sem Administrador') {
+        const atacadas = (() => {
+          const o = {};
+          try {
+            const col = mUw.MM.getCollections().Attack;
+            for (const m of ((col && col[0] && col[0].models) || [])) {
+              const a = m.attributes || {};
+              if ((Number(a.incoming) || 0) > 0) o[String(a.town_id)] = Number(a.incoming);
+            }
+          } catch (e) { seErroDeCodigo(e, 'Reforco'); }
+          return o;
+        })();
+
+        if (!Object.keys(atacadas).length) {
+          razaoLeitura = '';
+          semAdministrador = true;         // a marca conta também aqui
+          return [];                       // sem Administrador, e nada marcado a chegar
+        }
+
+        const mods = (() => {
+          try {
+            const m = mUw.MM.getModels().MovementsUnits || {};
+            return Object.keys(m).map((k) => m[k].attributes || {});
+          } catch (e) { return []; }
+        })();
+
+        for (const idTxt of Object.keys(atacadas)) {
+          const alvo = Number(idTxt);
+          if (!minhas.has(alvo)) continue;
+          /* A chegada mais próxima que os modelos tenham para esta cidade. */
+          const chegadas = mods
+            .filter((m) => Number(m.target_town_id) === alvo && Number(m.arrival_at) > agora())
+            .map((m) => Number(m.arrival_at))
+            .sort((a, b) => a - b);
+          const chega = chegadas.length ? chegadas[0] : 0;
+          out.set(chaveDe(0, alvo, chega), { alvo, chega, semHora: !chega });
+        }
+
+        razaoLeitura = '';
+        semAdministrador = true;
+        (ctx0 && ctx0.logRotina ? ctx0.logRotina : () => {})(
+          `Reforço: sem Administrador — uso o que a página marca `
+          + `(${Object.keys(atacadas).length} cidade(s) sob ataque).`);
+        return [...out.values()]
+          .filter((a) => a.chega > agora() || a.semHora)
+          .sort((a, b) => (a.chega || Infinity) - (b.chega || Infinity));
+      }
+
       if (!vg.ok) { razaoLeitura = vg.razao || 'não sei porquê'; return null; }
       for (const x of vg.comandos) {
         if (!/attack/i.test(String(x.type || ''))) continue;
@@ -43260,6 +43334,7 @@ function makeReforcoModule(opts) {
     } catch (e) {}
     if (!c.ativo) { rotina('Reforço: está desligado.'); return; }
 
+    ctx0 = ctx;
     const ataques = await ataquesContraMim();
 
     /* NÃO CONSEGUI LER ≠ NÃO HÁ ATAQUES.
@@ -43302,7 +43377,22 @@ function makeReforcoModule(opts) {
      * A tropa fica onde está se houver outro ataque à mesma cidade. Só vem
      * quando o último ataque àquela cidade já bateu. */
     const aindaAtacadas = new Set(ataques.map((a) => Number(a.alvo)));
+
+    /* SEM ADMINISTRADOR, MANDA-SE MAS NÃO SE RECOLHE.
+     *
+     * Sem visão geral, a lista de ataques vem do que a página marca. Isso
+     * chega para decidir MANDAR — na pior das hipóteses manda-se a mais. Mas
+     * não chega para decidir TRAZER: uma lista incompleta faria a tropa voltar
+     * para casa com um ataque ainda a caminho, que é o pior resultado
+     * possível. A tropa fica, e vem quando a conta tiver Administrador ou
+     * quando a tirares à mão. */
+    if (semAdministrador && Object.keys(envios).length) {
+      rotina(`Reforço: sem Administrador não trago tropa de volta `
+        + `(${Object.keys(envios).length} envio(s) por recolher) — mandar, mando.`);
+    }
+
     for (const k of Object.keys(envios)) {
+      if (semAdministrador) break;
       const e = envios[k] || {};
       if (Number(e.impacto) > agora()) continue;          // ainda não bateu
       if (aindaAtacadas.has(Number(e.destino))) {
@@ -43627,9 +43717,14 @@ function makeReforcoModule(opts) {
 
       <div style="margin-bottom:8px">
         <div class="mEtiq" style="margin-bottom:3px">grupos de onde sai a tropa</div>
+        <div style="margin:4px 0">
+          <label><input type="checkbox" id="rf-todas"${c.todasAsCidades ? ' checked' : ''}>
+            mandar de <b>todas</b> as cidades desta conta</label>
+        </div>
         <div style="opacity:.6;font-size:11px;margin-bottom:4px">
-          Escrever os nomes à mão era frágil — bastava um acento ou um espaço
-          para o grupo não ser encontrado. Aqui estão os que o jogo tem.
+          Ou escolhe grupos. Escrever os nomes à mão era frágil — bastava um
+          acento ou um espaço para o grupo não ser encontrado. Aqui estão os
+          que o jogo tem.
         </div>
         <div id="rf-grupos-lista" style="display:flex;flex-wrap:wrap;gap:4px 10px;font-size:12px">
           ${(() => {
@@ -43669,6 +43764,7 @@ function makeReforcoModule(opts) {
           hoplite: Number(container.querySelector('#rf-hoplite').value) || 0,
           bireme: Number(container.querySelector('#rf-bireme').value) || 0,
         },
+        todasAsCidades: !!(container.querySelector('#rf-todas') || {}).checked,
         grupos: [...container.querySelectorAll('.rf-grupo')]
           .filter((el) => el.checked).map((el) => el.value),
         margemSeg: Number(container.querySelector('#rf-margem').value) || 60,
@@ -43679,6 +43775,7 @@ function makeReforcoModule(opts) {
     (async () => {
       const alvo = container.querySelector('#rf-estado');
       if (!alvo) return;
+      ctx0 = ctx;
       const lidos = await ataquesContraMim();
       const ataques = lidos || [];
       const ajudantes = cidadesDosGrupos(cfg().grupos, ctx);
