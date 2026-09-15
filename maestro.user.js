@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.7500
+// @version      2026.09.12.7600
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2453,7 +2453,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.7500';
+  const MAESTRO_VERSAO = '2026.09.12.7600';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -11287,9 +11287,44 @@ function makeRecrutamentoModule(opts) {
   const CACHE_KEY = 'grepoRecruta_templates_v1';
   function loadLocal() { try { return JSON.parse(armazem.getItem(CACHE_KEY) || '{}'); } catch (e) { return {}; } }
   function saveLocal(t) { try { armazem.setItem(CACHE_KEY, JSON.stringify(t)); } catch (e) { seErroDeCodigo(e, 'Recrutamento'); } }
+  /* ============ OS ALVOS VIAJAM PELO FIREBASE ==========================
+   *
+   * Eram partilhados por um Gist do GitHub, com um token que expira — e
+   * expirou: 401 a cada gravação, em todas as contas, e as credenciais
+   * espalhadas por vinte navegadores (15/09).
+   *
+   * Tudo o resto que é partilhado já vai pelo Firebase: a lista de alvos do
+   * apoio, a frota, a fila do fechar ilha. Os alvos de recrutamento passam
+   * para lá também. O Gist fica como leitura de recurso, para quem ainda o
+   * tenha configurado, e deixa de ser escrito.
+   *
+   * A chave é por MUNDO e por perfil, como o ficheiro do Gist era. */
+  function caminhoFbRecruta() {
+    try {
+      const perfil = localStorage.getItem('grepoMaestro_perfil_v1') || 'main';
+      return `recrutamento/${mWorld}/${String(perfil).replace(/[.#$\[\]\/:]/g, '_')}`;
+    } catch (e) { return `recrutamento/${mWorld}/main`; }
+  }
+  function fbRecruta() {
+    try {
+      const f = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroFb;
+      return (f && f.url && f.url()) ? f : null;
+    } catch (e) { return null; }
+  }
+
   async function readGist() {
     // não segurar o processo (importante nos testes)
     try { if (typeof t2 !== 'undefined' && t2 && t2.unref) t2.unref(); } catch (e) { seErroDeCodigo(e, 'Recrutamento'); }
+
+    /* Primeiro o Firebase; o Gist só se ainda lá não houver nada. */
+    const fb = fbRecruta();
+    if (fb) {
+      try {
+        const d = await fb.ler(caminhoFbRecruta());
+        if (d && typeof d === 'object' && Object.keys(d).length) { saveLocal(d); return d; }
+      } catch (e) { seErroDeCodigo(e, 'Recrutamento'); }
+    }
+
     if (!GIST.id) return loadLocal();
     try {
       const r = await mUw.fetch('https://api.github.com/gists/' + GIST.id, { headers: cabecalhoGist() });
@@ -11333,7 +11368,19 @@ function makeRecrutamentoModule(opts) {
     try { if (tG && typeof tG.unref === 'function') tG.unref(); } catch (e) { seErroDeCodigo(e, 'Recrutamento'); }
 
     saveLocal(t);
-    if (!GIST.id || !GIST.token) return { ok: false, msg: 'sem Gist id/token — guardado só localmente' };
+
+    /* O Firebase é o caminho: sem token, sem expirar, e é onde o resto já
+     * está. Se não estiver configurado, fica guardado localmente. */
+    const fb = fbRecruta();
+    if (fb) {
+      try {
+        const r = await fb.escrever(caminhoFbRecruta(), t);
+        if (r && r.ok !== false) return { ok: true };
+        return { ok: false, msg: (r && r.msg) || 'o Firebase não aceitou' };
+      } catch (e) { return { ok: false, msg: e.message }; }
+    }
+
+    return { ok: false, msg: 'sem Firebase — guardado só localmente' };
     try {
       const r = await mUw.fetch('https://api.github.com/gists/' + GIST.id, {
         method: 'PATCH',
@@ -12665,7 +12712,8 @@ function makeRecrutamentoModule(opts) {
     if (guardar) guardar.onclick = async () => {
       guardar.textContent = 'A guardar...';
       const r = await writeGist(tplEdicao);
-      if (pCtx) pCtx.log(r.ok ? 'Alvos de recrutamento guardados no Gist.' : 'Alvos guardados localmente (' + r.msg + ').');
+      if (pCtx) pCtx.log(r.ok ? 'Alvos de recrutamento guardados (partilhados com as outras contas).'
+        : 'Alvos guardados só nesta conta (' + r.msg + ').');
       guardar.textContent = r.ok ? 'Guardado ✓' : 'Guardado (local)';
       setTimeout(() => { guardar.textContent = 'Guardar alvos'; }, 1800);
     };
@@ -25862,6 +25910,49 @@ function makeEsquivaModule(opts) {
           rotina(`Esquiva: não consegui ler a visão geral (${ultimaRazaoVazioEsquiva}) — `
             + `${emFalta.length} cidade(s) por confirmar ficam como estão; não conta como desmentido.`);
           break;
+        }
+
+        /* ============ SEM ADMINISTRADOR, O QUE A PÁGINA TEM ===============
+         *
+         * Sem Administrador o servidor devolve zero comandos, e a esquiva
+         * ficava a saber que HAVIA ataque (a colecção `Attack` marca a cidade)
+         * sem conseguir os detalhes — hora e origem. Resultado: nunca agia nas
+         * multis, que são precisamente as contas sem Administrador. Custou
+         * tropa num farm atrás do outro (visto em jogo, 15/09).
+         *
+         * Mas os movimentos da página trazem esses ataques com a hora certa —
+         * confirmado no mesmo dia: com o ataque a caminho, `MovementsUnits`
+         * tinha-o com `arrival_at` correcto. Não trazem origem nem dizem se é
+         * regresso, e foi por isso que foram retirados daqui; agora só se usam
+         * para as cidades que a `Attack` MARCA como atacadas, e aí a dúvida
+         * desaparece: se a página marca a cidade e há um movimento a chegar a
+         * ela, é o ataque. */
+        if (!cmds.length && /sem Administrador/i.test(String(ultimaRazaoVazioEsquiva || ''))) {
+          const daPagina = (() => {
+            try {
+              const mods = mUw.MM.getModels().MovementsUnits || {};
+              return Object.keys(mods).map((k2) => mods[k2].attributes || {})
+                .filter((m) => Number(m.target_town_id) === Number(tid))
+                .filter((m) => Number(m.arrival_at) > agoraJogo())
+                .map((m) => ({
+                  command_id: Number(m.id || m.command_id) || 0,
+                  arrival_at: Number(m.arrival_at),
+                  started_at: Number(m.started_at) || null,
+                  target_town_id: Number(tid),
+                  home_town_id: Number(m.home_town_id) || 0,
+                  type: 'attack',
+                  town_name_origin: m.town_name_origin || '',
+                  jogador: '', jogador_id: 0,
+                }));
+            } catch (e) { seErroDeCodigo(e, 'Esquiva'); return []; }
+          })();
+
+          if (daPagina.length) {
+            daPagina.forEach((cd) => doServidor.push(cd));
+            rotina(`Esquiva: ${tid} — sem Administrador, uso o que a página tem `
+              + `(${daPagina.length} movimento(s) a chegar).`);
+            continue;
+          }
         }
         cmds.forEach((cd) => doServidor.push(cd));
 
@@ -41488,11 +41579,27 @@ function makeFecharIlhaModule(opts) {
       }
       if (!d || !d.island_info) return { ok: false, msg: 'o jogo não devolveu a ficha da ilha' };
       const ii = d.island_info;
+      /* O LUGAR 0 QUASE SEMPRE NÃO É UM LUGAR.
+       *
+       * O campo vinha vazio e o `Number` transformava-o em 0; o Maestro pedia
+       * então a fundação no lugar 0 e o jogo respondia "não escolheu uma
+       * posição válida" — a conta gastava a tentativa e desistia da ilha logo
+       * à primeira (visto em jogo, 15/09, com 15 vagas livres).
+       *
+       * Um lugar válido tem de vir mesmo na resposta. Sem ele, diz-se que não
+       * se conseguiu, e tenta-se outra vez. */
+      const lugarBruto = d.target_number_on_island;
+      const lugar = (lugarBruto === null || lugarBruto === undefined || lugarBruto === '')
+        ? null : Number(lugarBruto);
+      if (lugar === null || !Number.isFinite(lugar)) {
+        return { ok: false, msg: 'o jogo não disse que lugar usar' };
+      }
+
       return {
         ok: true,
         vagas: Number(ii.uninhabited_place_count),
         cidades: (ii.town_list || []).length,
-        lugar: Number(d.target_number_on_island),
+        lugar,
         pontos: !!d.enough_culture_points,
       };
     } catch (e) { return { ok: false, msg: e.message }; }
@@ -43470,7 +43577,46 @@ function makeReforcoModule(opts) {
     if (!c.ativo) { rotina('Reforço: está desligado.'); return; }
 
     ctx0 = ctx;
-    const ataques = await ataquesContraMim();
+    let ataques = await ataquesContraMim();
+
+    /* ============ NÃO SE DEFENDE DE SI PRÓPRIO ========================
+     *
+     * O farm dos deuses manda a main atacar as multis para render favor. Se o
+     * reforço defender essas cidades, cada enviado divino que a main manda
+     * morre contra a tropa que o reforço lá pôs — gasta-se favor para destruir
+     * favor.
+     *
+     * As contas são as da frota: ela sabe quem somos em cada mundo, e isso não
+     * depende de nomes escritos à mão. */
+    if (Array.isArray(ataques) && ataques.length) {
+      const minhasContas = await (async () => {
+        try {
+          const fb = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroFb;
+          if (!fb || !fb.ler || !fb.url || !fb.url()) return null;
+          const d = (await fb.ler(`frota/${mWorld}`)) || {};
+          const agoraS = Math.floor(Date.now() / 1000);
+          const nomes = new Set();
+          for (const k of Object.keys(d)) {
+            const x = d[k] || {};
+            if (!x.quando || (agoraS - Number(x.quando)) > 6 * 3600) continue;
+            if (x.conta) nomes.add(String(x.conta));
+          }
+          return nomes.size ? nomes : null;
+        } catch (e) { return null; }
+      })();
+
+      if (minhasContas) {
+        const antesN = ataques.length;
+        ataques = ataques.filter((a) => {
+          const quem = String(a.jogador || a.atacante || '');
+          return !(quem && minhasContas.has(quem));
+        });
+        if (ataques.length < antesN) {
+          rotina(`Reforço: ${antesN - ataques.length} ataque(s) são de contas minhas `
+            + '(farm) — não defendo contra mim.');
+        }
+      }
+    }
 
     /* NÃO CONSEGUI LER ≠ NÃO HÁ ATAQUES.
      *
