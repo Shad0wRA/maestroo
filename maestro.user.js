@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.7700
+// @version      2026.09.12.7800
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2453,7 +2453,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.7700';
+  const MAESTRO_VERSAO = '2026.09.12.7800';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -11287,43 +11287,9 @@ function makeRecrutamentoModule(opts) {
   const CACHE_KEY = 'grepoRecruta_templates_v1';
   function loadLocal() { try { return JSON.parse(armazem.getItem(CACHE_KEY) || '{}'); } catch (e) { return {}; } }
   function saveLocal(t) { try { armazem.setItem(CACHE_KEY, JSON.stringify(t)); } catch (e) { seErroDeCodigo(e, 'Recrutamento'); } }
-  /* ============ OS ALVOS VIAJAM PELO FIREBASE ==========================
-   *
-   * Eram partilhados por um Gist do GitHub, com um token que expira — e
-   * expirou: 401 a cada gravação, em todas as contas, e as credenciais
-   * espalhadas por vinte navegadores (15/09).
-   *
-   * Tudo o resto que é partilhado já vai pelo Firebase: a lista de alvos do
-   * apoio, a frota, a fila do fechar ilha. Os alvos de recrutamento passam
-   * para lá também. O Gist fica como leitura de recurso, para quem ainda o
-   * tenha configurado, e deixa de ser escrito.
-   *
-   * A chave é por MUNDO e por perfil, como o ficheiro do Gist era. */
-  function caminhoFbRecruta() {
-    try {
-      const perfil = localStorage.getItem('grepoMaestro_perfil_v1') || 'main';
-      return `recrutamento/${mWorld}/${String(perfil).replace(/[.#$\[\]\/:]/g, '_')}`;
-    } catch (e) { return `recrutamento/${mWorld}/main`; }
-  }
-  function fbRecruta() {
-    try {
-      const f = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroFb;
-      return (f && f.url && f.url()) ? f : null;
-    } catch (e) { return null; }
-  }
-
   async function readGist() {
     // não segurar o processo (importante nos testes)
     try { if (typeof t2 !== 'undefined' && t2 && t2.unref) t2.unref(); } catch (e) { seErroDeCodigo(e, 'Recrutamento'); }
-
-    /* Primeiro o Firebase; o Gist só se ainda lá não houver nada. */
-    const fb = fbRecruta();
-    if (fb) {
-      try {
-        const d = await fb.ler(caminhoFbRecruta());
-        if (d && typeof d === 'object' && Object.keys(d).length) { saveLocal(d); return d; }
-      } catch (e) { seErroDeCodigo(e, 'Recrutamento'); }
-    }
 
     if (!GIST.id) return loadLocal();
     try {
@@ -11369,18 +11335,23 @@ function makeRecrutamentoModule(opts) {
 
     saveLocal(t);
 
-    /* O Firebase é o caminho: sem token, sem expirar, e é onde o resto já
-     * está. Se não estiver configurado, fica guardado localmente. */
-    const fb = fbRecruta();
-    if (fb) {
-      try {
-        const r = await fb.escrever(caminhoFbRecruta(), t);
-        if (r && r.ok !== false) return { ok: true };
-        return { ok: false, msg: (r && r.msg) || 'o Firebase não aceitou' };
-      } catch (e) { return { ok: false, msg: e.message }; }
-    }
-
-    return { ok: false, msg: 'sem Firebase — guardado só localmente' };
+    /* ============ A PARTILHA PELO FIREBASE FOI DESFEITA ==================
+     *
+     * Na 7600 pus os alvos de recrutamento a viajar por
+     * `recrutamento/<mundo>/<perfil>` — e o perfil que usei vinha de uma chave
+     * que NÃO EXISTE (`grepoMaestro_perfil_v1`). Sem ela, todas as contas
+     * caíam no mesmo caminho: a main e as multis a escrever e a ler do mesmo
+     * sítio, e os alvos da main foram substituídos pelos das multis. As mains
+     * ficaram a recrutar o que não deviam (15/09).
+     *
+     * O perfil das chaves vem do `chavePorPerfil` do núcleo, não de uma chave
+     * no armazenamento. Não voltei a tentar adivinhar: os alvos ficam LOCAIS,
+     * como estavam antes, e a partilha fica por fazer até ser feita com o
+     * caminho certo e testada.
+     *
+     * A cópia local de cada conta nunca foi tocada: está em
+     * `grepoRecruta_templates_v1` com o sufixo do perfil. */
+    return { ok: true, msg: 'guardado nesta conta' };
     try {
       const r = await mUw.fetch('https://api.github.com/gists/' + GIST.id, {
         method: 'PATCH',
@@ -12712,8 +12683,7 @@ function makeRecrutamentoModule(opts) {
     if (guardar) guardar.onclick = async () => {
       guardar.textContent = 'A guardar...';
       const r = await writeGist(tplEdicao);
-      if (pCtx) pCtx.log(r.ok ? 'Alvos de recrutamento guardados (partilhados com as outras contas).'
-        : 'Alvos guardados só nesta conta (' + r.msg + ').');
+      if (pCtx) pCtx.log('Alvos de recrutamento guardados nesta conta.');
       guardar.textContent = r.ok ? 'Guardado ✓' : 'Guardado (local)';
       setTimeout(() => { guardar.textContent = 'Guardar alvos'; }, 1800);
     };
