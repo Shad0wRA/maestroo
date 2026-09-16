@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.9200
+// @version      2026.09.12.9500
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1982,7 +1982,9 @@
     try {
       let ultimo = 0;
       try { ultimo = Number(localStorage.getItem(CAPTCHA_AVISO_KEY)) || 0; } catch (e) {}
-      if (Date.now() - ultimo < 30 * 60 * 1000) return;
+      /* De hora a hora: com o maestro a continuar o resto do trabalho, um
+       * aviso de meia em meia hora era ruído (16/09). */
+      if (Date.now() - ultimo < 60 * 60 * 1000) return;
       try { localStorage.setItem(CAPTCHA_AVISO_KEY, String(Date.now())); } catch (e) {}
 
       const f = uw.__maestroAvisarDiscord;
@@ -1994,8 +1996,8 @@
           { nome: '🌍 Mundo', valor: String((uw.Game && uw.Game.world_id) || '?') },
           { nome: '📍 Onde', valor: String(onde || '?') },
         ],
-        descricao: 'Resolve no jogo — enquanto não resolveres, esta conta perde '
-          + 'esquivas e envios sem avisar mais.',
+        descricao: 'Resolve no jogo — a recolha das aldeias está parada até lá. '
+          + 'O resto do maestro continua, mas alguns envios podem ser recusados.',
       });
     } catch (e) {}
   }
@@ -2353,6 +2355,10 @@
   try { uw.__maestroActualizarNumeros = actualizarNumeros; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   function switchToTown(townId) {
+    /* Com um captcha no ecrã não se troca de cidade: trocar fá-lo-ia
+     * desaparecer sem estar resolvido, e a recolha voltaria a falhar em
+     * silêncio (16/09). */
+    if (naoTrocarDeCidade) return false;
     lockRenew(); // mantém o semáforo vivo durante trabalho longo
     return new Promise((resolve) => {
       try {
@@ -2536,7 +2542,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.9200';
+  const MAESTRO_VERSAO = '2026.09.12.9500';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -3899,6 +3905,10 @@
   /* Já avisámos que a janela do encaixe está aberta, e desde quando. */
   let avisouEncaixeAberto = false;
   let captchaNoEcraDesde = 0, captchaAvisadoEm = 0, captchaIgnorarAte = 0;
+  /* Com um captcha no ecrã não se troca de cidade: trocar fá-lo-ia
+   * desaparecer sem estar resolvido, e a recolha voltaria a falhar em
+   * silêncio. O resto do maestro continua (16/09). */
+  let naoTrocarDeCidade = false;
   let encaixeAbertoDesde = 0;
 
   async function tick() {
@@ -3931,12 +3941,22 @@
       }
     } catch (e) {}
 
+    /* O CAPTCHA JÁ NÃO PÁRA O MAESTRO INTEIRO.
+     *
+     * Parava-se tudo até ele ser resolvido. Mas quem fica bloqueado é a
+     * recolha das aldeias — que se suspende sozinha — e não há razão para a
+     * construção, o apoio ou a esquiva pararem com ela. Uma esquiva perdida
+     * por causa de um captcha das aldeias é um mau negócio.
+     *
+     * Fica a troca de cidade travada enquanto o captcha estiver no ecrã, para
+     * não o fazer desaparecer sem estar resolvido, e o aviso repete-se de hora
+     * a hora até estar feito (16/09). */
     const vistoNoEcra = (Date.now() < captchaIgnorarAte) ? null : captchaNoEcra();
     if (vistoNoEcra) {
       if (!captchaNoEcraDesde) {
         captchaNoEcraDesde = Date.now(); captchaAvisadoEm = Date.now();
-        log('core', '⏸️ Há um captcha no ecrã — paro tudo, sem trocar de cidade, até o resolveres. '
-          + `(${vistoNoEcra.desc})`);
+        log('core', '🧩 Há um captcha no ecrã — a recolha fica suspensa até o resolveres; '
+          + `o resto continua. (${vistoNoEcra.desc})`);
         /* E AVISA NO DISCORD.
          *
          * Com o ciclo parado, param também os módulos que avisavam: a recolha
@@ -3946,25 +3966,28 @@
          * multi (11/09). O `avisarCaptcha` avisa no máximo de meia em meia hora
          * por conta. */
         try { avisarCaptcha('captcha no ecrã — o maestro está parado até o resolveres'); } catch (e) {}
-      } else if (Date.now() - captchaNoEcraDesde > 30 * 60 * 1000) {
-        captchaNoEcraDesde = 0;
-        captchaIgnorarAte = Date.now() + 30 * 60 * 1000;
-        log('core', `⚠️ 30 min parado por um captcha no ecrã (${vistoNoEcra.desc}) — retomo, e não volto `
-          + 'a parar por ele durante 30 min. Se estiver mesmo lá, resolve-o.');
-        try { avisarCaptcha('captcha no ecrã há 30 min, por resolver — o maestro retoma sem ele'); } catch (e) {}
-      } else if (Date.now() - captchaAvisadoEm > 10 * 60 * 1000) {
+      } else if (Date.now() - captchaAvisadoEm > 60 * 60 * 1000) {
+        /* De hora a hora, enquanto lá estiver. */
         captchaAvisadoEm = Date.now();
-        log('core', `⏸️ O captcha continua no ecrã há ${Math.round((Date.now() - captchaNoEcraDesde) / 60000)} min.`);
-        // No Discord só sai de meia em meia hora (o `avisarCaptcha` trava o resto).
-        try {
-          avisarCaptcha(`captcha no ecrã há ${Math.round((Date.now() - captchaNoEcraDesde) / 60000)} min — `
-            + 'o maestro continua parado');
-        } catch (e) {}
+        try { avisarCaptcha('o captcha continua por resolver — a recolha está parada'); } catch (e) {}
       }
-      if (captchaNoEcraDesde) return;
-    } else if (captchaNoEcraDesde) {
-      captchaNoEcraDesde = 0;
-      log('core', '▶️ O captcha saiu do ecrã — retomo o trabalho.');
+
+      /* NÃO SE PÁRA O CICLO. Só a troca de cidade fica travada enquanto o
+       * captcha estiver no ecrã — trocar fá-lo-ia desaparecer sem estar
+       * resolvido, e a recolha continuaria a falhar em silêncio. */
+      /* A TRAVA DURA SÓ O MINUTO EM QUE A JANELA ESTÁ ABERTA.
+       *
+       * Travar a troca enquanto o captcha lá estivesse deixava a conta presa
+       * numa cidade durante horas. Passado o minuto, volta a trocar: o captcha
+       * sai do ecrã mas continua por resolver do lado do servidor, e resolve-se
+       * quando fores à conta — basta recolher numa aldeia (16/09). */
+      naoTrocarDeCidade = (Date.now() - captchaNoEcraDesde) < 60 * 1000;
+    } else {
+      naoTrocarDeCidade = false;
+      if (captchaNoEcraDesde) {
+        captchaNoEcraDesde = 0;
+        log('core', '▶️ O captcha saiu do ecrã — a recolha pode continuar.');
+      }
     }
 
     /* A JANELA DO ENCAIXE ESTÁ ABERTA?
@@ -19264,6 +19287,27 @@ function makeAldeiasModule(opts) {
         await ctx.sleep(500);
         try { viu = !!(ha && ha()); } catch (e) { viu = false; }
       }
+
+      /* UM MINUTO COM A JANELA ABERTA.
+       *
+       * Se estiveres a jogar, vês a notificação e resolves ali mesmo — e o
+       * maestro segue sem ter perdido nada. Se ninguém o resolver, ao fim do
+       * minuto continua-se na mesma: os outros módulos não têm culpa, e o
+       * aviso repete-se de hora a hora até estar feito. */
+      if (viu) {
+        log('🧩 Captcha no ecrã — tens um minuto para o resolver antes de eu seguir.');
+        for (let i = 0; i < 60; i++) {
+          await ctx.sleep(1000);
+          let aindaLa = true;
+          try { aindaLa = !!(ha && ha()); } catch (e) { aindaLa = true; }
+          if (!aindaLa) {
+            log('✅ Captcha resolvido — obrigado. Retomo a recolha.');
+            try { armazem.removeItem(CAPTCHA_KEY); } catch (e) {}
+            return false;                 // resolvido: já não há nada a suspender
+          }
+        }
+        log('⏳ O captcha continua por resolver — sigo com o resto e aviso de hora a hora.');
+      }
       log(viu
         ? '🧩 Captcha no ecrã, na janela da aldeia. Resolve-o — o maestro fica parado até lá.'
         : '⚠️ Abri a aldeia e carreguei em Recolher, mas o captcha não apareceu. '
@@ -19422,6 +19466,9 @@ function makeAldeiasModule(opts) {
      * vezes menos pedidos do que a de 5. */
   }
 
+  /* Passagens seguidas em que se recolheu e nada entrou nos armazéns. */
+  let semEntrada = 0;
+
   async function fazerRecolha(ctx, towns) {
     const log = ctx.log;
 
@@ -19457,6 +19504,28 @@ function makeAldeiasModule(opts) {
 
     const prontas = relacoesProntas();
     if (!prontas.length) { log('Recolha: nenhuma aldeia pronta.'); return; }
+
+    /* OS RECURSOS QUE ESTAVAM NOS ARMAZÉNS ANTES DE RECOLHER.
+     *
+     * O número que se escreve no registo — "recolhidas 132 aldeias, ~1 196 316
+     * recursos" — é o que as aldeias DEVIAM render, não o que entrou. Com um
+     * captcha por resolver, o servidor aceita os pedidos, não dá nada, e o
+     * registo continua a anunciar milhões (visto em jogo, 16/09: os armazéns
+     * só subiram depois de o captcha ser resolvido à mão).
+     *
+     * Por isso a regra do "não rendeu nada" nunca disparava: a estimativa
+     * nunca é zero. Compara-se com o que está nos armazéns. */
+    const recursosEmCasa = () => {
+      let t = 0;
+      try {
+        for (const c2 of Object.values(mUw.ITowns.towns)) {
+          const r = mUw.ITowns.getTown(c2.id).resources();
+          t += (Number(r.wood) || 0) + (Number(r.stone) || 0) + (Number(r.iron) || 0);
+        }
+      } catch (e) { return -1; }
+      return t;
+    };
+    const antesDeRecolher = recursosEmCasa();
 
     /* RECOLHER MUITO E NÃO RENDER NADA: PERGUNTA-SE AO JOGO.
      *
@@ -19624,7 +19693,37 @@ function makeAldeiasModule(opts) {
       (ctx.logRotina || log)(`Recolha: ${cedoDemais} aldeia(s) ainda não estavam prontas `
         + '— ficam para a volta seguinte.');
     }
-    if (n) log(`🌾 Recolhidas ${n} aldeia(s) (~${recursos} recursos).`);
+    /* ENTROU ALGUMA COISA?
+     *
+     * Se o módulo diz que recolheu e os armazéns não mexeram, não recolheu.
+     * A causa habitual é um captcha por resolver que o servidor não anuncia:
+     * abre-se uma aldeia e carrega-se em Recolher para o pôr no ecrã, e aí a
+     * detecção vê-o e avisa.
+     *
+     * Exige-se DUAS passagens seguidas sem entrada: os armazéns podem estar
+     * cheios, e nesse caso não sobem por não caberem mais recursos. */
+    if (n) {
+      const depois = recursosEmCasa();
+      const entrou = (antesDeRecolher >= 0 && depois >= 0) ? (depois - antesDeRecolher) : -1;
+
+      if (entrou === 0) {
+        semEntrada++;
+        if (semEntrada >= 2) {
+          (ctx.logRotina || log)(`Recolha: ${n} aldeia(s) "recolhidas" e nada entrou nos armazéns, `
+            + `${semEntrada} passagens seguidas — abro uma aldeia para ver se há verificação.`);
+          const apareceu = await mostrarCaptchaPelaRecolha(ctx, aldeiaParaMostrarCaptcha(ctx, prontas, null));
+          if (apareceu) { await tratarCaptcha(ctx, 'recolha sem nada a entrar'); return; }
+          semEntrada = 0;
+        } else {
+          (ctx.logRotina || log)('Recolha: nada entrou nos armazéns — confirmo na passagem seguinte.');
+        }
+      } else if (entrou > 0) {
+        semEntrada = 0;
+      }
+
+      log(`🌾 Recolhidas ${n} aldeia(s) (~${recursos} recursos`
+        + (entrou > 0 ? `; entraram ${entrou}` : '') + ').');
+    }
     /* SEGUNDA RONDA PARA AS QUE FALHARAM POR UM SEGUNDO.
      *
      * Uma aldeia que o servidor recusa por estar mesmo no limite da recarga
@@ -30448,9 +30547,27 @@ function makeEncaixeModule(opts) {
       }
 
       if (document.getElementById('encaixe-box')) return;
-      const cont = document.querySelector('.gpwindow_content');
+
+      /* A JANELA DE ENVIO, NÃO UMA QUALQUER COM UNIDADES.
+       *
+       * Procurava-se a primeira `.gpwindow_content` com campos de unidades —
+       * e uma mensagem do fórum da aliança com tropa também os tem. Com as
+       * duas janelas abertas, o painel do maestro ia parar ao post do fórum
+       * (visto em jogo, 16/09).
+       *
+       * O que distingue a janela de envio é o BOTÃO de atacar ou apoiar:
+       * nas outras não existe. */
+      const ehJanelaDeEnvio = (j) => {
+        try {
+          if (!j || !j.querySelector('input.unit_input[name]')) return false;
+          return [...j.querySelectorAll('div,a,span,button')]
+            .some((el) => /^(atacar|apoiar|attack|support)$/i
+              .test((el.textContent || '').trim()));
+        } catch (e) { return false; }
+      };
+
+      const cont = [...document.querySelectorAll('.gpwindow_content')].find(ehJanelaDeEnvio);
       if (!cont) return;
-      if (!document.querySelector('input.unit_input[name]')) return;  // não é a janela certa
 
       const c = cfg();
 
@@ -30461,11 +30578,12 @@ function makeEncaixeModule(opts) {
        * colonização. */
       const tipoEnvio = (() => {
         try {
-          if (document.querySelector('input.unit_input[name="colonize_ship"]')) {
-            const el = document.querySelector('input.unit_input[name="colonize_ship"]');
+          if (cont.querySelector('input.unit_input[name="colonize_ship"]')) {
+            const el = cont.querySelector('input.unit_input[name="colonize_ship"]');
             if (el && Number(el.value) > 0) return 'colonize';
           }
-          const txt = String(document.querySelector('.gpwindow_content').textContent || '').toLowerCase();
+          /* O texto desta janela, não o da primeira que houver. */
+          const txt = String(cont.textContent || '').toLowerCase();
           if (/apoi|support/.test(txt) && !/atac|attack/.test(txt)) return 'support';
         } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
         return 'attack';
