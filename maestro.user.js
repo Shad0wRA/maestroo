@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.13.0300
+// @version      2026.09.13.0500
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2568,7 +2568,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.13.0300';
+  const MAESTRO_VERSAO = '2026.09.13.0500';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -36107,7 +36107,39 @@ function makeApoioModule(opts) {
     return n;
   }
 
+  /* UM PEDIDO AO MAPA DE CADA VEZ, COM PAUSA.
+   *
+   * O `infoDaCidade` tem dois ciclos que pedem blocos do mapa — um por cada
+   * cidade minha, outro por cada bloco por ver — e nenhum tinha pausa nem
+   * olhava para o travão do servidor. Com 63 cidades, um clique no botão
+   * "actualizar" disparava dezenas de pedidos seguidos e o servidor recusava
+   * ao oitavo (visto em jogo, 16/09).
+   *
+   * Isto trata dos três: espera entre pedidos, pára quando o servidor recusa,
+   * e conta quantos já fez nesta chamada. */
+  let pedidosAoMapa = 0;
+  async function pedirBlocoDoMapa(cx, cy, base) {
+    if (servidorTravadoAgora()) return null;
+    if (pedidosAoMapa >= 12) return null;        // chega por chamada
+    if (pedidosAoMapa > 0) {
+      await new Promise((r) => setTimeout(r, 700 + Math.floor(Math.random() * 500)));
+    }
+    pedidosAoMapa++;
+    try {
+      const url = mUw.location.origin + '/game/map_data?town_id=' + Number(base)
+        + '&action=get_chunks&h=' + mUw.Game.csrfToken
+        + '&json=' + encodeURIComponent(JSON.stringify({
+            chunks: [{ x: cx, y: cy, timestamp: 0 }], town_id: Number(base), nl_init: true }));
+      const r = await mUw.fetch(url, {
+        headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
+      }).then(lerResposta);
+      const d = (r && r.json && r.json.data) || {};
+      return d[0] || d['0'] || null;
+    } catch (e) { return null; }
+  }
+
   async function infoDaCidade(townId, townIdBase) {
+    pedidosAoMapa = 0;
     if (cacheCidades[townId]) return cacheCidades[townId];
 
     /* PRIMEIRO: a tropa que já lá está diz o nome e o dono, sem pedido. */
@@ -36122,15 +36154,7 @@ function makeApoioModule(opts) {
         const cx = Math.floor(co.x / CHUNK);
         const cy = Math.floor(co.y / CHUNK);
         const base = townIdBase || Number(Object.keys(mUw.ITowns.towns)[0]);
-        const url = mUw.location.origin + '/game/map_data?town_id=' + Number(base)
-          + '&action=get_chunks&h=' + mUw.Game.csrfToken
-          + '&json=' + encodeURIComponent(JSON.stringify({
-              chunks: [{ x: cx, y: cy, timestamp: 0 }], town_id: Number(base), nl_init: true }));
-        const r = await mUw.fetch(url, {
-          headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
-        }).then(lerResposta);
-        const d = (r && r.json && r.json.data) || {};
-        const bloco = d[0] || d['0'];
+        const bloco = await pedirBlocoDoMapa(cx, cy, base);
         const towns = (bloco && bloco.towns) || {};
         for (const k of Object.keys(towns)) {
           const x = towns[k];
@@ -36179,14 +36203,8 @@ function makeApoioModule(opts) {
         if (vistos.has(chave)) continue;
         vistos.add(chave);
 
-        const url = mUw.location.origin + '/game/map_data?town_id=' + Number(townIdBase || id)
-          + '&action=get_chunks&h=' + mUw.Game.csrfToken
-          + '&json=' + encodeURIComponent(JSON.stringify({
-              chunks: [{ x: cx, y: cy, timestamp: 0 }], town_id: Number(townIdBase || id), nl_init: true }));
-        const r = await mUw.fetch(url, { headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include' })
-          .then(lerResposta);
-        const d = (r && r.json && r.json.data) || {};
-        const bloco = d[0] || d['0'];
+        const bloco = await pedirBlocoDoMapa(cx, cy, Number(townIdBase || id));
+        if (!bloco) break;                       // servidor travado ou chega de pedidos
         const towns = (bloco && bloco.towns) || {};
         for (const k of Object.keys(towns)) {
           const x = towns[k];
@@ -36223,15 +36241,8 @@ function makeApoioModule(opts) {
       const base = townIdBase || Number(Object.keys(mUw.ITowns.towns)[0]);
       for (const b of porVer) {
         try {
-          const url = mUw.location.origin + '/game/map_data?town_id=' + Number(base)
-            + '&action=get_chunks&h=' + mUw.Game.csrfToken
-            + '&json=' + encodeURIComponent(JSON.stringify({
-                chunks: [{ x: b.cx, y: b.cy, timestamp: 0 }], town_id: Number(base), nl_init: true }));
-          const r = await mUw.fetch(url, {
-            headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
-          }).then(lerResposta);
-          const d = (r && r.json && r.json.data) || {};
-          const bloco = d[0] || d['0'];
+          const bloco = await pedirBlocoDoMapa(b.cx, b.cy, Number(base));
+          if (!bloco) break;                     // servidor travado ou chega de pedidos
           const towns = (bloco && bloco.towns) || {};
           for (const k of Object.keys(towns)) {
             const x = towns[k];
@@ -36256,16 +36267,7 @@ function makeApoioModule(opts) {
       if (ilha) {
         const base = Number(townIdBase) || Number(Object.keys(mUw.ITowns.towns)[0]);
         const cx = Math.floor(ilha.x / CHUNK), cy = Math.floor(ilha.y / CHUNK);
-        const url = mUw.location.origin + '/game/map_data?town_id=' + Number(base)
-          + '&action=get_chunks&h=' + mUw.Game.csrfToken
-          + '&json=' + encodeURIComponent(JSON.stringify({
-            chunks: [{ x: cx, y: cy, timestamp: 0 }],
-            town_id: Number(base), nl_init: true,
-          }));
-        const r = await mUw.fetch(url, { headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include' })
-          .then(lerResposta);
-        const d = (r && r.json && r.json.data) || {};
-        const bloco = d[0] || d['0'];
+        const bloco = await pedirBlocoDoMapa(cx, cy, Number(base));
         const towns = (bloco && bloco.towns) || {};
         for (const k of Object.keys(towns)) {
           const x = towns[k];
@@ -36340,16 +36342,8 @@ function makeApoioModule(opts) {
           } catch (e) { seErroDeCodigo(e, 'Apoio'); }
           break;
         }
-        const url = mUw.location.origin + '/game/map_data?town_id=' + Number(base)
-          + '&action=get_chunks&h=' + mUw.Game.csrfToken
-          + '&json=' + encodeURIComponent(JSON.stringify({
-            chunks: [{ x: bl.x, y: bl.y, timestamp: 0 }],
-            town_id: Number(base), nl_init: true,
-          }));
-        const r = await mUw.fetch(url, { headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include' })
-          .then(lerResposta);
-        const d = (r && r.json && r.json.data) || {};
-        const bloco = d[0] || d['0'];
+        const bloco = await pedirBlocoDoMapa(bl.x, bl.y, Number(base));
+        if (!bloco) break;                       // servidor travado ou chega de pedidos
         const towns = (bloco && bloco.towns) || {};
         for (const k of Object.keys(towns)) {
           const x = towns[k];
@@ -41373,9 +41367,12 @@ function makeFrotaModule(opts) {
    * fechar ilha, esquiva) ficam de fora de propósito: avisar sobre eles era
    * ruído. */
   const VIGIADOS = {
-    /* A recolha não espera por nada: se há aldeias prontas, recolhe. Três
-     * horas calada é avaria. */
-    aldeias: 3 * 3600,
+    /* A recolha não espera por nada: se há aldeias prontas, recolhe. Mas três
+     * horas era pouco — com a opção de 10 minutos e as aldeias em fases
+     * diferentes, há períodos legítimos sem nada pronto, e o vigia disparava
+     * dezenas de vezes por hora em todas as contas (visto no Discord, 16/09).
+     * Seis horas caladas é que é avaria. */
+    aldeias: 6 * 3600,
     /* Estes dois dependem de recursos e podem ficar horas à espera sem que
      * isso seja problema. Um dia inteiro sem fazer nada já não é espera. */
     construcao: 24 * 3600,
@@ -41447,15 +41444,29 @@ function makeFrotaModule(opts) {
         versao: !calada && versaoAssente && !!minha && String(x.versao || '') < minha,
         paradas: !calada && ((x.jogo || {}).cheio || 0) >= 85 && ((x.jogo || {}).paradas || 0) > 0,
       };
+      /* UM PROBLEMA TEM DE PERSISTIR ANTES DE SER ANUNCIADO.
+       *
+       * Bastava vê-lo uma vez para avisar, e deixar de o ver uma vez para dar
+       * por resolvido: o Discord encheu-se de pares "está parado" / "já não",
+       * de dez em dez minutos, nas vinte contas (16/09).
+       *
+       * Agora conta-se: só se anuncia à SEGUNDA passagem seguida com o mesmo
+       * problema, e só se anuncia a resolução do que chegou a ser anunciado.
+       * O que aparece e desaparece entre passagens deixa de dar barulho. */
       const antes = estado[nome] || {};
       const depois = {};
       x.__parados = parados;
       for (const p of Object.keys(problemas)) {
+        const antigo = antes[p];
         if (problemas[p]) {
-          depois[p] = antes[p] || agora;
-          if (!antes[p]) novos.push({ nome, p, x, desde: agora - quando });
-        } else if (antes[p]) {
-          resolvidos.push({ nome, p });
+          const desde = (antigo && antigo.desde) || agora;
+          const vezes = ((antigo && antigo.vezes) || 0) + 1;
+          const jaAvisado = !!(antigo && antigo.avisado);
+          depois[p] = { desde, vezes, avisado: jaAvisado || vezes >= 2 };
+          if (!jaAvisado && vezes >= 2) novos.push({ nome, p, x, desde: agora - quando });
+        } else if (antigo) {
+          /* Só se anuncia a resolução do que foi anunciado. */
+          if (antigo.avisado) resolvidos.push({ nome, p });
         }
       }
       estado[nome] = depois;
@@ -42585,7 +42596,20 @@ function makeFecharIlhaModule(opts) {
        *
        * A marca tem validade: se o módulo for desligado, cai sozinha e a
        * rotação volta a dispor de tudo. */
-      querNC('fecharilha', 60, 1);
+      /* UMA VAGA E UM COLONIZADOR POR PLANO EM QUE ESTOU.
+       *
+       * Guardava-se um colonizador, fosse qual fosse o número de planos na
+       * fila. Com seis planos, a conta precisa de seis — e a fundação e a
+       * rotação gastavam os outros cinco (16/09). */
+      const meusPlanos = (() => {
+        try {
+          const f = filaEmMemoria || {};
+          return (f.planos || []).filter((p2) => p2 && p2.estado !== 'feito'
+            && p2.estado !== 'abortado'
+            && (p2.atribuicoes || {})[eu] !== undefined).length;
+        } catch (e) { return 1; }
+      })();
+      querNC('fecharilha', 60, Math.max(1, meusPlanos));
 
       /* ESTA CONTA ESTÁ À ESPERA DE UMA VAGA PARA FECHAR UMA ILHA.
        *
@@ -42659,6 +42683,31 @@ function makeFecharIlhaModule(opts) {
           + `(${plano.falhados[eu]}).`);
       } else if (plano.estado === 'lancar' && !plano.enviados[eu] && !enviei) {
         let meuLugarUsado = null;
+
+        /* NINGUÉM PARTE ENQUANTO TODOS NÃO PUDEREM.
+         *
+         * A partida era dada quando havia contas para todos os lugares, e
+         * cada uma enviava na sua passagem. Mas entre a partida e a vez de
+         * cada uma podem passar horas — e quem entretanto gastou a vaga
+         * noutra ilha fica de fora. Resultado visto em jogo (16/09): 17
+         * colonizadores a caminho de uma ilha que precisava de 20, e três
+         * contas sem vaga. Os 17 ficam lá sem fechar nada.
+         *
+         * Agora confirma-se: se alguma conta do plano está impedida, ninguém
+         * envia. O plano espera — eventualmente todas terão vaga. */
+        const impedidas = Object.keys(plano.atribuicoes || {}).filter((n2) => {
+          if (plano.enviados[n2]) return false;                 // essa já foi
+          const f = (plano.falhados || {})[n2];
+          return !!f;                                           // tem falha registada
+        });
+
+        if (impedidas.length) {
+          (ctx.logRotina || log)(`Fechar ilha ${plano.chave}: espero — `
+            + `${impedidas.length} conta(s) ainda não podem `
+            + `(${impedidas.slice(0, 3).join(', ')}${impedidas.length > 3 ? '…' : ''}). `
+            + 'Ninguém parte enquanto todas não puderem.');
+          return;
+        }
 
         /* Confirmar OUTRA VEZ à partida: entre declarar-se pronta e a ordem
          * de partida podem passar horas, e a vaga pode ter sido gasta por
