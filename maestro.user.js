@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.9600
+// @version      2026.09.12.9900
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2568,7 +2568,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.9600';
+  const MAESTRO_VERSAO = '2026.09.12.9900';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -19495,6 +19495,26 @@ function makeAldeiasModule(opts) {
   /* Passagens seguidas em que se recolheu e nada entrou nos armazéns. */
   let semEntrada = 0;
 
+  /* O TOTAL NOS ARMAZÉNS DE TODAS AS CIDADES.
+   *
+   * Serve para saber se a recolha rendeu MESMO: o número que o módulo escreve
+   * é o que as aldeias deviam dar, e com um captcha por resolver o servidor
+   * aceita sem dar nada (16/09).
+   *
+   * Estava declarada dentro do `fazerRecolha` e usada no `recolhaIndividual`,
+   * que é outra função — o módulo rebentava com "recursosEmCasa is not
+   * defined" (16/09, na 9300). Fica aqui, onde as duas a alcançam. */
+  function recursosEmCasa() {
+    let t = 0;
+    try {
+      for (const c2 of Object.values(mUw.ITowns.towns)) {
+        const r = mUw.ITowns.getTown(c2.id).resources();
+        t += (Number(r.wood) || 0) + (Number(r.stone) || 0) + (Number(r.iron) || 0);
+      }
+    } catch (e) { return -1; }
+    return t;
+  }
+
   async function fazerRecolha(ctx, towns) {
     const log = ctx.log;
 
@@ -19541,16 +19561,6 @@ function makeAldeiasModule(opts) {
      *
      * Por isso a regra do "não rendeu nada" nunca disparava: a estimativa
      * nunca é zero. Compara-se com o que está nos armazéns. */
-    const recursosEmCasa = () => {
-      let t = 0;
-      try {
-        for (const c2 of Object.values(mUw.ITowns.towns)) {
-          const r = mUw.ITowns.getTown(c2.id).resources();
-          t += (Number(r.wood) || 0) + (Number(r.stone) || 0) + (Number(r.iron) || 0);
-        }
-      } catch (e) { return -1; }
-      return t;
-    };
     const antesDeRecolher = recursosEmCasa();
 
     /* RECOLHER MUITO E NÃO RENDER NADA: PERGUNTA-SE AO JOGO.
@@ -32639,10 +32649,17 @@ function makeMissoesModule(opts) {
   function cidadeNaIlha(ix, iy) {
     try {
       for (const id of Object.keys(mUw.ITowns.towns)) {
+        /* UMA CIDADE PODE JÁ NÃO ESTAR LÁ.
+         *
+         * A lista `ITowns.towns` e o que o `getTown` devolve nem sempre andam
+         * a par — uma cidade acabada de conquistar, ou perdida, deixa a chave
+         * na lista sem o objecto por trás. Sem esta verificação, o módulo
+         * rebentava com "Cannot read properties of undefined" (16/09). */
         const t = mUw.ITowns.getTown(Number(id));
+        if (!t || typeof t.getIslandCoordinateX !== 'function') continue;
         if (Number(t.getIslandCoordinateX()) === Number(ix)
           && Number(t.getIslandCoordinateY()) === Number(iy)) {
-          return { id: Number(id), name: t.getName() };
+          return { id: Number(id), name: (typeof t.getName === 'function') ? t.getName() : String(id) };
         }
       }
     } catch (e) { seErroDeCodigo(e, 'Missoes'); }
@@ -35871,6 +35888,21 @@ function makeApoioModule(opts) {
     catch (e) { seErroDeCodigo(e, 'Apoio'); }
   }
 
+  /* ============ MULTI OU MAIN? =========================================
+   *
+   * Nas multis, o maestro é o único que manda tropa: tudo o que está fora de
+   * casa e não é de nenhum módulo é resto esquecido, e sai. Na main não —
+   * lá mandas apoios à mão a aliados, e trazê-los de volta seria desfazer o
+   * que fizeste (16/09).
+   *
+   * Quem decide é o perfil, que já separa as configurações das duas. */
+  function souMulti() {
+    try {
+      const esc = JSON.parse(localStorage.getItem('grepoMaestro_modulos_v1') || '{}') || {};
+      return String(esc.perfil || '').toLowerCase() === 'multi';
+    } catch (e) { return false; }
+  }
+
   /* ============ TECTO DE 14 HORAS POR ALVO =============================
    *
    * Um alvo sai da lista quando a revolta acaba — mas isso exige LER, e a
@@ -37264,6 +37296,47 @@ function makeApoioModule(opts) {
        * mão uma vez — é o preço de deixar de mexer no que não é seu. */
       const enviadoPorMim = new Set(Object.keys(lerEnviado()).map(Number));
 
+      /* ============ O QUE NÃO É DO APOIO NÃO SE MEXE ====================
+       *
+       * Até agora só se retirava do que estava no registo do apoio. Um envio
+       * cujo registo se tenha perdido ficava lá para sempre (16/09).
+       *
+       * Passa a retirar-se também o que não está no registo — mas há tropa
+       * fora de casa que é de OUTROS módulos, e essa não se toca:
+       *
+       *  • as sentinelas, três unidades numa cidade aliada só para ver os
+       *    ataques que lá chegam;
+       *  • o reforço sob ataque, que tem o seu próprio registo e a sua
+       *    própria hora de retirada;
+       *  • os colonizadores da rotação, que já eram poupados;
+       *  • as bases dos colonos, idem. */
+      /* As sentinelas guardam para onde foram — não é preciso adivinhar pelo
+       * tamanho. */
+      const doSentinelas = (() => {
+        const s = new Set();
+        try {
+          const chave = (typeof chavePorPerfil === 'function')
+            ? chavePorPerfil('grepoSentinelas_enviadas_v1') : 'grepoSentinelas_enviadas_v1';
+          const d = JSON.parse(localStorage.getItem(chave) || '{}') || {};
+          for (const k of Object.keys(d)) s.add(Number(k));
+        } catch (e) { seErroDeCodigo(e, 'Apoio'); }
+        return s;
+      })();
+
+      const doReforco = (() => {
+        const s = new Set();
+        try {
+          const chave = (typeof chavePorPerfil === 'function')
+            ? chavePorPerfil('grepoReforco_envios_v1') : 'grepoReforco_envios_v1';
+          const d = JSON.parse(localStorage.getItem(chave) || '{}') || {};
+          for (const k of Object.keys(d)) {
+            const destino = Number((d[k] || {}).destino) || 0;
+            if (destino) s.add(destino);
+          }
+        } catch (e) { seErroDeCodigo(e, 'Apoio'); }
+        return s;
+      })();
+
       const naLista = new Set(alvos);
       const ondeTenho = new Set();
       const mods = mUw.MM.getModels().Units || {};
@@ -37274,7 +37347,8 @@ function makeApoioModule(opts) {
         if (!mUw.ITowns.towns[casa]) continue;
         if ((Number(a.colonize_ship) || 0) > 0) continue;   // é da rotação
         if (naLista.has(onde) || doColonos.has(onde)) continue;
-        if (!enviadoPorMim.has(onde)) continue;             // não fui eu que o pus lá
+        if (doReforco.has(onde) || doSentinelas.has(onde)) continue;
+        if (!enviadoPorMim.has(onde) && !souMulti()) continue;   // na main respeita-se o que é à mão
         ondeTenho.add(onde);
       }
 
@@ -37293,7 +37367,8 @@ function makeApoioModule(opts) {
             if (!onde || onde === Number(de)) continue;
             if ((Number((b.unidades || {}).colonize_ship) || 0) > 0) continue;
             if (naLista.has(onde) || doColonos.has(onde)) continue;
-            if (!enviadoPorMim.has(onde)) continue;
+            if (doReforco.has(onde) || doSentinelas.has(onde)) continue;
+            if (!enviadoPorMim.has(onde) && !souMulti()) continue;
             ondeTenho.add(onde);
           }
         }
@@ -37302,7 +37377,8 @@ function makeApoioModule(opts) {
       for (const cidade of ondeTenho) {
         const n = await retirarApoio(ctx, cidade);
         if (n) {
-          log(`↩️ Apoio: ${cidade} já não está na lista — ${n} comando(s) a voltar.`);
+          log(`↩️ Apoio: ${cidade} já não está na lista — ${n} comando(s) a voltar`
+            + (enviadoPorMim.has(Number(cidade)) ? '.' : ' (não estava no meu registo).'));
           /* Saiu de lá: o registo deixa de ter razão de ser. */
           try {
             const reg2 = lerEnviado();
@@ -41500,6 +41576,15 @@ function makeFrotaModule(opts) {
         }
         return { id, nome: l.nome, contas: l.contas, terra, mar, total: terra + mar };
       })
+      /* AS SENTINELAS NÃO SÃO DEFESA.
+       *
+       * São três unidades postas numa cidade aliada só para ver os ataques que
+       * lá chegam. Apareciam nesta lista ao lado das cidades apoiadas a sério,
+       * e com 200 delas a tabela deixava de servir para nada (16/09).
+       *
+       * Corta-se pelo tamanho: uma cidade com menos de 10 de população não
+       * está a ser defendida por ninguém. */
+      .filter((l) => l.total >= 10)
       .sort((a2, b2) => a2.total - b2.total)   // os mais magros primeiro
       .map((l) => `<tr>
         <td style="padding:2px 4px">${esc(l.nome || l.id)}</td>
