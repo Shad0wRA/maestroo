@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.13.0500
+// @version      2026.09.13.0600
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2568,7 +2568,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.13.0500';
+  const MAESTRO_VERSAO = '2026.09.13.0600';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -19497,6 +19497,17 @@ function makeAldeiasModule(opts) {
   /* Passagens seguidas em que se recolheu e nada entrou nos armazéns. */
   let semEntrada = 0;
 
+  /* O TOTAL NOS ARMAZÉNS ANTES DE RECOLHER.
+   *
+   * É medido no `fazerRecolha` e comparado no `recolhaIndividual`, que são
+   * funções diferentes: declarado dentro da primeira, a segunda rebentava com
+   * "antesDeRecolher is not defined" — e o módulo morria a cada passagem, o
+   * que deixou contas dez horas sem recolher nada (16/09).
+   *
+   * É o mesmo erro que já tinha feito com o `recursosEmCasa`, e desta vez a
+   * variável vem com ele. */
+  let antesDeRecolher = -1;
+
   /* O TOTAL NOS ARMAZÉNS DE TODAS AS CIDADES.
    *
    * Serve para saber se a recolha rendeu MESMO: o número que o módulo escreve
@@ -19563,7 +19574,7 @@ function makeAldeiasModule(opts) {
      *
      * Por isso a regra do "não rendeu nada" nunca disparava: a estimativa
      * nunca é zero. Compara-se com o que está nos armazéns. */
-    const antesDeRecolher = recursosEmCasa();
+    antesDeRecolher = recursosEmCasa();
 
     /* RECOLHER MUITO E NÃO RENDER NADA: PERGUNTA-SE AO JOGO.
      *
