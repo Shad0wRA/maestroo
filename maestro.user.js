@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.9100
+// @version      2026.09.12.9200
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2536,7 +2536,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.9100';
+  const MAESTRO_VERSAO = '2026.09.12.9200';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -3428,7 +3428,19 @@
       try {
         const p = uw.__maestroPartilha;
         if (p) {
-          const rr = await p.escrever(ficheiroPerfil(nome), chaves);
+          /* O EMBRULHO COMPLETO, COMO NO GIST.
+           *
+           * Gravei só as `chaves` quando passei isto para o Firebase (8000) —
+           * e quem lê precisa da DATA para saber se é novo. Sem ela, a
+           * verificação "isto é mais recente do que o que já apliquei?"
+           * falhava sempre e o perfil NUNCA era aplicado: numa multi, a última
+           * aplicação foi a 15/09 às 03:58, pelo Gist, antes da minha
+           * alteração (visto em jogo, 16/09).
+           *
+           * Nada do que a conta principal mudasse chegava às outras. */
+          const rr = await p.escrever(ficheiroPerfil(nome), {
+            perfil: nome, mundo: WORLD, quando: Date.now(), chaves,
+          });
           if (rr && rr.ok && semGist) return { ok: true, n: Object.keys(chaves).length };
         }
       } catch (e) { seErroDeCodigo(e, 'núcleo'); }
@@ -3455,6 +3467,13 @@
     try {
       const p = uw.__maestroPartilha;
       if (p) dadosFb = await p.ler(ficheiroPerfil(nome));
+
+      /* Os perfis gravados entre a 8000 e a 9200 vieram sem embrulho: são as
+       * chaves à solta. Aceitam-se na mesma, para não se perderem — mas sem
+       * data valem como "acabado de chegar". */
+      if (dadosFb && !dadosFb.chaves && Object.keys(dadosFb).some((k) => /^grepo/i.test(k))) {
+        dadosFb = { perfil: nome, mundo: WORLD, quando: Date.now(), chaves: dadosFb };
+      }
     } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
     if (!dadosFb && !GIST_ID_GLOBAL) return { ok: false, msg: 'sem Firebase nem Gist' };
