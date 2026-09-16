@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.13.0100
+// @version      2026.09.13.0200
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2568,7 +2568,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.13.0100';
+  const MAESTRO_VERSAO = '2026.09.13.0200';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -37501,10 +37501,12 @@ function makeApoioModule(opts) {
        * cidade que já saiu da lista não tem onde ser entregue, e mantinha as
        * contas a mandar tropa para lá (visto em jogo, 16/09: dois pedidos de
        * ontem, para alvos que já não estavam na lista). */
+      /* O Apoio fala com o Firebase pelo `fbLerM`/`fbEscreverM`, não por um
+       * `fb()` — que é dos outros módulos. Chamei o errado e o módulo rebentou
+       * com "fb is not defined" (16/09). */
       try {
-        const fbP = fb();
-        if (fbP) {
-          const pend = (await fbP.ler(`apoioPedidos/${mWorld}`)) || {};
+        if (typeof fbLerM === 'function' && fbUrlM && fbUrlM()) {
+          const pend = (await fbLerM(fbCaminhoPedidos())) || {};
           const vivos2 = new Set((alvos || []).map(Number));
           let mexeu2 = false;
           for (const k of Object.keys(pend)) {
@@ -37512,7 +37514,7 @@ function makeApoioModule(opts) {
             if (alvoP && !vivos2.has(alvoP)) { delete pend[k]; mexeu2 = true; }
           }
           if (mexeu2) {
-            await fbP.escrever(`apoioPedidos/${mWorld}`, pend);
+            await fbEscreverM(fbCaminhoPedidos(), pend);
             rotina('Apoio: apaguei pedidos de alvos que já não estão na lista.');
           }
         }
