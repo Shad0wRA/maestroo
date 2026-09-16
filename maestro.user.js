@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.13.0200
+// @version      2026.09.13.0300
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2568,7 +2568,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.13.0200';
+  const MAESTRO_VERSAO = '2026.09.13.0300';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -4984,6 +4984,13 @@
           <button id="maestro-perfil-aplicar">Aplicar</button>
           <button id="maestro-perfil-guardar" title="Guardar as definições actuais neste perfil">Guardar</button>
         </div>
+        <details style="background:#0d141c;padding:6px 8px;border-radius:4px;margin-top:7px">
+          <summary style="cursor:pointer;font-size:11px;font-weight:600">perfil e partilha</summary>
+          <div style="opacity:.6;font-size:10px;margin:4px 0">
+            Mexe-se uma vez por conta: qual é a principal, o Firebase, os
+            avisos do Discord e o copiar de definições. Fica fechado para não
+            empurrar para baixo o que se consulta todos os dias (16/09).
+          </div>
         <label style="display:flex;gap:6px;align-items:center;font-size:12px"
           title="uma conta de uma cidade só corre o que tem o que fazer">
           <input type="checkbox" id="maestro-conta-nova">
@@ -5036,27 +5043,11 @@
         <!-- CONFIGURAÇÃO QUE SE PÕE UMA VEZ FICA FECHADA.
              As credenciais, o endereço do Firebase e os avisos do Discord
              mexem-se uma vez e nunca mais. Estarem sempre abertos empurrava
-             para baixo tudo o que se consulta todos os dias. -->
-        <details style="background:#0d141c;padding:6px 8px;border-radius:4px;margin-top:7px">
-          <summary style="cursor:pointer;font-size:11px;font-weight:600">Gist (partilha entre contas)</summary>
-          <div style="opacity:.6;font-size:10px;margin:4px 0">
-            Guardado NESTA conta — não se perde quando o script se actualiza.
-          </div>
-          <div style="display:flex;gap:4px;align-items:center;margin-bottom:3px">
-            <span style="opacity:.75;font-size:10px;width:42px">id</span>
-            <input type="text" id="maestro-gist-id" value="${String(GIST_GUARDADO.id || '').replace(/[<>"&]/g, '')}"
-              placeholder="identificador do Gist" style="flex:1;font-size:10px">
-          </div>
-          <div style="display:flex;gap:4px;align-items:center">
-            <span style="opacity:.75;font-size:10px;width:42px">token</span>
-            <input type="password" id="maestro-gist-token" value="${String(GIST_GUARDADO.token || '').replace(/[<>"&]/g, '')}"
-              placeholder="token do GitHub (scope: gist)" style="flex:1;font-size:10px">
-          </div>
-          <button id="maestro-gist-guardar" style="width:100%;margin-top:4px;font-size:10px">
-            Guardar credenciais
-          </button>
-        </details>
+             para baixo tudo o que se consulta todos os dias.
 
+             A caixa do GIST saiu daqui (16/09): a partilha toda passou para o
+             Firebase, e o Gist ficou só como reserva de leitura para quem
+             ainda tenha credenciais numa conta. Não há nada a configurar. -->
         <details style="background:#0d141c;padding:6px 8px;border-radius:4px;margin-top:7px">
           <summary style="cursor:pointer;font-size:11px;font-weight:600">Firebase (avisos de ataque)</summary>
           <div style="opacity:.6;font-size:10px;margin:4px 0">
@@ -5141,6 +5132,8 @@
           <button id="wh-testar">Enviar teste</button>
         </div>
       </details>
+
+        </details>
 
       <div id="maestro-modulos"></div>
 
@@ -5682,20 +5675,6 @@
       if (est) {
         est.textContent = r.ok ? '✓ Funciona.' : '✗ Não consegui escrever: ' + r.msg;
         est.style.color = r.ok ? '#4fc7a1' : '#f88';
-      }
-    };
-
-    const btG = document.getElementById('maestro-gist-guardar');
-    if (btG) btG.onclick = async () => {
-      const id = (document.getElementById('maestro-gist-id') || {}).value || '';
-      const tk = (document.getElementById('maestro-gist-token') || {}).value || '';
-      try {
-        localStorage.setItem(CREDENCIAIS_KEY, JSON.stringify({
-          id: String(id).trim(), token: String(tk).trim(),
-        }));
-        log('core', 'Gist: credenciais guardadas. Recarrega a página para as usar.');
-      } catch (e) {
-        log('core', 'Não consegui guardar as credenciais: ' + e.message);
       }
     };
 
@@ -6513,16 +6492,39 @@
     if (!box) return;
     if (!meus.length) { box.textContent = 'Sem módulos.'; return; }
 
-    // Só os ligados interessam aqui; os desligados vêem-se na grelha.
-    const linhas = ligados.map((m) => {
+    /* SÓ O QUE ESTÁ A CORRER E O QUE ESTÁ ATRASADO.
+     *
+     * A lista tinha os vinte e dois módulos, um por linha, e enchia meio
+     * painel com informação que quase nunca muda — "Auto-construção, 6 min"
+     * não diz nada a ninguém. O que se quer saber é: está alguma coisa presa?
+     *
+     * Fica o que está a tocar agora, o que já devia ter corrido, e uma linha
+     * com a contagem do resto (16/09). */
+    const atrasado = (m) => {
+      const st = modState[m.id] || {};
+      if (st.aCorrer || !st.proximaExec) return false;
+      /* Atrasado é ter passado da hora por mais de um minuto. */
+      return (Date.now() - st.proximaExec) > 60 * 1000;
+    };
+
+    const emDestaque = ligados.filter((m) => (modState[m.id] || {}).aCorrer || atrasado(m));
+
+    const linhas = emDestaque.map((m) => {
       const st = modState[m.id] || {};
       const falta = st.proximaExec ? Math.round((st.proximaExec - Date.now()) / 1000) : null;
       const quando = st.aCorrer
         ? '<span style="color:var(--mLive)">a correr</span>'
-        : `<span style="color:var(--mDim)">${emBreve(falta)}</span>`;
+        : `<span style="color:var(--mBrass)">atrasado ${emBreve(Math.abs(falta))}</span>`;
       return `<div style="display:flex;justify-content:space-between;gap:8px">
         <span>${m.nome}</span>${quando}</div>`;
     });
+
+    const emDia = ligados.length - emDestaque.length;
+    if (emDia > 0) {
+      linhas.push(`<div style="color:var(--mFaint);margin-top:${linhas.length ? '3px' : '0'}">`
+        + `${emDia} módulo(s) em dia</div>`);
+    }
+
     box.innerHTML = linhas.length
       ? linhas.join('')
       : `<span style="color:var(--mFaint)">${meus.length} módulo(s) disponíveis, nenhum ligado.</span>`;
