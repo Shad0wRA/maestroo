@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.9500
+// @version      2026.09.12.9600
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -913,15 +913,41 @@
 
   /* Lê a Ágora de UMA cidade minha. Devolve null se não conseguir. */
   async function apoioForaDaCidade(townId) {
-    try {
+    /* O SEPARADOR SOZINHO NEM SEMPRE CHEGA.
+     *
+     * Quando abres a Ágora no jogo, ele pede primeiro `action=culture` — que é
+     * o separador por onde a janela abre — e só depois `units_beyond`
+     * (confirmado com a espia, 16/09). O maestro pedia o segundo directamente,
+     * e às vezes o jogo respondia "Ocorreu um erro interno!".
+     *
+     * Por isso: se o pedido directo falhar, abre-se a Ágora como o jogo faz e
+     * tenta-se outra vez. Nos casos normais não custa nada — o segundo pedido
+     * só acontece quando o primeiro já tinha falhado. */
+    const pedir = async (accao) => {
       const url = uw.location.origin + '/game/building_place?town_id=' + Number(townId)
-        + '&action=units_beyond&h=' + uw.Game.csrfToken
+        + '&action=' + accao + '&h=' + uw.Game.csrfToken
         + '&json=' + encodeURIComponent(JSON.stringify({ town_id: Number(townId), nl_init: true }))
         + '&_=' + Date.now();
-
-      const txt = await uw.fetch(url, {
+      return uw.fetch(url, {
         headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
       }).then((r) => r.text());
+    };
+
+    try {
+      let txt = await pedir('units_beyond');
+
+      const semHtml = (t) => {
+        if (!t) return true;
+        try { return !(((JSON.parse(t) || {}).json || {}).html || ''); } catch (e) { return true; }
+      };
+
+      if (semHtml(txt)) {
+        /* Como o jogo faz: abrir a Ágora e só depois o separador. */
+        await pedir('culture');
+        await new Promise((r) => setTimeout(r, 300));
+        txt = await pedir('units_beyond');
+      }
+
       if (!txt) return null;
 
       let html = '';
@@ -2542,7 +2568,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.9500';
+  const MAESTRO_VERSAO = '2026.09.12.9600';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
