@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.12.9900
+// @version      2026.09.13.0100
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2568,7 +2568,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.12.9900';
+  const MAESTRO_VERSAO = '2026.09.13.0100';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -37495,6 +37495,29 @@ function makeApoioModule(opts) {
     try {
       marcarEntrada(alvos);
 
+      /* E OS PEDIDOS DE REFORÇAR OU REPOR.
+       *
+       * Ficavam no Firebase até serem cumpridos — mas um pedido para uma
+       * cidade que já saiu da lista não tem onde ser entregue, e mantinha as
+       * contas a mandar tropa para lá (visto em jogo, 16/09: dois pedidos de
+       * ontem, para alvos que já não estavam na lista). */
+      try {
+        const fbP = fb();
+        if (fbP) {
+          const pend = (await fbP.ler(`apoioPedidos/${mWorld}`)) || {};
+          const vivos2 = new Set((alvos || []).map(Number));
+          let mexeu2 = false;
+          for (const k of Object.keys(pend)) {
+            const alvoP = Number((pend[k] || {}).alvo) || 0;
+            if (alvoP && !vivos2.has(alvoP)) { delete pend[k]; mexeu2 = true; }
+          }
+          if (mexeu2) {
+            await fbP.escrever(`apoioPedidos/${mWorld}`, pend);
+            rotina('Apoio: apaguei pedidos de alvos que já não estão na lista.');
+          }
+        }
+      } catch (e) { seErroDeCodigo(e, 'Apoio'); }
+
       /* O reforço de um alvo que saiu da lista não tem onde ser entregue:
        * apaga-se, para não ficar a inflacionar quotas de alvos que já não
        * existem. */
@@ -41616,6 +41639,40 @@ function makeFrotaModule(opts) {
    * Soma o que as vinte contas têm em casa e diz quanto disso consegue
    * viajar. Ter 2000 espadachins não serve de nada se a carga só levar 600 —
    * e é esse número que ninguém via. */
+  /* O INVENTÁRIO DESTA CONTA.
+   *
+   * O painel mostrava só a soma das vinte e um — útil para planear, inútil
+   * para saber o que ESTA conta tem à mão. As duas coisas passam a estar lá,
+   * em abas (16/09). */
+  function htmlInventarioDaConta() {
+    const total = {};
+    try {
+      for (const t of Object.values(mUw.ITowns.towns)) {
+        const u = mUw.ITowns.getTown(t.id).units() || {};
+        for (const k of Object.keys(u)) total[k] = (total[k] || 0) + (Number(u[k]) || 0);
+      }
+    } catch (e) { seErroDeCodigo(e, 'Frota'); }
+
+    const gd = (mUw.GameData || {}).units || {};
+    const linhas = Object.keys(total)
+      .filter((u) => total[u] > 0 && gd[u])
+      .sort((a2, b2) => total[b2] - total[a2])
+      .map((u) => `<tr>
+        <td style="padding:2px 4px">${esc((gd[u] || {}).name || u)}</td>
+        <td style="padding:2px 4px;opacity:.6">${(gd[u] || {}).is_naval ? 'mar' : 'terra'}</td>
+        <td style="padding:2px 4px;text-align:right">${total[u].toLocaleString('pt-PT')}</td>
+      </tr>`).join('');
+
+    if (!linhas) return '<div style="font-size:12px;opacity:.6">esta conta não tem tropa em casa.</div>';
+
+    return `<div style="max-height:190px;overflow:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:12px">${linhas}</table>
+      </div>
+      <div style="opacity:.6;font-size:11px;margin-top:3px">
+        ${Object.keys(mUw.ITowns.towns).length} cidade(s) desta conta · só o que está em casa
+      </div>`;
+  }
+
   function htmlInventario(contas) {
     const total = {};
     let carga = 0, pop = 0, comInv = 0;
@@ -41764,10 +41821,33 @@ function makeFrotaModule(opts) {
         </table>
       </div>
 
-      ${htmlInventario(contas)}
+      <div class="mEtiq" style="margin-top:11px;margin-bottom:4px">inventário</div>
+      <div style="display:flex;gap:6px;margin-bottom:6px">
+        <button class="frota-aba" data-aba="conta" style="cursor:pointer;font-size:11px">esta conta</button>
+        <button class="frota-aba" data-aba="frota" style="cursor:pointer;font-size:11px">as ${contas.length} contas</button>
+      </div>
+      <div id="frota-inv"></div>
       ${htmlApoio(contas)}
 
       <button id="frota-rec" style="cursor:pointer;font-size:12px;margin-top:6px">🔄 actualizar</button>`;
+
+    /* As abas do inventário: esta conta ou a frota inteira. */
+    try {
+      const caixa = container.querySelector('#frota-inv');
+      const abas = [...container.querySelectorAll('.frota-aba')];
+      const mostrar = (qual) => {
+        if (!caixa) return;
+        caixa.innerHTML = (qual === 'conta') ? htmlInventarioDaConta() : htmlInventario(contas);
+        abas.forEach((x) => {
+          x.style.opacity = (x.dataset.aba === qual) ? '1' : '.55';
+        });
+        try { localStorage.setItem('grepoFrota_aba_v1', qual); } catch (e) {}
+      };
+      abas.forEach((x) => { x.onclick = () => mostrar(x.dataset.aba); });
+      let inicial = 'frota';
+      try { inicial = localStorage.getItem('grepoFrota_aba_v1') || 'frota'; } catch (e) {}
+      mostrar(inicial);
+    } catch (e) { seErroDeCodigo(e, 'Frota'); }
 
     const b = container.querySelector('#frota-rec');
     if (b) b.onclick = () => painel(container, ctx);
