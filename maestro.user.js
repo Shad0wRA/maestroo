@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.13.1600
+// @version      2026.09.13.1700
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2707,7 +2707,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.13.1600';
+  const MAESTRO_VERSAO = '2026.09.13.1700';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -17523,6 +17523,127 @@ function makeFeiticosModule(opts) {
     } catch (e) { return { ok: false, msg: e.message, acaba: 0 }; }
   }
 
+  /* NOTA: este bloco vive ao NÍVEL DO MÓDULO, não dentro do `run`.
+   *
+   * Da primeira vez foi parar ao meio da função `run` e o módulo rebentava com
+   * "cumprirPedidosDeRecursos is not defined" — uma função declarada dentro de
+   * outra não existe fora dela. É o mesmo erro que já tinha feito com o
+   * `recursosEmCasa` das aldeias (17/09). */
+  /* ============ RECURSOS POR FEITIÇO, A PEDIDO ==========================
+   *
+   * Três feitiços dão recursos a qualquer cidade — a tua, de uma multi ou de
+   * um aliado (a wiki confirma que se lançam em cidades de outros; os valores
+   * saíram do próprio jogo, 17/09):
+   *
+   *   Oferta do oceano          25 favor → 800 madeira   (Poseidon)
+   *   Oferta da natureza        30 favor → 650 pedra     (Ártemis)
+   *   Tesouros do mundo mortos  30 favor → 500 prata     (Hades)
+   *
+   * Não há tempo de espera entre lançamentos na mesma cidade. Com vinte
+   * multis, isto é uma fábrica de recursos: 32 de madeira por favor.
+   *
+   * COMO FUNCIONA. Pões no painel quanto queres e em que cidade; o pedido vai
+   * para o Firebase e as contas vão descontando o que lançam até perfazer.
+   * Ninguém precisa de ver os recursos da cidade — conta-se o que cada
+   * feitiço dá, que é fixo.
+   *
+   * O módulo não anda à procura de trabalho: sem pedido, não faz nada. */
+  const RECURSOS_POR_FEITICO = {
+    wood: { power: 'kingly_gift', deus: 'poseidon', favor: 25, da: 800 },
+    stone: { power: 'natures_gift', deus: 'artemis', favor: 30, da: 650 },
+    iron: { power: 'underworld_treasures', deus: 'hades', favor: 30, da: 500 },
+  };
+
+  const caminhoPedidosRec = () => `recursosPedidos/${mWorld}`;
+
+  async function lerPedidosDeRecursos() {
+    try {
+      const fb = mUw.__maestroFb;
+      if (!fb || !fb.url || !fb.url()) return null;
+      return (await fb.ler(caminhoPedidosRec())) || {};
+    } catch (e) { return null; }
+  }
+
+  async function gravarPedidosDeRecursos(d) {
+    try {
+      const fb = mUw.__maestroFb;
+      if (!fb || !fb.url || !fb.url()) return false;
+      await fb.escrever(caminhoPedidosRec(), d);
+      return true;
+    } catch (e) { return false; }
+  }
+
+  /* O que esta conta pode lançar: as cidades que veneram o deus certo e têm
+   * favor. O favor é por DEUS e por conta, não por cidade. */
+  function cidadesQueVeneram(deus, towns) {
+    const out = [];
+    try {
+      for (const t of towns) {
+        const g = mUw.ITowns.getTown(t.id).god && mUw.ITowns.getTown(t.id).god();
+        if (String(g || '') === deus) out.push(t);
+      }
+    } catch (e) { seErroDeCodigo(e, 'Feitiços'); }
+    return out;
+  }
+
+  async function cumprirPedidosDeRecursos(ctx, towns) {
+    const pedidos = await lerPedidosDeRecursos();
+    if (!pedidos || !Object.keys(pedidos).length) return false;
+
+    let mexeu = false;
+
+    for (const chave of Object.keys(pedidos)) {
+      const p = pedidos[chave] || {};
+      const alvo = Number(p.alvo) || 0;
+      if (!alvo) { delete pedidos[chave]; mexeu = true; continue; }
+
+      /* O que ainda falta, por recurso. */
+      const falta = {};
+      for (const r of Object.keys(RECURSOS_POR_FEITICO)) {
+        const quer = Number((p.quer || {})[r]) || 0;
+        const feito = Number((p.feito || {})[r]) || 0;
+        if (quer > feito) falta[r] = quer - feito;
+      }
+
+      if (!Object.keys(falta).length) {
+        log(`✅ Recursos: o pedido para ${p.nome || alvo} está cumprido.`);
+        delete pedidos[chave];
+        mexeu = true;
+        continue;
+      }
+
+      for (const r of Object.keys(falta)) {
+        const def = RECURSOS_POR_FEITICO[r];
+        if (favorDe(def.deus) < def.favor) continue;          // sem favor para este
+
+        const daqui = cidadesQueVeneram(def.deus, towns);
+        if (!daqui.length) continue;                          // não venero este deus
+
+        const rr = await lancar(def.power, alvo, daqui[0].id);
+        if (!rr.ok) {
+          rotina(`Recursos: ${def.power} em ${alvo} falhou — ${rr.msg}`);
+          continue;
+        }
+
+        p.feito = p.feito || {};
+        p.feito[r] = (Number(p.feito[r]) || 0) + def.da;
+        pedidos[chave] = p;
+        mexeu = true;
+
+        const quer = Number((p.quer || {})[r]) || 0;
+        log(`💰 Recursos: +${def.da} ${r} para ${p.nome || alvo} `
+          + `(${p.feito[r]} de ${quer}).`);
+
+        await ctx.sleep(ctx.rand(700, 1300));
+        break;        // um por passagem e por conta: as vinte somam depressa
+      }
+    }
+
+    if (mexeu) await gravarPedidosDeRecursos(pedidos);
+    return mexeu;
+  }
+
+
   /* ============ PEDIR FAVOR AO FARM ====================================
    *
    * As cidades de farm atacam aldeias para ganhar favor, mas só na sua
@@ -18009,121 +18130,7 @@ function makeFeiticosModule(opts) {
             })();
             if (!ehNC) continue;
 
-            /* ============ RECURSOS POR FEITIÇO, A PEDIDO ==========================
-   *
-   * Três feitiços dão recursos a qualquer cidade — a tua, de uma multi ou de
-   * um aliado (a wiki confirma que se lançam em cidades de outros; os valores
-   * saíram do próprio jogo, 17/09):
-   *
-   *   Oferta do oceano          25 favor → 800 madeira   (Poseidon)
-   *   Oferta da natureza        30 favor → 650 pedra     (Ártemis)
-   *   Tesouros do mundo mortos  30 favor → 500 prata     (Hades)
-   *
-   * Não há tempo de espera entre lançamentos na mesma cidade. Com vinte
-   * multis, isto é uma fábrica de recursos: 32 de madeira por favor.
-   *
-   * COMO FUNCIONA. Pões no painel quanto queres e em que cidade; o pedido vai
-   * para o Firebase e as contas vão descontando o que lançam até perfazer.
-   * Ninguém precisa de ver os recursos da cidade — conta-se o que cada
-   * feitiço dá, que é fixo.
-   *
-   * O módulo não anda à procura de trabalho: sem pedido, não faz nada. */
-  const RECURSOS_POR_FEITICO = {
-    wood: { power: 'kingly_gift', deus: 'poseidon', favor: 25, da: 800 },
-    stone: { power: 'natures_gift', deus: 'artemis', favor: 30, da: 650 },
-    iron: { power: 'underworld_treasures', deus: 'hades', favor: 30, da: 500 },
-  };
-
-  const caminhoPedidosRec = () => `recursosPedidos/${mWorld}`;
-
-  async function lerPedidosDeRecursos() {
-    try {
-      const fb = mUw.__maestroFb;
-      if (!fb || !fb.url || !fb.url()) return null;
-      return (await fb.ler(caminhoPedidosRec())) || {};
-    } catch (e) { return null; }
-  }
-
-  async function gravarPedidosDeRecursos(d) {
-    try {
-      const fb = mUw.__maestroFb;
-      if (!fb || !fb.url || !fb.url()) return false;
-      await fb.escrever(caminhoPedidosRec(), d);
-      return true;
-    } catch (e) { return false; }
-  }
-
-  /* O que esta conta pode lançar: as cidades que veneram o deus certo e têm
-   * favor. O favor é por DEUS e por conta, não por cidade. */
-  function cidadesQueVeneram(deus, towns) {
-    const out = [];
-    try {
-      for (const t of towns) {
-        const g = mUw.ITowns.getTown(t.id).god && mUw.ITowns.getTown(t.id).god();
-        if (String(g || '') === deus) out.push(t);
-      }
-    } catch (e) { seErroDeCodigo(e, 'Feitiços'); }
-    return out;
-  }
-
-  async function cumprirPedidosDeRecursos(ctx, towns) {
-    const pedidos = await lerPedidosDeRecursos();
-    if (!pedidos || !Object.keys(pedidos).length) return false;
-
-    let mexeu = false;
-
-    for (const chave of Object.keys(pedidos)) {
-      const p = pedidos[chave] || {};
-      const alvo = Number(p.alvo) || 0;
-      if (!alvo) { delete pedidos[chave]; mexeu = true; continue; }
-
-      /* O que ainda falta, por recurso. */
-      const falta = {};
-      for (const r of Object.keys(RECURSOS_POR_FEITICO)) {
-        const quer = Number((p.quer || {})[r]) || 0;
-        const feito = Number((p.feito || {})[r]) || 0;
-        if (quer > feito) falta[r] = quer - feito;
-      }
-
-      if (!Object.keys(falta).length) {
-        log(`✅ Recursos: o pedido para ${p.nome || alvo} está cumprido.`);
-        delete pedidos[chave];
-        mexeu = true;
-        continue;
-      }
-
-      for (const r of Object.keys(falta)) {
-        const def = RECURSOS_POR_FEITICO[r];
-        if (favorDe(def.deus) < def.favor) continue;          // sem favor para este
-
-        const daqui = cidadesQueVeneram(def.deus, towns);
-        if (!daqui.length) continue;                          // não venero este deus
-
-        const rr = await lancar(def.power, alvo, daqui[0].id);
-        if (!rr.ok) {
-          rotina(`Recursos: ${def.power} em ${alvo} falhou — ${rr.msg}`);
-          continue;
-        }
-
-        p.feito = p.feito || {};
-        p.feito[r] = (Number(p.feito[r]) || 0) + def.da;
-        pedidos[chave] = p;
-        mexeu = true;
-
-        const quer = Number((p.quer || {})[r]) || 0;
-        log(`💰 Recursos: +${def.da} ${r} para ${p.nome || alvo} `
-          + `(${p.feito[r]} de ${quer}).`);
-
-        await ctx.sleep(ctx.rand(700, 1300));
-        break;        // um por passagem e por conta: as vinte somam depressa
-      }
-    }
-
-    if (mexeu) await gravarPedidosDeRecursos(pedidos);
-    return mexeu;
-  }
-
-  /* Já gastei tempestades neste? */
+            /* Já gastei tempestades neste? */
             est.tempestades = est.tempestades || {};
             const jaFoi = Number(est.tempestades[cmdId]) || 0;
             if (jaFoi >= (c.maxTempestades || 3)) continue;
@@ -37714,9 +37721,23 @@ function makeApoioModule(opts) {
              * fica onde está. */
             const auto = Object.assign({}, lista.revoltasAuto || {});
             const graca = Math.max(5, Number(c.minutosFolgaFimRevolta) || 15) * 60;
+            /* CADA CONTA SÓ TIRA AS REVOLTAS DAS SUAS CIDADES.
+             *
+             * A lista é escrita inteira por quem a grava. Como cada conta só
+             * conhece as revoltas das cidades dela, gravar a lista inteira
+             * apagava as das outras: a main escrevia as duas dela e as três
+             * das multis desapareciam (visto em jogo, 17/09 — o quadro só
+             * mostrava as da main).
+             *
+             * Uma revolta numa cidade que não é minha não me diz respeito:
+             * fica como está, e quem a pôs é que a tira. */
+            const minhasCidadesAqui = new Set(
+              (ctx.getMyTowns() || []).map((t) => Number(t.id)));
+
             const aRetirar = [];
             for (const id of Object.keys(auto)) {
               if (!leituraOk) break;                              // não sei: nada sai
+              if (minhasCidadesAqui.size && !minhasCidadesAqui.has(Number(id))) continue;
               if (porCidade[id]) continue;                        // ainda em revolta
               if (AGORA < Number((auto[id] || {}).ultima || 0) + graca) continue;
               aRetirar.push(Number(id));
