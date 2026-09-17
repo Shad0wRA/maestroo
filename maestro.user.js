@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.13.0700
+// @version      2026.09.13.0800
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1419,6 +1419,145 @@
     };
   } catch (e) {}
 
+  /* ============ O MAPA DO MUNDO, PELOS FICHEIROS DO SERVIDOR ===========
+   *
+   * O próprio servidor publica o mundo inteiro em ficheiros de texto, que
+   * qualquer um pode ler sem autenticação (confirmado no pt126, 17/09):
+   *
+   *   /data/towns.txt      5809 cidades: id, dono, nome, ilha x, ilha y,
+   *                        LUGAR NA ILHA, pontos
+   *   /data/players.txt     917 jogadores: id, nome, aliança, pontos,
+   *                        ranking, cidades
+   *   /data/alliances.txt    74 alianças: id, nome, pontos, cidades,
+   *                        membros, ranking
+   *   /data/islands.txt  117878 ilhas: id, x, y, tipo, LUGARES LIVRES,
+   *                        recurso abundante, recurso escasso
+   *
+   * Isto vale ouro para três módulos: as sentinelas sabem quais as cidades
+   * aliadas de cada ilha sem descobrir nada; o fechar ilha sabe que lugares
+   * estão ocupados; a fundação escolhe ilhas sem varrer o mapa aos blocos —
+   * que é o que dá 429.
+   *
+   * SÃO GERADOS DE HORA A HORA. Servem para o que muda devagar: que cidades
+   * existem, de quem são, de que aliança. Não servem para o que é volátil —
+   * quem ataca agora, quem revoltou o quê. Para isso continua a valer o jogo
+   * em directo, e quem agir com base nisto confirma no momento.
+   *
+   * Um pedido por hora e por conta, a um ficheiro estático: não passa pela
+   * API do jogo e não conta para o travão dos pedidos.
+   * ==================================================================== */
+  const MAPA_KEY = 'grepoMaestro_mapaMundo_v1';
+  const MAPA_VALIDADE = 60 * 60 * 1000;
+  let mapaEmMemoria = null;
+
+  function lerMapaGuardado() {
+    try {
+      const d = JSON.parse(localStorage.getItem(MAPA_KEY) || 'null');
+      if (!d || d.mundo !== WORLD) return null;
+      if (Date.now() - Number(d.quando || 0) > MAPA_VALIDADE) return null;
+      return d;
+    } catch (e) { return null; }
+  }
+
+  /* Os nomes vêm com `+` no lugar dos espaços e percent-encoded. */
+  function nomeDoFicheiro(s) {
+    try { return decodeURIComponent(String(s || '').replace(/\+/g, ' ')); }
+    catch (e) { return String(s || ''); }
+  }
+
+  async function buscarMapaDoMundo(forcar) {
+    if (!forcar) {
+      if (mapaEmMemoria && (Date.now() - mapaEmMemoria.quando) < MAPA_VALIDADE) return mapaEmMemoria;
+      const g = lerMapaGuardado();
+      if (g) { mapaEmMemoria = g; return g; }
+    }
+
+    const texto = async (f) => {
+      try {
+        const r = await uw.fetch('/data/' + f + '.txt', { cache: 'no-store' });
+        if (!r.ok) return null;
+        const t = await r.text();
+        return (t && t.length > 10) ? t : null;
+      } catch (e) { return null; }
+    };
+
+    const [tT, tP, tA, tI] = await Promise.all([
+      texto('towns'), texto('players'), texto('alliances'), texto('islands'),
+    ]);
+    /* Sem as cidades não vale a pena: é o ficheiro que interessa. */
+    if (!tT) return null;
+
+    const jogadores = {};
+    for (const l of String(tP || '').trim().split('\n')) {
+      const p = l.split(',');
+      if (p.length < 3) continue;
+      jogadores[Number(p[0])] = {
+        nome: nomeDoFicheiro(p[1]),
+        alianca: Number(p[2]) || 0,
+        pontos: Number(p[3]) || 0,
+        cidades: Number(p[5]) || 0,
+      };
+    }
+
+    const aliancas = {};
+    for (const l of String(tA || '').trim().split('\n')) {
+      const p = l.split(',');
+      if (p.length < 2) continue;
+      aliancas[Number(p[0])] = { nome: nomeDoFicheiro(p[1]), pontos: Number(p[2]) || 0,
+        membros: Number(p[4]) || 0 };
+    }
+
+    /* As ilhas por coordenada, com os lugares livres que o servidor diz. */
+    const ilhas = {};
+    for (const l of String(tI || '').trim().split('\n')) {
+      const p = l.split(',');
+      if (p.length < 5) continue;
+      const livres = Number(p[4]);
+      if (!Number.isFinite(livres)) continue;
+      ilhas[p[1] + ':' + p[2]] = { livres, tipo: Number(p[3]) || 0 };
+    }
+
+    /* As cidades por ilha, com o dono e o LUGAR. */
+    const porIlha = {};
+    const porId = {};
+    let nCidades = 0;
+    for (const l of String(tT).trim().split('\n')) {
+      const p = l.split(',');
+      if (p.length < 7) continue;
+      const id = Number(p[0]);
+      const dono = Number(p[1]) || 0;
+      const chave = p[3] + ':' + p[4];
+      const c = {
+        id, dono, nome: nomeDoFicheiro(p[2]),
+        ix: Number(p[3]), iy: Number(p[4]),
+        lugar: Number(p[5]), pontos: Number(p[6]) || 0,
+      };
+      porId[id] = c;
+      (porIlha[chave] = porIlha[chave] || []).push(c);
+      nCidades++;
+    }
+
+    const d = {
+      mundo: WORLD, quando: Date.now(),
+      nCidades, nJogadores: Object.keys(jogadores).length,
+      jogadores, aliancas, ilhas, porIlha, porId,
+    };
+    mapaEmMemoria = d;
+    /* Guardar no armazenamento é opcional: o `towns` de um mundo grande pode
+     * não caber. Se não couber, fica só em memória — e volta a ler-se na
+     * próxima hora. */
+    try { localStorage.setItem(MAPA_KEY, JSON.stringify(d)); } catch (e) {}
+    return d;
+  }
+
+  try {
+    uw.__maestroMapa = {
+      ler: buscarMapaDoMundo,
+      /* O que já está em memória, sem pedir nada. */
+      agora: () => mapaEmMemoria || lerMapaGuardado(),
+    };
+  } catch (e) {}
+
   /* ============ CAIXA NEGRA ============================================
    *
    * O registo do ecrã perde-se ao recarregar a página, e a VPS recarrega de
@@ -2568,7 +2707,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.13.0700';
+  const MAESTRO_VERSAO = '2026.09.13.0800';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -15490,7 +15629,42 @@ function makeSentinelasModule(opts) {
   /* AS CIDADES ALIADAS DE UMA ILHA.
    *
    * O `island_info` lista as cidades da ilha com o jogador e a aliança. */
-  async function aliadasNaIlha(islandId, base, amigas) {
+  async function aliadasNaIlha(islandId, base, amigas, coords) {
+    /* PRIMEIRO OS FICHEIROS DO SERVIDOR.
+     *
+     * O servidor publica o mundo inteiro em `/data/towns.txt` e
+     * `/data/players.txt` — cidades com dono e ilha, jogadores com aliança.
+     * São um pedido por hora a um ficheiro estático, e dão as cidades aliadas
+     * de TODAS as ilhas de uma vez.
+     *
+     * Antes era um pedido ao jogo por cada ilha: com 48 ilhas, 48 pedidos que
+     * concorriam com tudo o resto e davam 429 (17/09).
+     *
+     * Os ficheiros são gerados de hora a hora. Para isto chega: que cidades
+     * existem numa ilha e de que aliança é o dono muda devagar. */
+    try {
+      const api = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroMapa;
+      if (api && coords && coords.x != null) {
+        const m = await api.ler();
+        if (m && m.porIlha) {
+          const eu = Number(mUw.Game.player_id);
+          const lista = m.porIlha[coords.x + ':' + coords.y] || [];
+          const out = [];
+          for (const c of lista) {
+            if (c.dono === eu) continue;                       // minha
+            const j = m.jogadores[c.dono];
+            if (!j || !j.alianca) continue;                    // sem aliança
+            const nomeAl = ((m.aliancas[j.alianca] || {}).nome || '').trim().toLowerCase();
+            if (!nomeAl || !amigas.has(nomeAl)) continue;      // não é aliado
+            out.push({ id: c.id, nome: c.nome, jogador: j.nome });
+          }
+          if (out.length) return out;
+          /* Ilha sem aliados segundo o ficheiro: pode ser mesmo assim, mas
+           * se o ficheiro estiver velho vale a pena o jogo confirmar. */
+        }
+      }
+    } catch (e) { seErroDeCodigo(e, 'Sentinelas'); }
+
     try {
       const url = mUw.location.origin + '/game/island_info?town_id=' + Number(base)
         + '&action=index&h=' + mUw.Game.csrfToken
@@ -15731,7 +15905,8 @@ function makeSentinelasModule(opts) {
       await ctx.sleep(ctx.rand(700, 1300));
 
       ilhasVistas++;
-      const aliadas = await aliadasNaIlha(islandId, minhaCidade.id, amigas);
+      const aliadas = await aliadasNaIlha(islandId, minhaCidade.id, amigas,
+        { x: minhaCidade.ix, y: minhaCidade.iy });
       aliadosVistos += (aliadas || []).length;
       if (!aliadas.length) continue;
 
