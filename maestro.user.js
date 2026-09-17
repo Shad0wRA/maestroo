@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.13.0800
+// @version      2026.09.13.1000
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2707,7 +2707,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.13.0800';
+  const MAESTRO_VERSAO = '2026.09.13.1000';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -24451,7 +24451,9 @@ function makeEsquivaModule(opts) {
     naoEsquivarNC: true,      // não esvaziar se só vier o NC (entregaria a cidade)
     K: 5260,                  // igual aos alertas: calibrada JÁ com o tempo de
                               // preparação descontado (ver abaixo)
-    janelaCancelamento: 600,  // cancelable_until observado: 10 min
+    /* O jogo diz-nos: `GameData.cancel_times.unit_movements` = 600 (17/09).
+     * Fica aqui como valor por omissão; o módulo lê o do jogo no arranque. */
+    janelaCancelamento: 600,
   };
 
   const GROUND = ['sword', 'slinger', 'archer', 'hoplite', 'rider', 'chariot', 'catapult'];
@@ -26441,6 +26443,21 @@ function makeEsquivaModule(opts) {
     limitadoPeloServidor = false;
     leituraFalhadaEsquiva = '';
 
+    /* A JANELA DE CANCELAMENTO VEM DO JOGO.
+     *
+     * Estava escrita como 600 segundos, medidos à mão. O jogo publica-a em
+     * `GameData.cancel_times.unit_movements` — e assim acompanha o mundo, em
+     * vez de depender de uma medição nossa (17/09). */
+    try {
+      const doJogo = Number(((mUw.GameData || {}).cancel_times || {}).unit_movements) || 0;
+      const cc = cfg();
+      if (doJogo > 0 && doJogo !== Number(cc.janelaCancelamento)) {
+        cc.janelaCancelamento = doJogo;
+        guardarCfg(cc);
+        rotina(`Esquiva: a janela de cancelamento do jogo é de ${doJogo}s.`);
+      }
+    } catch (e) { seErroDeCodigo(e, 'Esquiva'); }
+
     /* Marcar o arranque na primeira passagem: serve para saber que comandos
      * foram vistos logo a seguir a a página abrir, e cuja hora de partida é
      * portanto desconhecida. */
@@ -26867,7 +26884,63 @@ function makeEsquivaModule(opts) {
       // As do grupo não se aprendem: vêm da lista publicada, que se corrige
       // sozinha se a cidade mudar de dono.
       if (daMain) impactos.forEach((i) => { if (ehDaMain(i, c)) aprenderCidadeMain(i.origem_town_id); });
-      const temNC = !daMain && impactos.some((i) => i.nc);
+      /* ============ NUM MUNDO DE REVOLTA, O COLONIZADOR TEM HORA =======
+       *
+       * Num mundo de revolta o colonizador só entra na R2 — depois de a
+       * primeira fase acabar. Logo:
+       *
+       *  • uma cidade que NÃO está em revolta não pode receber colonizador;
+       *  • uma que está, só dentro da janela da R2.
+       *
+       * Sem isto, todos os ataques da mesma ilha eram tratados como podendo
+       * trazer colonizador — porque na mesma ilha não há distância e não se
+       * mede velocidade nenhuma (6200) — e a esquiva deixava a tropa em casa
+       * "para o matar". Numa revolta, o adversário ataca da mesma ilha vezes
+       * sem conta: nove alarmes seguidos em duas cidades, e a tropa toda em
+       * casa a cada um deles (visto em jogo, 17/09).
+       *
+       * Como se sabe que o mundo é de revolta: o jogo só carrega a colecção
+       * `MovementsRevoltDefender` nesses mundos — confirmado no pt126 (tem) e
+       * no pt125, que é de cerco (não tem).
+       *
+       * Nos mundos de cerco nada disto se aplica: lá o colonizador vem com o
+       * ataque a qualquer momento, e a regra antiga mantém-se. */
+      const mundoDeRevolta = (() => {
+        try { return !!(mUw.MM.getModels() || {}).MovementsRevoltDefender; }
+        catch (e) { return false; }
+      })();
+
+      const janelaDoColonizador = (tid) => {
+        /* Devolve `null` se não souber, `false` se o colonizador não pode
+         * entrar agora, `true` se pode. */
+        try {
+          const defs = (mUw.MM.getModels() || {}).MovementsRevoltDefender;
+          if (!defs) return null;
+          let emRevolta = false;
+          let podeEntrar = false;
+          for (const k of Object.keys(defs)) {
+            const a = (defs[k] || {}).attributes || {};
+            if (Number(a.target_town_id) !== Number(tid)) continue;
+            const fim = Number(a.finished_at) || 0;
+            if (!fim || fim <= agoraJogo()) continue;          // já acabou
+            emRevolta = true;
+            /* `arising` é a R1: o colonizador ainda NÃO pode entrar. */
+            if (a.arising !== true) podeEntrar = true;
+          }
+          if (!emRevolta) return false;                        // sem revolta: não pode
+          return podeEntrar;
+        } catch (e) { return null; }
+      };
+
+      let temNC = !daMain && impactos.some((i) => i.nc);
+      if (temNC && mundoDeRevolta) {
+        const pode = janelaDoColonizador(townId);
+        if (pode === false) {
+          temNC = false;
+          rotina(`Esquiva: ${(cidades.find((x) => x.id === Number(townId)) || {}).name || townId} — `
+            + 'num mundo de revolta o colonizador só entra na R2, e não é agora. Esquivo normalmente.');
+        }
+      }
       const tempos = calcularTempos(impactos, temNC, c);
       const nome = (cidades.find((x) => x.id === Number(townId)) || {}).name || townId;
 
@@ -26875,9 +26948,16 @@ function makeEsquivaModule(opts) {
         anotar(impactos[0] && impactos[0].cmd, townId, 'NÃO esquivo',
           temNC ? 'vem colonizador' : 'não consegui calcular os tempos');
         if (temNC) {
-          log(`🛑 ${nome}: vem colonizador e NÃO consigo trazer a tropa a tempo — `
+          /* "PODE trazer", não "vem".
+           *
+           * A detecção é uma suspeita — sobretudo na mesma ilha, onde não há
+           * distância para medir. Dizer "vem colonizador" dava a suspeita como
+           * certeza, e a decisão que se segue é cara: fica a tropa toda em
+           * casa (17/09). */
+          log(`🛑 ${nome}: PODE trazer colonizador e não consigo trazer a tropa a tempo — `
             + 'fica em casa para o matar. '
-            + '(a janela de cancelamento do jogo não chega para uma esquiva tão longa)');
+            + `(a janela de cancelamento do jogo é de ${c.janelaCancelamento}s e não chega `
+            + 'para uma esquiva tão longa)');
         }
         agendados.add(chave);
         continue;
@@ -39319,6 +39399,40 @@ function makeFundacaoModule(opts) {
   }
 
   async function lugaresLivres(ix, iy, townIdBase) {
+    /* PRIMEIRO OS FICHEIROS DO SERVIDOR.
+     *
+     * O `/data/islands.txt` diz quantos lugares livres tem cada uma das 117
+     * mil ilhas, e o `/data/towns.txt` quem lá está. Um pedido por hora, a um
+     * ficheiro estático, contra um pedido ao mapa por ilha — e são esses que
+     * davam 40 erros seguidos ao marcar uma configuração (14/09).
+     *
+     * A leitura do mapa fica como reserva, para ilhas que o ficheiro não
+     * tenha. E o jogo continua a ter a última palavra sobre o lugar. */
+    try {
+      const api = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroMapa;
+      if (api) {
+        const m = await api.ler();
+        const chave = Number(ix) + ':' + Number(iy);
+        const ilha = m && m.ilhas && m.ilhas[chave];
+        if (m && ilha) {
+          const cidades = (m.porIlha && m.porIlha[chave]) || [];
+          const livres = Number(ilha.livres) || 0;
+          const ocupados = cidades.length;
+          if (ocupados || livres) {
+            const donos = {};
+            for (const c of cidades) donos[c.id] = c.dono;
+            return {
+              total: ocupados + livres, livres, ocupados,
+              donos, doFicheiro: true,
+              /* As aldeias bárbaras não vêm nestes ficheiros: quem precisar
+               * delas pergunta ao jogo. */
+              aldeias: null,
+            };
+          }
+        }
+      }
+    } catch (e) { seErroDeCodigo(e, 'Fundacao'); }
+
     try {
       const cx = Math.floor(ix / CHUNK), cy = Math.floor(iy / CHUNK);
       const url = mUw.location.origin + '/game/map_data?town_id=' + Number(townIdBase)
@@ -42307,6 +42421,43 @@ function makeFecharIlhaModule(opts) {
    * seguir com menos uma conta. */
   async function estadoDaIlha(ix, iy, townIdBase) {
     const out = { livres: [], donos: {}, lido: false };
+
+    /* PRIMEIRO OS FICHEIROS DO SERVIDOR.
+     *
+     * O `/data/towns.txt` traz TODAS as cidades com a ilha e o LUGAR que
+     * ocupam, e o `/data/islands.txt` diz quantos lugares livres cada ilha
+     * tem. Um pedido por hora a um ficheiro estático dá o que antes custava
+     * um pedido ao mapa por ilha — e esses pedidos são os que dão 429.
+     *
+     * A leitura do mapa fica como reserva: se o ficheiro não tiver a ilha,
+     * pergunta-se ao jogo como antes. E a decisão final de onde fundar
+     * continua a passar pelo jogo, que é quem aceita ou recusa o lugar. */
+    try {
+      const api = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroMapa;
+      if (api) {
+        const m = await api.ler();
+        const chave = Number(ix) + ':' + Number(iy);
+        const ilha = m && m.ilhas && m.ilhas[chave];
+        if (m && ilha) {
+          const cidades = (m.porIlha && m.porIlha[chave]) || [];
+          const ocupados = new Set();
+          for (const c of cidades) {
+            if (Number.isFinite(c.lugar)) ocupados.add(Number(c.lugar));
+            out.donos[c.id] = c.dono;
+          }
+          /* Os lugares de uma ilha vão de 0 até ao total menos um; o total é
+           * as cidades que lá estão mais os livres que o servidor diz. */
+          const total = cidades.length + Number(ilha.livres);
+          for (let n2 = 0; n2 < total; n2++) if (!ocupados.has(n2)) out.livres.push(n2);
+          out.total = total;
+          out.cidades = cidades.length;
+          out.lido = true;
+          out.doFicheiro = true;
+          return out;
+        }
+      }
+    } catch (e) { seErroDeCodigo(e, 'FecharIlha'); }
+
     try {
       /* A GRELHA DO MAPA É DE 20, NÃO DE 10.
        *
