@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.13.2300
+// @version      2026.09.13.2400
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2780,7 +2780,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.13.2300';
+  const MAESTRO_VERSAO = '2026.09.13.2400';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -37920,6 +37920,25 @@ function makeApoioModule(opts) {
                 if (ini2 && (!e2.entraColonizador || ini2 < e2.entraColonizador)) e2.entraColonizador = ini2;
               }
             }
+            /* AS REVOLTAS DAS OUTRAS CONTAS ENTRAM ANTES DE A LISTA FECHAR.
+             *
+             * A junção estava cem linhas mais abaixo, depois de a lista de
+             * revoltas já estar fixada — as onze revoltas das multis entravam
+             * no `porCidade` quando ninguém mais as ia buscar, e o registo
+             * partilhado continuava só com as duas da main (visto em jogo,
+             * 17/09: dez contas a publicar e o `revoltasAuto` na mesma).
+             *
+             * A cidade é de outra conta, o registo é de todos. */
+            for (const id of Object.keys(dasOutras)) {
+              if (porCidade[id]) continue;
+              const r = dasOutras[id];
+              porCidade[id] = {
+                id: Number(id), nome: String(r.nome || id), quem: r.quem || [],
+                primeira: Number(r.primeira) || 0, ultima: Number(r.ultima) || 0,
+                comandos: r.comandos || [], emR1: !!r.emR1, deOutraConta: r.conta,
+              };
+            }
+
             const revoltas = Object.keys(porCidade).map((k) => porCidade[k]);
 
             const jaLa = new Set((lista.alvos || lista.targets || []).map(Number));
@@ -38017,18 +38036,6 @@ function makeApoioModule(opts) {
              *
              * Agora: uma revolta que esta conta vê e que não está registada
              * volta a entrar, por velha que seja. */
-            /* As revoltas que as outras contas publicaram entram como se
-             * fossem vistas aqui: a cidade é delas, o registo é partilhado. */
-            for (const id of Object.keys(dasOutras)) {
-              if (porCidade[id]) continue;
-              const r = dasOutras[id];
-              porCidade[id] = {
-                id: Number(id), nome: String(r.nome || id), quem: r.quem || [],
-                primeira: Number(r.primeira) || 0, ultima: Number(r.ultima) || 0,
-                comandos: r.comandos || [], emR1: !!r.emR1, deOutraConta: r.conta,
-              };
-            }
-
             const emFalta = Object.keys(porCidade)
               .map(Number)
               .filter((id) => !guardadas[String(id)]);
