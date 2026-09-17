@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.13.1200
+// @version      2026.09.13.1300
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2707,7 +2707,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.13.1200';
+  const MAESTRO_VERSAO = '2026.09.13.1300';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -3198,6 +3198,88 @@
     OraculoDaGuerra: 'B',
   };
 
+  /* ============ AS EQUIPAS DISTRIBUEM-SE SOZINHAS =======================
+   *
+   * A lista de nomes acima era a do Rafa, escrita no código. Quem usasse o
+   * Maestro noutro grupo — noutro PC, com outras contas — ficava de fora e
+   * tinha de configurar conta a conta (17/09).
+   *
+   * Agora: a conta principal do perfil multi divide as contas que a frota
+   * conhece em duas equipas e publica no Firebase. É uma divisão SÓ, feita
+   * quando não há nenhuma; depois fica guardada.
+   *
+   * Quem chegar depois entra na equipa mais pequena, sem mexer em quem já lá
+   * está. Quem deixar de publicar sinal de vida mantém o lugar, mas não conta
+   * para o equilíbrio — uma aba fechada por uma hora não desfaz as equipas.
+   *
+   * A main fica de fora: a rotação é entre as multis.
+   *
+   * Cada grupo tem o seu Firebase, por isso dois grupos no mesmo mundo nunca
+   * se misturam. A lista escrita no código fica como reserva, para quem já a
+   * tinha a funcionar.
+   * ==================================================================== */
+  const EQUIPAS_KEY = () => `equipas/${WORLD}`;
+  let equipasEmMemoria = null;
+
+  async function equipasPublicadas(forcar) {
+    if (!forcar && equipasEmMemoria) return equipasEmMemoria;
+    try {
+      const fb = uw.__maestroFb;
+      if (!fb || !fb.url || !fb.url()) return null;
+      const d = await fb.ler(EQUIPAS_KEY());
+      equipasEmMemoria = (d && typeof d === 'object') ? d : null;
+      return equipasEmMemoria;
+    } catch (e) { return null; }
+  }
+
+  /* Chamada pela conta principal do perfil multi. Divide quem falta e grava. */
+  async function distribuirEquipas() {
+    try {
+      const fb = uw.__maestroFb;
+      if (!fb || !fb.url || !fb.url()) return null;
+
+      const frota = (await fb.ler(`frota/${WORLD}`)) || {};
+      const agoraS = Math.floor(Date.now() / 1000);
+
+      /* Só as multis, e só as que dão sinal de vida. */
+      const vivas = [];
+      for (const k of Object.keys(frota)) {
+        const x = frota[k] || {};
+        if (String(x.perfil || '').toLowerCase() !== 'multi') continue;
+        if (!x.quando || (agoraS - Number(x.quando)) > 6 * 3600) continue;
+        if (x.conta) vivas.push(String(x.conta));
+      }
+      if (!vivas.length) return null;
+
+      const atual = (await equipasPublicadas(true)) || {};
+      const nova = Object.assign({}, atual);
+
+      /* Quem já tem equipa fica. Conta-se só quem está viva, para o
+       * equilíbrio não ser falseado por contas que já não se usam. */
+      const conta = { A: 0, B: 0 };
+      for (const n of vivas) if (nova[n]) conta[nova[n]] = (conta[nova[n]] || 0) + 1;
+
+      const semEquipa = vivas.filter((n) => !nova[n]).sort();
+      if (!semEquipa.length) return nova;
+
+      for (const n of semEquipa) {
+        const equipa = (conta.A <= conta.B) ? 'A' : 'B';
+        nova[n] = equipa;
+        conta[equipa]++;
+      }
+
+      await fb.escrever(EQUIPAS_KEY(), nova);
+      equipasEmMemoria = nova;
+      log('core', `Equipas dos colonizadores: ${semEquipa.length} conta(s) distribuída(s) `
+        + `(${conta.A} na A, ${conta.B} na B).`);
+      return nova;
+    } catch (e) { seErroDeCodigo(e, 'núcleo'); return null; }
+  }
+
+  try {
+    uw.__maestroEquipas = { ler: equipasPublicadas, distribuir: distribuirEquipas };
+  } catch (e) {}
+
   /* A equipa desta conta: a lista manda sobre o que estiver configurado.
    *
    * Se o nome não estiver na lista, devolve null e o módulo usa o que estiver
@@ -3211,6 +3293,15 @@
         .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
       const nome = limpar(uw.Game.player_name);
       if (!nome) return null;
+
+      /* O que está publicado manda sobre a lista escrita no código: é o que
+       * permite a outro grupo, noutro Firebase, ter as equipas dele. */
+      if (equipasEmMemoria) {
+        if (equipasEmMemoria[uw.Game.player_name]) return equipasEmMemoria[uw.Game.player_name];
+        for (const k of Object.keys(equipasEmMemoria)) {
+          if (limpar(k) === nome) return equipasEmMemoria[k];
+        }
+      }
 
       if (EQUIPAS_FIXAS[uw.Game.player_name]) return EQUIPAS_FIXAS[uw.Game.player_name];
 
@@ -34712,6 +34803,30 @@ function makeColonosModule(opts) {
     mUw = ctx.uw; mWorld = ctx.WORLD;
     const log = ctx.log;
     const c = cfg();
+
+    /* AS EQUIPAS: LER SEMPRE, DISTRIBUIR SE FOR A PRINCIPAL.
+     *
+     * A conta principal do perfil multi divide as contas que a frota conhece
+     * e publica; as outras leem. Uma divisão só, guardada — quem chegar
+     * depois entra na equipa mais pequena (17/09). */
+    try {
+      const eq = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroEquipas;
+      if (eq) {
+        await eq.ler();
+        const souP = (() => {
+          try { return localStorage.getItem('grepoMaestro_principal_v1') === '1'; }
+          catch (e) { return false; }
+        })();
+        const perfilAqui = (() => {
+          try {
+            return String((JSON.parse(localStorage.getItem('grepoMaestro_modulos_v1') || '{}')
+              || {}).perfil || '').toLowerCase();
+          } catch (e) { return ''; }
+        })();
+        if (souP && perfilAqui === 'multi') await eq.distribuir();
+      }
+    } catch (e) { seErroDeCodigo(e, 'Colonos'); }
+
     /* O visto do painel manda sobre o `ativo` do módulo: quem liga ali
      * quer o módulo a trabalhar. */
     try {
