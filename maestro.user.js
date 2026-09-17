@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.13.1800
+// @version      2026.09.13.1900
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2008,6 +2008,69 @@
     return temAdministrador();
   }
 
+  /* ============ TODA A LEITURA DIZ O QUE É ==============================
+   *
+   * Uma lista vazia pode querer dizer duas coisas muito diferentes: "não há
+   * nada" ou "não consegui ler". Confundi-las custou caro, e sempre da mesma
+   * maneira:
+   *
+   *   · as sentinelas concluíram "esta cidade está a descoberto" quando na
+   *     verdade não sabiam, e mandaram tropa a dobrar;
+   *   · o reforço deu tropa por perdida porque os modelos vieram incompletos;
+   *   · o apoio decidiu retiradas com números da Ágora de cinco horas antes,
+   *     porque "zero cidades lidas" tanto quer dizer "estava tudo fresco"
+   *     como "tentei e falhei";
+   *   · a esquiva tomou a falta de dados por ausência de ataque.
+   *
+   * São quatro módulos diferentes a cair no mesmo buraco. A raiz é a leitura
+   * devolver só os dados, sem dizer o que são.
+   *
+   * Daqui para a frente uma leitura devolve também:
+   *
+   *   quando       — o instante em que foi feita
+   *   completa     — se cobre tudo o que devia, ou só uma parte
+   *   origem       — 'servidor', 'modelos', 'copia' ou 'ficheiro'
+   *
+   * E há uma regra única, que substitui a que cada módulo inventava:
+   * NÃO SE AGE SOBRE UMA LEITURA INCOMPLETA OU VELHA. Quem não sabe, não faz.
+   * ==================================================================== */
+  function leitura(valor, opcoes) {
+    const o = opcoes || {};
+    return {
+      ok: o.ok !== false,
+      valor: (valor === undefined) ? null : valor,
+      quando: Number(o.quando) || Date.now(),
+      completa: (o.completa === undefined) ? true : !!o.completa,
+      origem: o.origem || 'servidor',
+      razao: o.razao || '',
+    };
+  }
+
+  /* A pergunta que os módulos devem fazer antes de agir. `validadeMs` é
+   * quanto tempo a leitura ainda serve; sem ela, não se olha para a idade. */
+  function podeAgirCom(l, validadeMs) {
+    if (!l || !l.ok) return false;
+    if (!l.completa) return false;
+    if (validadeMs && (Date.now() - Number(l.quando || 0)) > validadeMs) return false;
+    return true;
+  }
+
+  /* Porque é que NÃO se pode agir — para o módulo o poder dizer no registo. */
+  function porqueNaoPosso(l, validadeMs) {
+    if (!l) return 'não houve leitura nenhuma';
+    if (!l.ok) return l.razao || 'a leitura falhou';
+    if (!l.completa) return 'a leitura está incompleta';
+    if (validadeMs && (Date.now() - Number(l.quando || 0)) > validadeMs) {
+      const min = Math.round((Date.now() - Number(l.quando || 0)) / 60000);
+      return `a leitura é de há ${min} min`;
+    }
+    return '';
+  }
+
+  try {
+    uw.__maestroLeitura = { nova: leitura, podeAgir: podeAgirCom, porque: porqueNaoPosso };
+  } catch (e) {}
+
   function vgFalhou(razao, calada) {
     vgConta.falhas++;
     vgConta.ultimaRazao = String(razao || 'não sei porquê');
@@ -2017,13 +2080,23 @@
     if (!calada) {
       try { guardarNaCaixa('core', `visão geral: ${vgConta.ultimaRazao}`, true); } catch (e) {}
     }
-    return { ok: false, comandos: null, razao: vgConta.ultimaRazao, quando: Date.now(), daCopia: false };
+    return {
+      ok: false, comandos: null, razao: vgConta.ultimaRazao, quando: Date.now(), daCopia: false,
+      completa: false, origem: 'servidor',
+    };
   }
 
   function vgEntregar(comandos, quando, daCopia) {
     let copia;
     try { copia = JSON.parse(JSON.stringify(comandos)); } catch (e) { copia = comandos.slice(); }
-    return { ok: true, comandos: copia, razao: '', quando, daCopia: !!daCopia };
+    /* Os campos antigos ficam, para não partir os módulos que já os usam; os
+     * novos dizem o que a leitura é. A visão geral traz os comandos de TODAS
+     * as cidades da conta num pedido, por isso ou está completa ou falhou. */
+    return {
+      ok: true, comandos: copia, razao: '', quando, daCopia: !!daCopia,
+      completa: true,
+      origem: daCopia ? 'copia' : 'servidor',
+    };
   }
 
   async function vgPedir(geracao) {
@@ -2707,7 +2780,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.13.1800';
+  const MAESTRO_VERSAO = '2026.09.13.1900';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -15838,8 +15911,20 @@ function makeSentinelasModule(opts) {
        * tropa minha naquela aliada, é porque não lá está — a leitura cobre
        * todos os destinos das cidades que leu. Sem leitura fresca nenhuma,
        * aí sim, não se sabe. */
+      /* A REGRA ÚNICA: NÃO SE AGE SOBRE UMA LEITURA VELHA.
+       *
+       * Foi aqui que o problema nasceu — concluir "está a descoberto" sem
+       * saber, e mandar tropa a dobrar. A leitura diz o que é, e o módulo
+       * limita-se a perguntar se pode agir com ela. */
+      const l = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroLeitura;
       const frescas = ((api.lidas && api.lidas(35 * 60 * 1000)) || []).length;
-      if (!frescas) return null;                    // nada fresco: não sei
+      const daAgora = l
+        ? l.nova(frescas, { ok: frescas > 0, completa: frescas > 0, origem: 'servidor',
+            razao: frescas ? '' : 'a Ágora não foi lida nos últimos 35 min' })
+        : null;
+
+      if (l && !l.podeAgir(daAgora)) return null;    // não sei: não arrisco
+      if (!l && !frescas) return null;               // sem a semântica, a regra antiga
       return false;
     } catch (e) { seErroDeCodigo(e, 'Sentinelas'); return null; }
   }
