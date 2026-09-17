@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.13.1000
+// @version      2026.09.13.1200
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2707,7 +2707,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.13.1000';
+  const MAESTRO_VERSAO = '2026.09.13.1200';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -4119,19 +4119,32 @@
     const vistoNoEcra = (Date.now() < captchaIgnorarAte) ? null : captchaNoEcra();
     if (vistoNoEcra) {
       if (!captchaNoEcraDesde) {
-        captchaNoEcraDesde = Date.now(); captchaAvisadoEm = Date.now();
+        /* UM MINUTO ANTES DE AVISAR.
+         *
+         * O aviso saía assim que o captcha aparecia — e quem está a jogar
+         * resolve-o em segundos, ficando o Discord cheio de avisos de coisas
+         * já resolvidas (17/09). Espera-se um minuto: se lá continuar, é
+         * porque ninguém está a olhar.
+         *
+         * A recolha suspende-se na mesma desde o primeiro instante; o que
+         * espera é só o aviso. */
+        captchaNoEcraDesde = Date.now();
+        captchaAvisadoEm = 0;                     // ainda não avisei
         log('core', '🧩 Há um captcha no ecrã — a recolha fica suspensa até o resolveres; '
           + `o resto continua. (${vistoNoEcra.desc})`);
-        /* E AVISA NO DISCORD.
+        /* O AVISO NÃO SAI AQUI.
          *
-         * Com o ciclo parado, param também os módulos que avisavam: a recolha
-         * das aldeias (avisava a cada passagem) e o sinal de vida da frota (o
-         * vigia da main só dava pela conta ao fim de 20 min, como "calada").
-         * O captcha ficava só neste registo, que na VPS ninguém vê — visto numa
-         * multi (11/09). O `avisarCaptcha` avisa no máximo de meia em meia hora
-         * por conta. */
-        try { avisarCaptcha('captcha no ecrã — o maestro está parado até o resolveres'); } catch (e) {}
-      } else if (Date.now() - captchaAvisadoEm > 60 * 60 * 1000) {
+         * Saía no primeiro avistamento — e quem está a jogar resolve-o em
+         * segundos, ficando o Discord cheio de avisos de coisas já resolvidas
+         * (17/09). Sai na ramificação seguinte, passado um minuto.
+         *
+         * O registo acima continua imediato: na VPS ninguém o vê, mas quem
+         * está à frente do jogo vê. */
+      } else if (!captchaAvisadoEm && (Date.now() - captchaNoEcraDesde) > 60 * 1000) {
+        /* Passou o minuto e ninguém o resolveu: agora sim. */
+        captchaAvisadoEm = Date.now();
+        try { avisarCaptcha('captcha no ecrã há mais de um minuto — a recolha está parada'); } catch (e) {}
+      } else if (captchaAvisadoEm && (Date.now() - captchaAvisadoEm) > 60 * 60 * 1000) {
         /* De hora a hora, enquanto lá estiver. */
         captchaAvisadoEm = Date.now();
         try { avisarCaptcha('o captcha continua por resolver — a recolha está parada'); } catch (e) {}
@@ -30880,6 +30893,18 @@ function makeEncaixeModule(opts) {
        * A janela do jogo é a mesma para atacar e apoiar; o que muda são os
        * botões. Se houver um colonizador entre as unidades, conta como
        * colonização. */
+      /* O que escolheste da última vez; se nunca escolheste, vale a janela. */
+      const TIPO_ESCOLHIDO_KEY = 'grepoEncaixe_tipoEscolhido_v1';
+      const tipoEscolhido = (() => {
+        try {
+          const colono = cont.querySelector('input.unit_input[name="colonize_ship"]');
+          if (colono && Number(colono.value) > 0) return 'colonize';   // não há dúvida
+          const g = localStorage.getItem(TIPO_ESCOLHIDO_KEY);
+          if (g === 'attack' || g === 'support') return g;
+        } catch (e) {}
+        return null;
+      })();
+
       const tipoEnvio = (() => {
         try {
           if (cont.querySelector('input.unit_input[name="colonize_ship"]')) {
@@ -31979,12 +32004,28 @@ function makeEncaixeModule(opts) {
             + '<div style="display:flex;gap:5px;align-items:center;margin-top:5px;font-size:13px">'
             + '<span style="opacity:.7">enviar como</span>'
             + '<select id="encj-tipo-combo" style="flex:1">'
-            + `<option value="attack"${tipoEnvio !== 'support' ? ' selected' : ''}>⚔ ataque</option>`
-            + `<option value="support"${tipoEnvio === 'support' ? ' selected' : ''}>🛡 apoio</option>`
+            + `<option value="attack"${tipoEscolhido !== 'support' ? ' selected' : ''}>⚔ ataque</option>`
+            + `<option value="support"${tipoEscolhido === 'support' ? ' selected' : ''}>🛡 apoio</option>`
             + '</select></div>'
             + '<button id="encj-combos-go" style="cursor:pointer;width:100%;margin-top:4px;'
             + 'background:#3a6ea5;color:#fff;padding:4px;border:none;border-radius:4px;font-size:13px">'
             + 'Agendar as marcadas</button>';
+
+          /* A ESCOLHA FICA.
+           *
+           * O tipo era decidido de novo a cada desenho do painel, a partir do
+           * que a janela mostrava — e voltava sempre a "ataque". Num
+           * coordenado de apoio, isso obriga a escolher apoio de cada vez
+           * (17/09).
+           *
+           * A escolha passa a ficar guardada até a mudares. Numa janela com
+           * colonizador continua a mandar a janela, que aí não há dúvida. */
+          const sel = el.querySelector('#encj-tipo-combo');
+          if (sel) {
+            sel.onchange = () => {
+              try { localStorage.setItem(TIPO_ESCOLHIDO_KEY, sel.value); } catch (e) {}
+            };
+          }
 
           const bt = el.querySelector('#encj-combos-go');
           if (bt) bt.onclick = () => agendarCombos(combos, chegada);
@@ -36203,10 +36244,35 @@ function makeApoioModule(opts) {
       if (mexeu) armazem.setItem(ENTRADAS_KEY, JSON.stringify(d));
     } catch (e) { seErroDeCodigo(e, 'Apoio'); }
   }
+  /* OS ALVOS MARCADOS PARA FICAR NÃO EXPIRAM.
+   *
+   * O tecto das 14 h foi pensado para revoltas, que duram no máximo isso. Mas
+   * a lista serve também para apoios de longa duração — cidades tomadas a um
+   * adversário, que se querem segurar. Esses estavam a ser tirados da lista a
+   * cada passagem, contra a vontade de quem os pôs (visto em jogo, 17/09: a
+   * 3058 e a 652, apoiadas de propósito).
+   *
+   * O visto "fica" no painel marca um alvo como permanente. Nada mais muda:
+   * os outros continuam a sair às 14 h. */
+  const FIXOS_KEY = 'grepoApoio_alvosFixos_v1';
+
+  function lerFixos() {
+    try { return JSON.parse(armazem.getItem(FIXOS_KEY) || '{}') || {}; } catch (e) { return {}; }
+  }
+  function marcarFixo(alvoId, fica) {
+    try {
+      const d = lerFixos();
+      if (fica) d[Number(alvoId)] = 1; else delete d[Number(alvoId)];
+      armazem.setItem(FIXOS_KEY, JSON.stringify(d));
+    } catch (e) { seErroDeCodigo(e, 'Apoio'); }
+  }
+
   function alvosPassadosDoTecto(alvos) {
     const d = lerEntradas();
+    const fixos = lerFixos();
     const agoraMs = Date.now();
     return (alvos || []).map(Number)
+      .filter((id) => !fixos[id])                     // marcado para ficar: não expira
       .filter((id) => d[id] && (agoraMs - Number(d[id])) > TECTO_ALVO_MS);
   }
 
@@ -38423,7 +38489,10 @@ function makeApoioModule(opts) {
         <td style="padding:2px 3px;opacity:.85" data-total="${id}">${
           t.total ? `<span style="opacity:.6">eu: ${esc(det)}</span>` : '<span style="opacity:.5">a somar…</span>'}</td>
         <td style="padding:2px 3px;text-align:right;white-space:nowrap">
-          <button data-reforcar="${id}" title="mandar tropa a mais para este alvo, além do objectivo"
+          <label title="marcado, este alvo nunca sai da lista pelas 14 h"
+            style="font-size:11px;opacity:.8;margin-right:5px;cursor:pointer">
+            <input type="checkbox" data-fixo="${id}"${lerFixos()[id] ? ' checked' : ''}> fica</label
+          ><button data-reforcar="${id}" title="mandar tropa a mais para este alvo, além do objectivo"
             style="cursor:pointer;font-size:12px;background:#364;color:#dfd;border:none;border-radius:3px;padding:2px 5px">reforçar</button>
           <button data-repor="${id}" title="encher já até ao objectivo"
             style="cursor:pointer;font-size:12px;background:#446;color:#ddf;border:none;border-radius:3px;padding:2px 5px">repor</button>
@@ -38668,6 +38737,17 @@ function makeApoioModule(opts) {
           if (ctx.voltarEm) ctx.voltarEm(20);
         } catch (e) { seErroDeCodigo(e, 'Apoio'); }
         b.disabled = false; b.textContent = 'repor';
+      };
+    });
+
+    /* O visto "fica": este alvo não expira às 14 h. */
+    container.querySelectorAll('[data-fixo]').forEach((cb) => {
+      cb.onchange = () => {
+        const id = Number(cb.dataset.fixo);
+        marcarFixo(id, !!cb.checked);
+        ctx.log(cb.checked
+          ? `Apoio: ${id} fica na lista até o tirares — não expira às 14 h.`
+          : `Apoio: ${id} volta a sair da lista ao fim de 14 h.`);
       };
     });
 
