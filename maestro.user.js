@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.13.1700
+// @version      2026.09.13.1800
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2707,7 +2707,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.13.1700';
+  const MAESTRO_VERSAO = '2026.09.13.1800';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -19980,6 +19980,18 @@ function makeAldeiasModule(opts) {
      * vezes menos pedidos do que a de 5. */
   }
 
+  /* AS ALDEIAS QUE JÁ DERAM O QUE TINHAM HOJE.
+   *
+   * O servidor só o diz quando se tenta recolher ("recolha máxima diária"),
+   * por isso guarda-se. Uma aldeia no limite rende zero — e isso não tem nada
+   * a ver com captchas (17/09). Esvazia-se quando o dia muda. */
+  let noLimiteHoje = new Set();
+  let diaDoLimite = new Date().getDate();
+  function limparLimiteSeMudouODia() {
+    const hoje = new Date().getDate();
+    if (hoje !== diaDoLimite) { diaDoLimite = hoje; noLimiteHoje = new Set(); }
+  }
+
   /* Passagens seguidas em que se recolheu e nada entrou nos armazéns. */
   let semEntrada = 0;
 
@@ -20047,6 +20059,8 @@ function makeAldeiasModule(opts) {
       }
     } catch (e) { seErroDeCodigo(e, 'Aldeias'); }
 
+    limparLimiteSeMudouODia();
+
     const prontas = relacoesProntas();
     if (!prontas.length) { log('Recolha: nenhuma aldeia pronta.'); return; }
 
@@ -20078,10 +20092,23 @@ function makeAldeiasModule(opts) {
      *
      * Por isso não se suspende por suspeita: só quando o captcha aparece
      * mesmo. */
-    if (prontas.reduce((s, p) => s + (Number(p.rende) || 0), 0) <= 0) {
-      (ctx.logRotina || log)(`Recolha: ${prontas.length} aldeia(s) prontas e nenhuma rende nada — `
+    /* NO LIMITE DIÁRIO NÃO É SINAL DE VERIFICAÇÃO.
+     *
+     * Uma aldeia que já deu o que tinha a dar hoje rende zero — e isso não
+     * tem nada a ver com captchas. Numa conta com as 18 aldeias no limite,
+     * isto abria uma aldeia a cada passagem e o clique fazia aparecer a
+     * verificação que não existia antes: o Discord recebeu "a recolha está
+     * parada" numa conta que apenas não tinha nada a recolher (visto em jogo,
+     * 17/09, na Lagostax do pt127).
+     *
+     * Só se abre a aldeia quando há aldeias prontas FORA do limite diário e
+     * mesmo assim nenhuma rende. Aí sim, alguma coisa está errada. */
+    const foraDoLimite = prontas.filter((p) => !noLimiteHoje.has(Number(p.farmTownId)));
+    if (foraDoLimite.length
+        && foraDoLimite.reduce((s, p) => s + (Number(p.rende) || 0), 0) <= 0) {
+      (ctx.logRotina || log)(`Recolha: ${foraDoLimite.length} aldeia(s) prontas e nenhuma rende nada — `
         + 'abro uma aldeia e carrego em Recolher para ver se há verificação.');
-      const apareceu = await mostrarCaptchaPelaRecolha(ctx, aldeiaParaMostrarCaptcha(ctx, prontas, null));
+      const apareceu = await mostrarCaptchaPelaRecolha(ctx, aldeiaParaMostrarCaptcha(ctx, foraDoLimite, null));
       if (apareceu) { await tratarCaptcha(ctx, 'recolha a render zero'); return; }
     }
 
@@ -20199,6 +20226,9 @@ function makeAldeiasModule(opts) {
          * registo com dezenas de linhas iguais. Vai para a rotina. */
         if (/m[áa]xima di[áa]ria|daily limit/i.test(String(r.msg || ''))) {
           noLimite++;
+          /* Fica registado: uma aldeia no limite rende zero até amanhã, e
+           * isso não é sinal de verificação nenhuma. */
+          try { noLimiteHoje.add(Number(p.farmTownId)); } catch (e) {}
         } else if (/ainda n[ãa]o est[áa] pronto|not ready/i.test(String(r.msg || ''))) {
           /* Guardada para a segunda ronda: pode ser só a fronteira da
            * recarga, e cinco segundos depois já dá. */
