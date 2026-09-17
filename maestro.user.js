@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.13.2200
+// @version      2026.09.13.2300
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2780,7 +2780,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.13.2200';
+  const MAESTRO_VERSAO = '2026.09.13.2300';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -37776,8 +37776,14 @@ function makeApoioModule(opts) {
      * ================================================================== */
     try {
       /* Cada conta publica as revoltas das suas cidades — a main também, para
-       * o registo ser um só. */
-      try { await publicarRevoltasDestaConta(ctx, AGORA); } catch (e) { seErroDeCodigo(e, 'Apoio'); }
+       * o registo ser um só.
+       *
+       * A hora calcula-se AQUI: o `AGORA` do bloco seguinte só existe dentro
+       * dele, e usá-lo antes rebentava com "AGORA is not defined" em todas as
+       * multis (17/09). */
+      try {
+        await publicarRevoltasDestaConta(ctx, Math.floor(Date.now() / 1000));
+      } catch (e) { seErroDeCodigo(e, 'Apoio'); }
 
       if (souAPrincipalDoApoio()) {
         const AGORA = Math.floor(Date.now() / 1000);
