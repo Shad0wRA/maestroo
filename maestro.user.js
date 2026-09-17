@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.13.0600
+// @version      2026.09.13.0700
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2568,7 +2568,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.13.0600';
+  const MAESTRO_VERSAO = '2026.09.13.0700';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -36687,10 +36687,28 @@ function makeApoioModule(opts) {
 
         if (fimFase <= Number(agoraS)) continue;             // já acabou: esquecido
         const q = quem[rid] || { id: 0, nome: '?' };
+
+        /* A REVOLTA QUE EU LANÇO NÃO É PARA APOIAR.
+         *
+         * Escrevia-se `destination_town_player_id: eu` — ou seja, dava-se o
+         * destino como MEU fosse de quem fosse. O filtro de cima, que exige
+         * que o destino seja meu e a origem não, passava sempre a dar certo
+         * por construção.
+         *
+         * Resultado: as cidades de onde EU lancei revoltas entraram na lista
+         * de apoio, e as vinte multis mandaram tropa para elas. Visto em jogo
+         * (17/09): a 55.18 e a 45.9, de onde ataquei o Jomaras, foram
+         * anunciadas como "em revolta por ?" — o "?" era eu.
+         *
+         * Quem revolta está no `Takeover`: se for eu, esta revolta é minha e
+         * não entra. Sem saber quem é, não se arrisca. */
+        if (eu && q.id && q.id === eu) continue;             // fui eu que a lancei
+        if (eu && !q.id) continue;                           // não sei quem foi: não arrisco
+
         out.lista.push({
           id: 'revolt_' + rid, type: 'revolt', command_type: 'revolt',
           destination_town_id: alvo, destination_town_name: String(a.town_name || alvo),
-          destination_town_player_id: eu || Number(a.player_id) || 0,
+          destination_town_player_id: Number(a.player_id) || eu || 0,
           origin_town_player_id: q.id, origin_player_name: q.nome,
           started_at: ini, finished_at: fimFase, emR1: r1,
         });
