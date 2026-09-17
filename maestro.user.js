@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.13.2000
+// @version      2026.09.13.2100
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2780,7 +2780,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.13.2000';
+  const MAESTRO_VERSAO = '2026.09.13.2100';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -37919,7 +37919,30 @@ function makeApoioModule(opts) {
               return g0 && Number(g0.ultima) !== Number(r.ultima);
             });
 
-            if (novos.length || aRetirar.length || corrigidos.length) {
+            /* UMA REVOLTA QUE SE PERDEU DA LISTA VOLTA A ENTRAR.
+             *
+             * A lista só se gravava quando havia revoltas NOVAS, removidas ou
+             * corrigidas. Uma revolta detectada há horas não é nova — por isso,
+             * se o registo dela se perdesse (e perdia-se: as escritas das
+             * vinte contas atropelavam-se), nunca mais era reposto.
+             *
+             * Foi o que aconteceu à 5105 da MacaquinhoChinês: a conta apoiava
+             * a cidade, via a revolta, e o `revoltasAuto` continuava sem ela —
+             * e o quadro do Discord, que lê esse registo, nunca a mostrava
+             * (visto em jogo, 17/09).
+             *
+             * Agora: uma revolta que esta conta vê e que não está registada
+             * volta a entrar, por velha que seja. */
+            const emFalta = Object.keys(porCidade)
+              .map(Number)
+              .filter((id) => !guardadas[String(id)]);
+
+            if (emFalta.length) {
+              rotina(`Apoio: ${emFalta.length} revolta(s) que vejo não estavam na lista `
+                + '— volto a pô-las.');
+            }
+
+            if (novos.length || aRetirar.length || corrigidos.length || emFalta.length) {
               const ficam = [].concat([...jaLa], novos.map((r) => r.id))
                 .filter((id) => aRetirar.indexOf(Number(id)) < 0);
 
