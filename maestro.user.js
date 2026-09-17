@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.13.1300
+// @version      2026.09.13.1600
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2707,7 +2707,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.13.1300';
+  const MAESTRO_VERSAO = '2026.09.13.1600';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -17824,6 +17824,12 @@ function makeFeiticosModule(opts) {
 
     if (!c.ativo) { rotina('Feitiços: está desligado.'); return; }
 
+    /* Os pedidos de recursos são independentes do resto: cumprem-se mesmo
+     * que não haja ataques nem cidades a proteger. */
+    try {
+      await cumprirPedidosDeRecursos(ctx, ctx.getMyTowns() || []);
+    } catch (e) { seErroDeCodigo(e, 'Feiticos'); }
+
     /* As 24 horas cumpridas tiram a cidade da lista. Corre antes de decidir,
      * para não gastar favor numa cidade que já saiu. */
     const saiuDaLista = limparExpiradas();
@@ -18003,7 +18009,121 @@ function makeFeiticosModule(opts) {
             })();
             if (!ehNC) continue;
 
-            /* Já gastei tempestades neste? */
+            /* ============ RECURSOS POR FEITIÇO, A PEDIDO ==========================
+   *
+   * Três feitiços dão recursos a qualquer cidade — a tua, de uma multi ou de
+   * um aliado (a wiki confirma que se lançam em cidades de outros; os valores
+   * saíram do próprio jogo, 17/09):
+   *
+   *   Oferta do oceano          25 favor → 800 madeira   (Poseidon)
+   *   Oferta da natureza        30 favor → 650 pedra     (Ártemis)
+   *   Tesouros do mundo mortos  30 favor → 500 prata     (Hades)
+   *
+   * Não há tempo de espera entre lançamentos na mesma cidade. Com vinte
+   * multis, isto é uma fábrica de recursos: 32 de madeira por favor.
+   *
+   * COMO FUNCIONA. Pões no painel quanto queres e em que cidade; o pedido vai
+   * para o Firebase e as contas vão descontando o que lançam até perfazer.
+   * Ninguém precisa de ver os recursos da cidade — conta-se o que cada
+   * feitiço dá, que é fixo.
+   *
+   * O módulo não anda à procura de trabalho: sem pedido, não faz nada. */
+  const RECURSOS_POR_FEITICO = {
+    wood: { power: 'kingly_gift', deus: 'poseidon', favor: 25, da: 800 },
+    stone: { power: 'natures_gift', deus: 'artemis', favor: 30, da: 650 },
+    iron: { power: 'underworld_treasures', deus: 'hades', favor: 30, da: 500 },
+  };
+
+  const caminhoPedidosRec = () => `recursosPedidos/${mWorld}`;
+
+  async function lerPedidosDeRecursos() {
+    try {
+      const fb = mUw.__maestroFb;
+      if (!fb || !fb.url || !fb.url()) return null;
+      return (await fb.ler(caminhoPedidosRec())) || {};
+    } catch (e) { return null; }
+  }
+
+  async function gravarPedidosDeRecursos(d) {
+    try {
+      const fb = mUw.__maestroFb;
+      if (!fb || !fb.url || !fb.url()) return false;
+      await fb.escrever(caminhoPedidosRec(), d);
+      return true;
+    } catch (e) { return false; }
+  }
+
+  /* O que esta conta pode lançar: as cidades que veneram o deus certo e têm
+   * favor. O favor é por DEUS e por conta, não por cidade. */
+  function cidadesQueVeneram(deus, towns) {
+    const out = [];
+    try {
+      for (const t of towns) {
+        const g = mUw.ITowns.getTown(t.id).god && mUw.ITowns.getTown(t.id).god();
+        if (String(g || '') === deus) out.push(t);
+      }
+    } catch (e) { seErroDeCodigo(e, 'Feitiços'); }
+    return out;
+  }
+
+  async function cumprirPedidosDeRecursos(ctx, towns) {
+    const pedidos = await lerPedidosDeRecursos();
+    if (!pedidos || !Object.keys(pedidos).length) return false;
+
+    let mexeu = false;
+
+    for (const chave of Object.keys(pedidos)) {
+      const p = pedidos[chave] || {};
+      const alvo = Number(p.alvo) || 0;
+      if (!alvo) { delete pedidos[chave]; mexeu = true; continue; }
+
+      /* O que ainda falta, por recurso. */
+      const falta = {};
+      for (const r of Object.keys(RECURSOS_POR_FEITICO)) {
+        const quer = Number((p.quer || {})[r]) || 0;
+        const feito = Number((p.feito || {})[r]) || 0;
+        if (quer > feito) falta[r] = quer - feito;
+      }
+
+      if (!Object.keys(falta).length) {
+        log(`✅ Recursos: o pedido para ${p.nome || alvo} está cumprido.`);
+        delete pedidos[chave];
+        mexeu = true;
+        continue;
+      }
+
+      for (const r of Object.keys(falta)) {
+        const def = RECURSOS_POR_FEITICO[r];
+        if (favorDe(def.deus) < def.favor) continue;          // sem favor para este
+
+        const daqui = cidadesQueVeneram(def.deus, towns);
+        if (!daqui.length) continue;                          // não venero este deus
+
+        const rr = await lancar(def.power, alvo, daqui[0].id);
+        if (!rr.ok) {
+          rotina(`Recursos: ${def.power} em ${alvo} falhou — ${rr.msg}`);
+          continue;
+        }
+
+        p.feito = p.feito || {};
+        p.feito[r] = (Number(p.feito[r]) || 0) + def.da;
+        pedidos[chave] = p;
+        mexeu = true;
+
+        const quer = Number((p.quer || {})[r]) || 0;
+        log(`💰 Recursos: +${def.da} ${r} para ${p.nome || alvo} `
+          + `(${p.feito[r]} de ${quer}).`);
+
+        await ctx.sleep(ctx.rand(700, 1300));
+        break;        // um por passagem e por conta: as vinte somam depressa
+      }
+    }
+
+    if (mexeu) await gravarPedidosDeRecursos(pedidos);
+    return mexeu;
+  }
+
+  /* Já gastei tempestades neste? */
             est.tempestades = est.tempestades || {};
             const jaFoi = Number(est.tempestades[cmdId]) || 0;
             if (jaFoi >= (c.maxTempestades || 3)) continue;
@@ -18227,6 +18347,65 @@ function makeFeiticosModule(opts) {
     const est = estado();
     const agora = agoraJogo();
 
+    /* O PEDIDO DE RECURSOS.
+     *
+     * Escreve-se no Firebase e as contas vão descontando o que lançam. Sem
+     * pedido, o módulo não faz nada disto (17/09). */
+    const ligarPedidoDeRecursos = () => {
+      const cx = container.querySelector('#fei-rec-lista');
+      const mostrar = async () => {
+        if (!cx) return;
+        const p = await lerPedidosDeRecursos();
+        if (!p) { cx.textContent = 'sem Firebase configurado.'; return; }
+        const ks = Object.keys(p);
+        if (!ks.length) { cx.textContent = 'sem pedidos.'; return; }
+        cx.innerHTML = ks.map((k) => {
+          const x = p[k] || {};
+          const partes = Object.keys(x.quer || {}).map((r) => {
+            const feito = Number((x.feito || {})[r]) || 0;
+            return `${r}: ${feito}/${x.quer[r]}`;
+          }).join(' · ');
+          return `<div>${String(x.nome || x.alvo)} — ${partes}
+            <a href="#" data-rec-apagar="${k}" style="margin-left:5px">apagar</a></div>`;
+        }).join('');
+        cx.querySelectorAll('[data-rec-apagar]').forEach((a) => {
+          a.onclick = async (ev) => {
+            ev.preventDefault();
+            const d = (await lerPedidosDeRecursos()) || {};
+            delete d[a.getAttribute('data-rec-apagar')];
+            await gravarPedidosDeRecursos(d);
+            ctx.log('Recursos: pedido apagado.');
+            mostrar();
+          };
+        });
+      };
+
+      const bt = container.querySelector('#fei-rec-pedir');
+      if (bt) {
+        bt.onclick = async () => {
+          const alvo = Number((container.querySelector('#fei-rec-alvo') || {}).value) || 0;
+          if (!alvo) { ctx.log('Recursos: falta o número da cidade.'); return; }
+          const quer = {};
+          for (const r of ['wood', 'stone', 'iron']) {
+            const v3 = Number((container.querySelector('#fei-rec-' + r) || {}).value) || 0;
+            if (v3 > 0) quer[r] = v3;
+          }
+          if (!Object.keys(quer).length) { ctx.log('Recursos: não pediste nada.'); return; }
+
+          const d = (await lerPedidosDeRecursos()) || {};
+          let nome = String(alvo);
+          try { nome = mUw.ITowns.getTown(alvo).getName() || nome; } catch (e) {}
+          d['rec_' + alvo] = { alvo, nome, quer, feito: {}, quando: Math.floor(Date.now() / 1000) };
+          const ok = await gravarPedidosDeRecursos(d);
+          ctx.log(ok
+            ? `💰 Recursos: pedido para ${nome} — as contas começam a lançar.`
+            : 'Recursos: não consegui gravar o pedido (sem Firebase?).');
+          mostrar();
+        };
+      }
+      mostrar();
+    };
+
     /* Quanto falta para a cidade sair da lista. */
     const saiEm = (id) => {
       const t = Number((c.protegidasAte || {})[id]) || 0;
@@ -18353,6 +18532,25 @@ function makeFeiticosModule(opts) {
     })();
 
     container.innerHTML = `
+      <div class="mCaixa" style="margin-bottom:9px">
+        <div class="mEtiq" style="margin-bottom:3px">recursos por feitiço</div>
+        <div style="opacity:.6;font-size:11px;margin-bottom:5px">
+          As contas lançam feitiços de recursos na cidade que indicares, até
+          perfazer o que pedires: 800 madeira (25 favor de Poseidon), 650 pedra
+          (30 de Ártemis) ou 500 prata (30 de Hades). Não há espera entre
+          lançamentos — com vinte contas, vai depressa.
+        </div>
+        <div style="display:flex;gap:4px;align-items:center;flex-wrap:wrap;font-size:12px">
+          <span style="opacity:.7">cidade</span>
+          <input id="fei-rec-alvo" type="number" placeholder="id" style="width:78px">
+          <span style="opacity:.7">madeira</span><input id="fei-rec-wood" type="number" value="0" style="width:66px">
+          <span style="opacity:.7">pedra</span><input id="fei-rec-stone" type="number" value="0" style="width:66px">
+          <span style="opacity:.7">prata</span><input id="fei-rec-iron" type="number" value="0" style="width:66px">
+          <button id="fei-rec-pedir" style="cursor:pointer;font-size:12px">pedir</button>
+        </div>
+        <div id="fei-rec-lista" style="font-size:11px;opacity:.75;margin-top:5px"></div>
+      </div>
+
       <label style="display:block;margin-bottom:4px">
         <input type="checkbox" id="fei-on"${c.ativo ? ' checked' : ''}>
         <b>Auto-feitiços — Proteção de Cidade</b>
@@ -18481,6 +18679,8 @@ function makeFeiticosModule(opts) {
                     ${jaEscolhidos.indexOf(id) >= 0 ? 'checked' : ''} style="display:none">
                   ${iconeDoFeitico(id)}
                 </label>`).join('');
+
+    ligarPedidoDeRecursos();
               return `<tr>
                 <td style="padding:2px 4px;white-space:nowrap">${chega}</td>
                 <td style="padding:2px 4px;overflow:hidden;text-overflow:ellipsis;max-width:150px">
@@ -18516,7 +18716,7 @@ function makeFeiticosModule(opts) {
       /* Os ataques recebidos que ficaram marcados. Guarda-se por comando, com
        * a lista de feitiços escolhidos. */
       cc.alvos = {};
-      container.querySelectorAll('.fei-alvo').forEach((el) => {
+    container.querySelectorAll('.fei-alvo').forEach((el) => {
         if (!el.checked) return;
         const cid = Number(el.getAttribute('data-cmd')) || 0;
         if (!cid) return;
@@ -37951,6 +38151,112 @@ function makeApoioModule(opts) {
      * às cegas — e tornava impossível dizer quantos alvos a frota ainda
      * aguenta. Foi retirado: quem não tiver objectivo próprio usa o padrão do
      * painel. */
+    /* ============ O QUADRO DAS REVOLTAS ACTIVAS =========================
+   *
+   * Um quadro com TODAS as revoltas do grupo — as da main e as das multis —
+   * numa mensagem só, mandada pela conta principal.
+   *
+   * Cada linha diz a cidade, de que conta é, quem a revoltou, quanto falta
+   * (para o fim da R1, quando o colonizador pode entrar, ou para o fim da R2)
+   * e quanta tropa já lá está, que a frota sabe.
+   *
+   * Só sai quando a lista MUDA: uma revolta nova ou uma que acabou. Assim não
+   * há um quadro igual ao anterior de meia em meia hora. */
+  const QUADRO_KEY = 'grepoApoio_quadroRevoltas_v1';
+
+  async function quadroDasRevoltas(ctx, lista) {
+    try {
+      const rev = (lista || {}).revoltasAuto || {};
+      const ids = Object.keys(rev).map(Number).filter(Boolean).sort((a, b) => a - b);
+
+      /* A assinatura é o que decide se há coisa nova: as cidades em revolta e
+       * a fase de cada uma. */
+      const assinatura = ids.map((id) => {
+        const r = rev[id] || {};
+        return id + ':' + (r.emR1 ? 'R1' : 'R2');
+      }).join('|');
+
+      let antes = '';
+      try { antes = localStorage.getItem(QUADRO_KEY) || ''; } catch (e) {}
+      if (assinatura === antes) return false;              // nada mudou
+
+      try { localStorage.setItem(QUADRO_KEY, assinatura); } catch (e) {}
+      if (!ids.length) {
+        if (antes && ctx.avisarDiscord) {
+          await ctx.avisarDiscord('ataque', {
+            titulo: '✅ Sem revoltas',
+            descricao: 'Acabaram as revoltas no grupo.',
+          });
+        }
+        return true;
+      }
+
+      /* A frota diz quanta tropa está em cada alvo e de quem é cada cidade. */
+      const frota = await (async () => {
+        try {
+          if (typeof fbLerM !== 'function' || !fbUrlM || !fbUrlM()) return {};
+          return (await fbLerM(`frota/${mWorld}`)) || {};
+        } catch (e) { return {}; }
+      })();
+
+      const agoraS = Math.floor(Date.now() / 1000);
+      const tropaEm = {};
+      const donoDe = {};
+      for (const k of Object.keys(frota)) {
+        const x = frota[k] || {};
+        if (!x.quando || (agoraS - Number(x.quando)) > 6 * 3600) continue;
+        const alvosDela = ((x.apoio || {}).alvos) || {};
+        for (const id of Object.keys(alvosDela)) {
+          const u = (alvosDela[id] || {}).u || {};
+          let n = 0;
+          for (const k2 of Object.keys(u)) n += Number(u[k2]) || 0;
+          tropaEm[id] = (tropaEm[id] || 0) + n;
+        }
+        for (const id of Object.keys((x.cidades || {}))) donoDe[id] = x.conta || k;
+      }
+
+      const campos = ids.slice(0, 20).map((id) => {
+        const r = rev[id] || {};
+        const nome = r.nome || String(id);
+        const dono = donoDe[id] || '';
+        const quem = (r.quem || []).join(', ') || '?';
+        const falta = Number(r.ultima) ? Math.max(0, Math.round((Number(r.ultima) - agoraS) / 60)) : 0;
+        const fase = r.emR1
+          ? `R1 — o colonizador pode entrar daqui a ${falta} min`
+          : `R2 — acaba daqui a ${falta} min`;
+        const tropa = tropaEm[id] ? `${tropaEm[id].toLocaleString('pt-PT')} de tropa lá` : 'sem tropa ainda';
+        return {
+          nome: `${nome}${dono ? ` (${dono})` : ''}`,
+          valor: `revoltada por **${quem}**\n${fase}\n${tropa}`,
+        };
+      });
+
+      if (ctx.avisarDiscord) {
+        await ctx.avisarDiscord('ataque', {
+          titulo: `🚨 Revoltas activas — ${ids.length}`,
+          descricao: ids.length > 20 ? `(mostro as primeiras 20 de ${ids.length})` : '',
+          campos,
+        });
+      }
+      return true;
+    } catch (e) { seErroDeCodigo(e, 'Apoio'); return false; }
+  }
+
+  /* ============ SÓ A CONTA PRINCIPAL TIRA ALVOS DA LISTA ============
+     *
+     * A remoção lê a lista, tira o que expirou e reescreve-a inteira. Com
+     * vinte contas a fazer isso ao mesmo tempo, a última a escrever repõe o
+     * que as outras tinham tirado: a mensagem "tiro da lista" repetia-se a
+     * cada passagem e os alvos nunca saíam (visto em jogo, 17/09: a 3058 e a
+     * 652, quatro vezes em sete minutos).
+     *
+     * Quem tira é a conta principal. As outras marcam a entrada — que é um
+     * registo local — e leem a lista como está. */
+    const souAPrincipal = (() => {
+      try { return localStorage.getItem('grepoMaestro_principal_v1') === '1'; }
+      catch (e) { return false; }
+    })();
+
     /* O tecto das 14 h: marca-se a entrada de cada alvo e tiram-se os que já
      * lá estão há mais tempo do que uma revolta pode durar. */
     try {
@@ -37966,7 +38272,8 @@ function makeApoioModule(opts) {
        * `fb()` — que é dos outros módulos. Chamei o errado e o módulo rebentou
        * com "fb is not defined" (16/09). */
       try {
-        if (typeof fbLerM === 'function' && fbUrlM && fbUrlM()) {
+        /* Pela mesma razão: vinte contas a reescrever os pedidos atropelam-se. */
+        if (souAPrincipal && typeof fbLerM === 'function' && fbUrlM && fbUrlM()) {
           const pend = (await fbLerM(fbCaminhoPedidos())) || {};
           const vivos2 = new Set((alvos || []).map(Number));
           let mexeu2 = false;
@@ -37993,7 +38300,12 @@ function makeApoioModule(opts) {
         }
         if (mexeu) gravarReforco(extra);
       } catch (e) { seErroDeCodigo(e, 'Apoio'); }
-      const velhos = alvosPassadosDoTecto(alvos);
+      /* O quadro das revoltas: só a principal, e só quando a lista muda. */
+      if (souAPrincipal) {
+        try { await quadroDasRevoltas(ctx, lista); } catch (e) { seErroDeCodigo(e, 'Apoio'); }
+      }
+
+      const velhos = souAPrincipal ? alvosPassadosDoTecto(alvos) : [];
       if (velhos.length) {
         const restam = alvos.filter((id) => velhos.indexOf(Number(id)) < 0);
         log(`⏳ Apoio: ${velhos.join(', ')} está(ão) na lista há mais de 14 h `
