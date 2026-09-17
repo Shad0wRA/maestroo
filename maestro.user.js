@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.13.2100
+// @version      2026.09.13.2200
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2780,7 +2780,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.13.2100';
+  const MAESTRO_VERSAO = '2026.09.13.2200';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -36041,6 +36041,77 @@ function makeApoioModule(opts) {
     } catch (e) { return false; }
   }
 
+  /* ============ AS MULTIS PUBLICAM AS REVOLTAS DELAS ==================
+   *
+   * A lista de alvos tem um dono único — a main — para as contas não se
+   * atropelarem a escrevê-la. Mas isso deixava as revoltas das multis sem
+   * por onde chegar: a detecção corre dentro do bloco da principal, e as
+   * multis nunca a faziam. Uma cidade de uma multi em revolta era apoiada
+   * (o alvo entrava por outra via) mas nunca aparecia no registo das
+   * revoltas — nem no painel, nem no quadro do Discord (visto em jogo,
+   * 17/09: a 5105 da MacaquinhoChinês).
+   *
+   * Agora cada conta escreve as revoltas das SUAS cidades num sítio só dela,
+   * `revoltasMultis/<mundo>/<conta>`. Ninguém escreve onde outro escreve, e
+   * a main junta tudo quando monta a lista.
+   *
+   * Funciona sem Administrador: as revoltas vêm dos modelos do jogo. */
+  const caminhoRevoltasMinhas = () => {
+    const conta = String((mUw.Game && mUw.Game.player_name) || '?')
+      .replace(/[.#$\[\]\/:]/g, '_');
+    return `revoltasMultis/${mWorld}/${conta}`;
+  };
+
+  async function publicarRevoltasDestaConta(ctx, agoraS) {
+    try {
+      if (typeof fbEscreverM !== 'function' || !fbUrlM || !fbUrlM()) return;
+
+      const r = revoltasPelosModelos(agoraS);
+      if (!r || !r.ok) return;
+
+      const minhas = new Set((ctx.getMyTowns() || []).map((t) => Number(t.id)));
+      const out = {};
+      for (const x of (r.lista || [])) {
+        const id = Number(x.destination_town_id) || 0;
+        if (!id || !minhas.has(id)) continue;          // só as minhas cidades
+        const e = out[id] = out[id] || {
+          id, nome: String(x.destination_town_name || id),
+          quem: [], primeira: 0, ultima: 0, comandos: [], emR1: false,
+        };
+        const fim = Number(x.finished_at) || 0;
+        if (x.origin_player_name) e.quem.push(String(x.origin_player_name));
+        if (x.id) e.comandos.push(String(x.id));
+        if (fim && (!e.primeira || fim < e.primeira)) e.primeira = fim;
+        if (fim > e.ultima) e.ultima = fim;
+        if (x.emR1) e.emR1 = true;
+      }
+
+      /* Escreve-se sempre, mesmo vazio: é assim que a main sabe que esta
+       * conta já não tem revoltas. */
+      await fbEscreverM(caminhoRevoltasMinhas(), { quando: agoraS, revoltas: out });
+    } catch (e) { seErroDeCodigo(e, 'Apoio'); }
+  }
+
+  /* A main lê o que as outras publicaram. */
+  async function revoltasDasOutrasContas(agoraS) {
+    try {
+      if (typeof fbLerM !== 'function' || !fbUrlM || !fbUrlM()) return {};
+      const d = (await fbLerM(`revoltasMultis/${mWorld}`)) || {};
+      const out = {};
+      for (const conta of Object.keys(d)) {
+        const x = d[conta] || {};
+        /* Uma publicação de há mais de seis horas não é de confiança. */
+        if (!x.quando || (agoraS - Number(x.quando)) > 6 * 3600) continue;
+        for (const id of Object.keys(x.revoltas || {})) {
+          const r = x.revoltas[id];
+          if (!r || Number(r.ultima) <= agoraS) continue;      // já acabou
+          out[id] = Object.assign({}, r, { conta });
+        }
+      }
+      return out;
+    } catch (e) { seErroDeCodigo(e, 'Apoio'); return {}; }
+  }
+
   async function escreverLista(dados) {
     // não segurar o processo (importante nos testes)
     try { if (typeof t2 !== 'undefined' && t2 && t2.unref) t2.unref(); } catch (e) { seErroDeCodigo(e, 'Apoio'); }
@@ -37704,6 +37775,10 @@ function makeApoioModule(opts) {
      * 5 em 5 minutos, não a cada passagem: uma revolta dura horas.
      * ================================================================== */
     try {
+      /* Cada conta publica as revoltas das suas cidades — a main também, para
+       * o registo ser um só. */
+      try { await publicarRevoltasDestaConta(ctx, AGORA); } catch (e) { seErroDeCodigo(e, 'Apoio'); }
+
       if (souAPrincipalDoApoio()) {
         const AGORA = Math.floor(Date.now() / 1000);
         let ultima = 0;
@@ -37750,6 +37825,9 @@ function makeApoioModule(opts) {
              *
              * Sem visão geral, os modelos passam a ser a fonte. */
             const modelos = revoltasPelosModelos(AGORA);
+
+            /* O que as outras contas publicaram sobre as cidades DELAS. */
+            const dasOutras = await revoltasDasOutrasContas(AGORA);
             let cmds = [];
             if (visaoOk) {
               cmds = cmdsLidos.map((x) => {
@@ -37933,6 +38011,18 @@ function makeApoioModule(opts) {
              *
              * Agora: uma revolta que esta conta vê e que não está registada
              * volta a entrar, por velha que seja. */
+            /* As revoltas que as outras contas publicaram entram como se
+             * fossem vistas aqui: a cidade é delas, o registo é partilhado. */
+            for (const id of Object.keys(dasOutras)) {
+              if (porCidade[id]) continue;
+              const r = dasOutras[id];
+              porCidade[id] = {
+                id: Number(id), nome: String(r.nome || id), quem: r.quem || [],
+                primeira: Number(r.primeira) || 0, ultima: Number(r.ultima) || 0,
+                comandos: r.comandos || [], emR1: !!r.emR1, deOutraConta: r.conta,
+              };
+            }
+
             const emFalta = Object.keys(porCidade)
               .map(Number)
               .filter((id) => !guardadas[String(id)]);
