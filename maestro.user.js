@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.13.2400
+// @version      2026.09.13.2500
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2780,7 +2780,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.13.2400';
+  const MAESTRO_VERSAO = '2026.09.13.2500';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -36074,8 +36074,19 @@ function makeApoioModule(opts) {
       for (const x of (r.lista || [])) {
         const id = Number(x.destination_town_id) || 0;
         if (!id || !minhas.has(id)) continue;          // só as minhas cidades
+        /* O NOME VEM DE QUEM CONHECE A CIDADE.
+         *
+         * No quadro, as cidades das outras contas apareciam pelo número: a
+         * main não as conhece. Mas a conta que publica conhece-as — é ela que
+         * as tem (17/09). */
+        let nomeAqui = String(x.destination_town_name || '');
+        try {
+          const t = mUw.ITowns.getTown(id);
+          if (t && t.getName) nomeAqui = t.getName() || nomeAqui;
+        } catch (e) {}
+
         const e = out[id] = out[id] || {
-          id, nome: String(x.destination_town_name || id),
+          id, nome: nomeAqui || String(id),
           quem: [], primeira: 0, ultima: 0, comandos: [], emR1: false,
         };
         const fim = Number(x.finished_at) || 0;
@@ -38493,10 +38504,26 @@ function makeApoioModule(opts) {
         for (const id of Object.keys((x.cidades || {}))) donoDe[id] = x.conta || k;
       }
 
+      /* Quem publicou cada revolta — é quem tem a cidade. */
+      const contaDe = {};
+      try {
+        if (typeof fbLerM === 'function' && fbUrlM && fbUrlM()) {
+          const pub = (await fbLerM(`revoltasMultis/${mWorld}`)) || {};
+          for (const c of Object.keys(pub)) {
+            for (const id of Object.keys((pub[c] || {}).revoltas || {})) {
+              contaDe[id] = c;
+              const n2 = ((pub[c].revoltas[id] || {}).nome || '').trim();
+              if (n2 && rev[id] && !rev[id].nome) rev[id].nome = n2;
+              if (n2 && rev[id] && /^\d+$/.test(String(rev[id].nome || ''))) rev[id].nome = n2;
+            }
+          }
+        }
+      } catch (e) { seErroDeCodigo(e, 'Apoio'); }
+
       const campos = ids.slice(0, 20).map((id) => {
         const r = rev[id] || {};
         const nome = r.nome || String(id);
-        const dono = donoDe[id] || '';
+        const dono = contaDe[id] || donoDe[id] || '';
         const quem = (r.quem || []).join(', ') || '?';
         const falta = Number(r.ultima) ? Math.max(0, Math.round((Number(r.ultima) - agoraS) / 60)) : 0;
         const fase = r.emR1
