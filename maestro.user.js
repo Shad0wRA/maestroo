@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.13.1900
+// @version      2026.09.13.2000
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2780,7 +2780,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.13.1900';
+  const MAESTRO_VERSAO = '2026.09.13.2000';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -37437,7 +37437,10 @@ function makeApoioModule(opts) {
         const alvo = Number(a.target_town_id) || 0;
         const fimFase = Number(a.finished_at) || 0;
         if (!rid || !alvo || !fimFase) continue;
-        if (eu && Number(a.player_id) && Number(a.player_id) !== eu) continue;
+        /* O `player_id` desta colecção é o do jogador que REVOLTA, não o dono
+         * da cidade — isto é a colecção das revoltas em que sou o defensor,
+         * por isso a cidade é minha por definição. Comparar este campo com o
+         * meu identificador descartava a revolta da própria conta (17/09). */
 
         const ini = Number(a.started_at) || 0;
         const r1 = a.arising === true;
@@ -37463,10 +37466,23 @@ function makeApoioModule(opts) {
         if (eu && q.id && q.id === eu) continue;             // fui eu que a lancei
         if (eu && !q.id) continue;                           // não sei quem foi: não arrisco
 
+        /* O DONO DO DESTINO SOU EU, POR DEFINIÇÃO.
+         *
+         * Isto vem do `MovementsRevoltDefender` — a colecção das revoltas em
+         * que sou o DEFENSOR. A cidade é minha, sempre.
+         *
+         * Na 0700 passei a ler o dono do `a.player_id`, a pensar que era o
+         * dono da cidade. É o jogador que REVOLTA: numa multi, o filtro "o
+         * destino tem de ser meu" passou a rejeitar a própria revolta dela, e
+         * as revoltas das multis nunca chegaram à lista partilhada (visto em
+         * jogo, 17/09: a 5105 da MacaquinhoChinês, revoltada pelo 2438668).
+         *
+         * O que a 0700 queria impedir continua impedido, e pela via certa: a
+         * verificação de quem lançou, logo acima. */
         out.lista.push({
           id: 'revolt_' + rid, type: 'revolt', command_type: 'revolt',
           destination_town_id: alvo, destination_town_name: String(a.town_name || alvo),
-          destination_town_player_id: Number(a.player_id) || eu || 0,
+          destination_town_player_id: eu || 0,
           origin_town_player_id: q.id, origin_player_name: q.nome,
           started_at: ini, finished_at: fimFase, emR1: r1,
         });
