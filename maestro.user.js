@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.14.2000
+// @version      2026.09.14.2100
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -3342,7 +3342,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.14.2000';
+  const MAESTRO_VERSAO = '2026.09.14.2100';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -5675,20 +5675,42 @@
      * Se a barra não existir (o jogo mudou, ou é outra vista), fica como
      * estava: a flutuar e arrastável. Não se perde o acesso ao painel por
      * causa de uma questão de sítio. */
-    const naBarraDoJogo = (() => {
+    /* ============ AO LADO DO SELETOR DE CIDADE ========================
+     *
+     * Quatro sítios antes deste: a flutuar por cima do mapa (tapava coisas),
+     * dentro da caixa do retrato (ficou por trás da moldura), ao lado do
+     * retrato (aquele espaço é do DIO-Tools, que lá tem um painel por cima) e
+     * fixo em 392,84 (pequeno e no sítio errado).
+     *
+     * Agora vai para junto do nome da cidade, no topo ao centro — que é onde
+     * ele o quer, e o ponto que se olha sempre (18/09).
+     *
+     * COMO, que é o que importa: o botão continua `position:fixed` no corpo
+     * da página, mas as coordenadas são medidas a partir do seletor e
+     * refrescadas. Assim acompanha-o quando a janela muda de tamanho, sem
+     * ficar dentro de nenhuma caixa do jogo — que foi o que o escondeu das
+     * duas vezes anteriores: molduras por cima, e outro script no mesmo
+     * espaço. */
+    function acharSeletorDeCidade() {
       try {
-        /* A CAIXA DO RETRATO, no canto superior direito.
-         *
-         * É onde o Rafa o quis, ao lado dos outros ícones. Encontrada a
-         * apontar para o ponto que ele marcou: os candidatos óbvios eram
-         * todos outra coisa — a barra de actividades fica em cima ao centro,
-         * o menu principal é a coluna esquerda, e o `#ui_box` é o ecrã todo
-         * (18/09). */
-        const el = document.querySelector('.nui_right_box');
-        if (el) return el;
+        const nomes = [
+          '#town_name_area', '.town_name_area', '#ui_box .nui_town_name',
+          '#town_name', '.town_name',
+        ];
+        for (const s of nomes) {
+          const el = document.querySelector(s);
+          if (!el) continue;
+          const r = el.getBoundingClientRect();
+          /* Tem de ter tamanho e estar lá em cima. Se o jogo mudar os nomes,
+           * mais vale não o pôr do que pô-lo num sítio qualquer. */
+          if (r.width < 60 || r.width > 700 || r.top > 250) continue;
+          return el;
+        }
       } catch (e) {}
       return null;
-    })();
+    }
+
+    const naBarraDoJogo = acharSeletorDeCidade();
 
     if (naBarraDoJogo) {
       /* ============ UM CÍRCULO, COMO OS DO JOGO =======================
@@ -5705,21 +5727,16 @@
        * correr, âmbar quando o servidor trava, vermelho quando há erros. */
       btn.innerHTML = '<span id="maestro-btn-luz"></span><span>M</span>';
       btn.style.cssText = [
-        /* NA BARRA DE CIMA, EM POSIÇÃO FIXA.
+        /* Sem `left` nem `top` aqui: quem os põe é o `acompanharSeletor`, a
+         * partir do sítio onde o nome da cidade estiver naquele momento.
          *
-         * Tentei primeiro dentro da caixa do retrato: o sítio livre à esquerda
-         * afinal é do DIO-Tools, que lá tem um painel por cima. O espaço da
-         * barra superior, à esquerda do seletor de cidade, está mesmo vazio.
-         *
-         * Fixo ao ecrã, sem contentor: assim não depende da estrutura do jogo
-         * nem de outro script o tapar, e não há como o perder de vista
-         * (18/09). */
-        'position:fixed', 'left:392px', 'top:84px', 'z-index:9999',
-        'width:22px', 'height:22px', 'border-radius:50%',
+         * E maior — 22 px era pequeno de mais ao pé dos ícones do jogo. */
+        'position:fixed', 'left:-100px', 'top:-100px', 'z-index:9999',
+        'width:28px', 'height:28px', 'border-radius:50%',
         'display:flex', 'align-items:center', 'justify-content:center',
         'background:linear-gradient(#2a3442,#1a222c)',
         'border:1px solid #4a5766',
-        'color:#cdd8e4', 'font:700 12px/1 "Trebuchet MS",system-ui,sans-serif',
+        'color:#cdd8e4', 'font:700 15px/1 "Trebuchet MS",system-ui,sans-serif',
         'cursor:pointer', 'user-select:none',
         'box-shadow:0 1px 3px rgba(0,0,0,.6), inset 0 1px 0 rgba(255,255,255,.08)',
       ].join(';');
@@ -5931,8 +5948,43 @@
       });
     } catch (e) {}
 
-    /* Fixo ao ecrã: vai sempre para o corpo, esteja o jogo como estiver. */
+    /* Vai sempre para o corpo da página: dentro das caixas do jogo já ficou
+     * escondido duas vezes. */
     document.body.appendChild(btn);
+
+    if (naBarraDoJogo) {
+      /* A MEDIR O SÍTIO, EM VEZ DE O ADIVINHAR.
+       *
+       * O seletor pode mexer-se — a janela muda de tamanho, o jogo redesenha
+       * a barra ao mudar de cidade. Por isso mede-se de vez em quando, e a
+       * referência é procurada outra vez se o elemento tiver sido substituído.
+       *
+       * Encosta à ESQUERDA do nome da cidade; se não houver espaço lá, passa
+       * para a direita (18/09). */
+      let alvo = naBarraDoJogo;
+      const TAM = 28, FOLGA = 8;
+
+      const acompanharSeletor = () => {
+        try {
+          if (!alvo || !alvo.isConnected) alvo = acharSeletorDeCidade();
+          if (!alvo) return;                       // some: fica onde estava
+          const r = alvo.getBoundingClientRect();
+          if (!r.width || !r.height) return;       // escondido nesta vista
+          let x = r.left - TAM - FOLGA;
+          if (x < 2) x = r.right + FOLGA;
+          const y = r.top + (r.height - TAM) / 2;
+          btn.style.left = Math.max(2, Math.min(window.innerWidth - TAM - 2, x)) + 'px';
+          btn.style.top = Math.max(2, Math.min(window.innerHeight - TAM - 2, y)) + 'px';
+        } catch (e) {}
+      };
+
+      acompanharSeletor();
+      /* O jogo ainda acerta a barra depois de carregar. */
+      setTimeout(acompanharSeletor, 1500);
+      setTimeout(acompanharSeletor, 5000);
+      window.addEventListener('resize', acompanharSeletor);
+      setInterval(acompanharSeletor, 5000);
+    }
 
     const p = document.createElement('div');
     p.id = 'maestro-panel';
