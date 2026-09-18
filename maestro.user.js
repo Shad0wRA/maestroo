@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.14.1500
+// @version      2026.09.14.1600
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -3323,7 +3323,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.14.1500';
+  const MAESTRO_VERSAO = '2026.09.14.1600';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -5647,6 +5647,41 @@
     ].join(';');
     btn.title = 'Abrir o Maestro (arrasta para mudar de sítio)';
 
+    /* ============ NA BARRA DO JOGO, SE HOUVER ONDE ====================
+     *
+     * O botão flutuava por cima do mapa e tapava coisas. O jogo tem uma barra
+     * de ícones à direita, ao lado do retrato — é onde outros scripts se
+     * põem, e é onde ele fica melhor (18/09).
+     *
+     * Se a barra não existir (o jogo mudou, ou é outra vista), fica como
+     * estava: a flutuar e arrastável. Não se perde o acesso ao painel por
+     * causa de uma questão de sítio. */
+    const naBarraDoJogo = (() => {
+      try {
+        /* A CAIXA DO RETRATO, no canto superior direito.
+         *
+         * É onde o Rafa o quis, ao lado dos outros ícones. Encontrada a
+         * apontar para o ponto que ele marcou: os candidatos óbvios eram
+         * todos outra coisa — a barra de actividades fica em cima ao centro,
+         * o menu principal é a coluna esquerda, e o `#ui_box` é o ecrã todo
+         * (18/09). */
+        const el = document.querySelector('.nui_right_box');
+        if (el) return el;
+      } catch (e) {}
+      return null;
+    })();
+
+    if (naBarraDoJogo) {
+      btn.style.cssText = [
+        'position:relative', 'display:inline-flex', 'align-items:center', 'gap:5px',
+        'background:#161d26', 'border:1px solid #28323f', 'border-radius:5px',
+        'color:#8493a5', 'font:600 10px/1 system-ui,-apple-system,"Segoe UI",sans-serif',
+        'letter-spacing:.12em', 'padding:5px 9px', 'margin:3px',
+        'cursor:pointer', 'user-select:none', 'z-index:10',
+      ].join(';');
+      btn.title = 'Abrir o Maestro';
+    }
+
     const luz = btn.querySelector('#maestro-btn-luz');
     luz.style.cssText = 'width:7px;height:7px;border-radius:50%;background:#5b6878;flex:0 0 auto';
 
@@ -5718,7 +5753,11 @@
     let sitio = null;
     try { sitio = JSON.parse(localStorage.getItem(BTN_POS_KEY) || 'null'); } catch (e) {}
 
-    if (sitio && Number.isFinite(sitio.left) && Number.isFinite(sitio.top)) {
+    /* Na barra do jogo não há posição a restaurar nem arrastar: o botão vive
+     * dentro dela, como os outros (18/09). */
+    if (naBarraDoJogo) {
+      /* nada a fazer */
+    } else if (sitio && Number.isFinite(sitio.left) && Number.isFinite(sitio.top)) {
       btn.style.left = Math.max(0, Math.min(window.innerWidth - 120, sitio.left)) + 'px';
       btn.style.top = Math.max(0, Math.min(window.innerHeight - 40, sitio.top)) + 'px';
       btn.style.right = 'auto';
@@ -5791,7 +5830,8 @@
       });
     } catch (e) {}
 
-    document.body.appendChild(btn);
+    if (naBarraDoJogo) naBarraDoJogo.appendChild(btn);
+    else document.body.appendChild(btn);
 
     const p = document.createElement('div');
     p.id = 'maestro-panel';
@@ -46853,6 +46893,25 @@ function makeReforcoModule(opts) {
     grupos: ['Defesa', 'Birras', 'Trirremes'],
     /* Margem de segurança: chegar a menos disto do impacto é arriscado. */
     margemSeg: 60,
+    /* ============ PARTILHADO ENTRE AS CONTAS ==========================
+     *
+     * Um ataque a uma cidade de qualquer conta do grupo é defendido por
+     * todas. Antes, cada conta só defendia as suas cidades — e uma multi
+     * sozinha raramente tem tropa que chegue (desenhado com o Rafa, 18/09).
+     *
+     * O objectivo divide-se pelas contas que conseguem chegar a tempo; a
+     * parte de quem não consegue reparte-se pelas outras. Se no fim não se
+     * atingir o objectivo, manda-se o que houver — mais vale alguma coisa.
+     *
+     * O envio é pelo ENCAIXE, a chegar um segundo antes do impacto: tropa
+     * que chega depois não defende nada. Por isso, uma cidade que não caiba
+     * na janela fica de fora — se a cidade cair e abrir revolta, é o apoio
+     * distribuído que trata dela, com horas para o fazer. */
+    partilhado: true,
+    /* Chegar este tanto de segundos ANTES do impacto. */
+    segundosAntes: 1,
+    /* O encaixe pode adiantar-se até isto; nunca atrasar. */
+    toleranciaAntes: 3,
   };
 
   function cfg() {
@@ -46860,6 +46919,82 @@ function makeReforcoModule(opts) {
     catch (e) { return Object.assign({}, DEFAULTS); }
   }
   function guardarCfg(c) { try { armazem.setItem(CFG_KEY, JSON.stringify(c)); } catch (e) {} }
+
+  /* ---------------- os ataques do grupo, partilhados ------------------- */
+  const caminhoAtaques = () => `reforcoAtaques/${mUw.Game.world_id}`;
+
+  /* Cada conta publica os ataques que lhe chegam. Uma cidade minha não é
+   * visível para as outras contas: sem isto, ninguém a podia defender. */
+  async function publicarAtaques(ataques) {
+    try {
+      const fb = mUw.__maestroFb;
+      if (!fb || !fb.url || !fb.url()) return;
+      const conta = String(mUw.Game.player_name || '?').replace(/[.#$[\]/:]/g, '_');
+      const d = {};
+      for (const a of (ataques || [])) {
+        const id = String(a.cid || a.id || '');
+        if (!id) continue;
+        d[id] = {
+          alvo: Number(a.alvo) || 0,
+          nome: String(a.alvoNome || a.alvo || ''),
+          chega: Number(a.chega) || 0,
+          conta: mUw.Game.player_name,
+        };
+      }
+      await fb.escrever(`${caminhoAtaques()}/${conta}`, {
+        quando: Math.floor(Date.now() / 1000), ataques: d,
+      });
+    } catch (e) { seErroDeCodigo(e, 'Reforco'); }
+  }
+
+  async function ataquesDoGrupo() {
+    const out = [];
+    try {
+      const fb = mUw.__maestroFb;
+      if (!fb || !fb.url || !fb.url()) return out;
+      const d = (await fb.ler(caminhoAtaques())) || {};
+      const agoraS = Math.floor(Date.now() / 1000);
+      for (const conta of Object.keys(d)) {
+        const x = d[conta] || {};
+        /* Uma publicação velha não é de confiança: a conta pode ter fechado. */
+        if (!x.quando || (agoraS - Number(x.quando)) > 1800) continue;
+        for (const cid of Object.keys(x.ataques || {})) {
+          const a = x.ataques[cid] || {};
+          if (!a.chega || Number(a.chega) <= agoraS) continue;    // já bateu
+          out.push({ cid, alvo: Number(a.alvo), nome: String(a.nome || a.alvo),
+            chega: Number(a.chega), conta: String(a.conta || conta) });
+        }
+      }
+    } catch (e) { seErroDeCodigo(e, 'Reforco'); }
+    return out;
+  }
+
+  /* A QUOTA DESTA CONTA.
+   *
+   * O objectivo divide-se pelas contas vivas do grupo. Quem não conseguir
+   * cumprir a sua parte publica isso, e as outras repartem o que falta.
+   *
+   * Sem saber quantas contas há, manda-se o objectivo inteiro: mais vale a
+   * mais do que a menos quando uma cidade está em risco. */
+  async function quotaDestaConta(objetivo) {
+    try {
+      const fb = mUw.__maestroFb;
+      if (!fb || !fb.url || !fb.url()) return objetivo;
+      const frota = (await fb.ler(`frota/${mUw.Game.world_id}`)) || {};
+      const agoraS = Math.floor(Date.now() / 1000);
+      let vivas = 0;
+      for (const k of Object.keys(frota)) {
+        const x = frota[k] || {};
+        if (x.quando && (agoraS - Number(x.quando)) < 3600) vivas++;
+      }
+      if (vivas <= 1) return objetivo;
+      const q = {};
+      for (const u of Object.keys(objetivo || {})) {
+        q[u] = Math.ceil(Number(objetivo[u]) / vivas);
+      }
+      return q;
+    } catch (e) { seErroDeCodigo(e, 'Reforco'); return objetivo; }
+  }
 
   function lerEnvios() {
     try { return JSON.parse(armazem.getItem(ENVIOS_KEY) || '{}'); } catch (e) { return {}; }
@@ -47436,6 +47571,30 @@ function makeReforcoModule(opts) {
     ctx0 = ctx;
     let ataques = await ataquesContraMim();
 
+    /* ============ OS ATAQUES DO GRUPO TODO ============================
+     *
+     * Publicam-se os que chegam às minhas cidades — as outras contas não as
+     * vêem — e leem-se os que chegam às delas. Assim as vinte contas defendem
+     * qualquer cidade do grupo, em vez de cada uma defender só as suas
+     * (18/09).
+     *
+     * O que vem de fora entra na mesma lista: daí para a frente é tudo
+     * tratado igual. */
+    if (c.partilhado) {
+      try {
+        await publicarAtaques(ataques);
+        const dosOutros = await ataquesDoGrupo();
+        const jaTenho = new Set(ataques.map((x) => String(x.cid || x.id || '')));
+        for (const x of dosOutros) {
+          if (jaTenho.has(String(x.cid))) continue;      // já o vejo eu
+          ataques.push({
+            cid: x.cid, alvo: x.alvo, alvoNome: x.nome, chega: x.chega,
+            deOutraConta: x.conta,
+          });
+        }
+      } catch (e) { seErroDeCodigo(e, 'Reforco'); }
+    }
+
     /* ============ NÃO SE DEFENDE DE SI PRÓPRIO ========================
      *
      * O farm dos deuses manda a main atacar as multis para render favor. Se o
@@ -47658,7 +47817,18 @@ function makeReforcoModule(opts) {
      *
      * Conta-se o que já lá está, incluindo o que este módulo mandou e ainda
      * vai a caminho. Sem isso, mandava-se duas vezes. */
-    const objetivo = c.objetivo || {};
+    /* A PARTE QUE TOCA A ESTA CONTA.
+     *
+     * O objectivo é por cidade atacada e divide-se pelas contas vivas: com
+     * vinte contas e 4500 espadachins de objectivo, cada uma manda 225. Quem
+     * não conseguir cumprir a sua parte deixa-a por mandar, e as outras, na
+     * passagem seguinte, vêem que falta e repartem o que resta.
+     *
+     * Sem saber quantas contas há, manda-se o objectivo inteiro: mais vale a
+     * mais do que a menos quando uma cidade está em risco (18/09). */
+    const objetivo = (c.partilhado
+      ? await quotaDestaConta(c.objetivo || {})
+      : (c.objetivo || {}));
     const falta = {};
     for (const a of ataques) {
       const id = Number(a.alvo);
@@ -47764,7 +47934,40 @@ function makeReforcoModule(opts) {
         const carga = plano.carga;
         const viagem = plano.viagem;
 
-        const r = await enviarApoio(origem.id, id, carga);
+        /* ============ PELO ENCAIXE, A CHEGAR ANTES DO IMPACTO ==========
+         *
+         * O envio normal parte já e chega quando chegar — normalmente muito
+         * antes, e aí o adversário vê a defesa a crescer e ajusta o ataque.
+         *
+         * Com o encaixe, a tropa chega um segundo antes de o ataque bater: o
+         * atacante não tem tempo de reagir. O desvio é só para ANTES, nunca
+         * depois — tropa que chega depois não defende nada (18/09).
+         *
+         * Se o encaixe não estiver disponível, envia-se como antes: mais vale
+         * a tropa chegar cedo do que não chegar. */
+        const chegadaAlvo = (Number(a.chega) || 0) - (Number(c.segundosAntes) || 1);
+        let r;
+        const enc = mUw.__maestroAgendarEncaixe;
+
+        if (enc && chegadaAlvo > Math.floor(Date.now() / 1000) + viagem) {
+          const ag = await enc({
+            origem: origem.id, alvo: id, unidades: carga, tipo: 'support',
+            chegada: chegadaAlvo,
+            toleranciaAntes: Number(c.toleranciaAntes) || 3,
+            toleranciaDepois: 0,
+            motivo: `reforço de ${nome}`,
+          });
+          r = ag && ag.ok
+            ? { ok: true, msg: 'agendado pelo encaixe' }
+            : { ok: false, msg: (ag && ag.msg) || 'o encaixe recusou' };
+          if (r.ok) {
+            const hh = new Date(chegadaAlvo * 1000).toLocaleTimeString();
+            log(`🛡️ Reforço: ${origem.name} → ${nome}, a chegar às ${hh} `
+              + '(um segundo antes do impacto).');
+          }
+        } else {
+          r = await enviarApoio(origem.id, id, carga);
+        }
 
         /* PARAR AO PRIMEIRO SINAL DE RECUSA.
          *
