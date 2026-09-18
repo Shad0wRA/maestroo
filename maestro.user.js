@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.14.1400
+// @version      2026.09.14.1500
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -3323,7 +3323,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.14.1400';
+  const MAESTRO_VERSAO = '2026.09.14.1500';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -4775,7 +4775,13 @@
    * Serve para dois módulos que se excluem: o apoio distribuído só faz sentido
    * onde há revoltas para aguentar, e o partir cercos só onde há cercos. Ter
    * os dois na barra em todo o lado confundia (18/09). */
+  /* Uma vez sabido, não se volta a perguntar: os modelos podem ser
+   * recarregados e ficar por instantes sem a colecção das revoltas, e isso
+   * faria um mundo de revolta parecer de cerco. */
+  let tipoSabido = '';
+
   function tipoDoMundo() {
+    if (tipoSabido) return tipoSabido;
     try {
       const m = uw.MM.getModels();
       /* SEM MODELOS NÃO SE SABE — e não saber não é "cerco".
@@ -4784,7 +4790,8 @@
        * o apoio distribuído desaparecer da barra num mundo de revolta
        * (apanhado em teste, 18/09). Sem resposta, deixa-se passar tudo. */
       if (!m || typeof m !== 'object' || !Object.keys(m).length) return '';
-      return m.MovementsRevoltDefender ? 'revolta' : 'cerco';
+      tipoSabido = m.MovementsRevoltDefender ? 'revolta' : 'cerco';
+      return tipoSabido;
     } catch (e) { return ''; }
   }
 
@@ -7317,6 +7324,24 @@
           + '<div id="mConteudo" class="mConteudo"></div></div>';
       }
       desenharRail(blocos);
+
+      /* O TIPO DO MUNDO SÓ SE SABE DEPOIS DE O JOGO CARREGAR.
+       *
+       * A barra é desenhada uma vez, no arranque — e nessa altura os modelos
+       * ainda não estão carregados, por isso o tipo não se sabe e passam os
+       * módulos todos. Ficava o Apoio na barra de um mundo de cerco, e
+       * reabrir o painel não o tirava porque a lista já estava feita (visto em
+       * jogo, 18/09).
+       *
+       * Quando o tipo passar a ser conhecido, a barra refaz-se uma vez. */
+      if (!tipoDoMundo()) {
+        let tentativas = 0;
+        const espreitar = setInterval(() => {
+          tentativas++;
+          if (tipoDoMundo()) { clearInterval(espreitar); desenhar(); return; }
+          if (tentativas > 60) clearInterval(espreitar);   // um minuto e desiste
+        }, 1000);
+      }
       if (moduloAberto) desenharModulo(moduloAberto);
       else desenharHoje();
     }
