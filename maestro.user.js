@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.14.0900
+// @version      2026.09.14.1100
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1280,6 +1280,150 @@
     } catch (e) { return ''; }
   }
 
+  /* ============ LIGAÇÃO ABERTA AO FIREBASE ==============================
+   *
+   * Até aqui, uma conta só sabia de uma mudança quando ia perguntar — e isso
+   * acontece na passagem do módulo, até dois minutos depois. Para coisas
+   * coordenadas (um alvo novo no apoio, um pedido de recursos) dois minutos é
+   * muito.
+   *
+   * O Firebase sabe avisar: mantém uma ligação aberta e manda o que mudou,
+   * sem ninguém perguntar. Usa-se o `EventSource` do próprio navegador — não
+   * há biblioteca nenhuma a acrescentar, e ele reconecta sozinho quando a
+   * ligação cai.
+   *
+   * O QUE ISTO NÃO É: não substitui a leitura. Quem recebe o aviso vai ler
+   * como sempre — a ligação só diz "há coisa nova", e a leitura continua a ser
+   * a fonte da verdade. Assim, se a ligação falhar ou trouxer uma mensagem
+   * repetida, o pior que acontece é uma leitura a mais.
+   *
+   * O ORÇAMENTO DE LIGAÇÕES. O plano gratuito do Firebase dá 100 ligações em
+   * simultâneo. Com vinte contas em três mundos, uma ligação por conta são 60
+   * — cabe, com folga estreita. Por isso: UMA ligação por conta, e um limite
+   * explícito no código. Quem quiser mais caminhos, junta-os debaixo do mesmo.
+   *
+   * O QUE PODE CORRER MAL, e o que se faz:
+   *   · a ligação cai              → o EventSource reconecta sozinho
+   *   · o servidor recusa          → desiste ao fim de algumas tentativas e
+   *                                  volta ao ritmo normal, sem partir nada
+   *   · mensagens repetidas        → não há problema: só se acorda um módulo
+   *   · o navegador não tem        → fica tudo como antes
+   *     EventSource
+   * ==================================================================== */
+  const LIGACOES_MAX = 1;
+  const ligacoes = new Map();
+  let ligacoesEstado = { abertas: 0, avisos: 0, ultimoAviso: 0, falhas: 0 };
+
+  function ligacaoAberta(caminho, aoMudar) {
+    try {
+      if (typeof uw.EventSource !== 'function') return null;
+      const base = firebaseUrl();
+      if (!base) return null;
+      if (ligacoes.has(caminho)) return ligacoes.get(caminho);
+      if (ligacoes.size >= LIGACOES_MAX) {
+        log('core', `Ligação aberta: já tenho ${ligacoes.size} — não abro mais (limite ${LIGACOES_MAX}).`);
+        return null;
+      }
+
+      const estado = { caminho, es: null, falhas: 0, desistiu: false, primeira: true };
+
+      const abrir = () => {
+        if (estado.desistiu) return;
+        try {
+          /* O `EventSource` manda `Accept: text/event-stream` sozinho, que é o
+           * que o Firebase precisa para transmitir em vez de responder. */
+          const es = new uw.EventSource(`${base}/${caminho}.json`);
+          estado.es = es;
+
+          es.addEventListener('put', (ev) => tratar(ev, 'put'));
+          es.addEventListener('patch', (ev) => tratar(ev, 'patch'));
+
+          /* O Firebase manda isto de vez em quando só para a ligação não
+           * morrer. Não traz dados. */
+          es.addEventListener('keep-alive', () => { estado.falhas = 0; });
+
+          /* O servidor fechou a ligação de propósito — regras, ou fim de
+           * sessão. Não vale a pena insistir. */
+          es.addEventListener('cancel', () => {
+            log('core', `Ligação aberta a ${caminho}: o servidor cancelou.`);
+            estado.desistiu = true;
+            try { es.close(); } catch (e) {}
+            ligacoes.delete(caminho);
+            ligacoesEstado.abertas = ligacoes.size;
+          });
+          es.addEventListener('auth_revoked', () => {
+            estado.desistiu = true;
+            try { es.close(); } catch (e) {}
+            ligacoes.delete(caminho);
+            ligacoesEstado.abertas = ligacoes.size;
+          });
+
+          es.onopen = () => {
+            estado.falhas = 0;
+            ligacoesEstado.abertas = ligacoes.size;
+          };
+
+          es.onerror = () => {
+            /* O EventSource reconecta sozinho. Só se conta para saber quando
+             * é que já não vale a pena. */
+            estado.falhas++;
+            ligacoesEstado.falhas++;
+            if (estado.falhas >= 10) {
+              log('core', `Ligação aberta a ${caminho}: falhou ${estado.falhas} vezes — desisto. `
+                + 'O Maestro continua a ler como antes.');
+              estado.desistiu = true;
+              try { es.close(); } catch (e) {}
+              ligacoes.delete(caminho);
+              ligacoesEstado.abertas = ligacoes.size;
+            }
+          };
+        } catch (e) { seErroDeCodigo(e, 'núcleo'); }
+      };
+
+      const tratar = (ev, tipo) => {
+        try {
+          /* A PRIMEIRA MENSAGEM É O ESTADO ACTUAL, NÃO UMA MUDANÇA.
+           *
+           * O Firebase manda sempre o conteúdo todo ao ligar. Tratá-la como
+           * mudança faria uma leitura a mais de cada vez que a ligação
+           * reconecta — e ela reconecta sozinha. */
+          if (estado.primeira) { estado.primeira = false; return; }
+
+          let d = null;
+          try { d = JSON.parse(ev.data || '{}'); } catch (e) { return; }
+
+          ligacoesEstado.avisos++;
+          ligacoesEstado.ultimoAviso = Date.now();
+
+          /* O que vem é `{path, data}`. Passa-se como está: quem recebe sabe
+           * o que fazer, e vai ler para confirmar. */
+          aoMudar({ tipo, caminho: String((d && d.path) || '/'), dados: d && d.data });
+        } catch (e) { seErroDeCodigo(e, 'núcleo'); }
+      };
+
+      abrir();
+      ligacoes.set(caminho, estado);
+      ligacoesEstado.abertas = ligacoes.size;
+      return estado;
+    } catch (e) { seErroDeCodigo(e, 'núcleo'); return null; }
+  }
+
+  function fecharLigacoes() {
+    for (const [k, e] of ligacoes) {
+      try { if (e.es) e.es.close(); } catch (x) {}
+      ligacoes.delete(k);
+    }
+    ligacoesEstado.abertas = 0;
+  }
+
+  try {
+    uw.__maestroLigacao = {
+      abrir: ligacaoAberta,
+      fechar: fecharLigacoes,
+      estado: () => Object.assign({}, ligacoesEstado),
+    };
+  } catch (e) {}
+
   /* Ler um caminho. Devolve o objecto, ou null se não houver nada. */
   async function fbLer(caminho) {
     const base = firebaseUrl();
@@ -1663,6 +1807,29 @@
    * conjunto é uma purificação. */
   let feiticosNosComandos = new Set();
 
+  /* A TROPA QUE VEM A CAMINHO DE CASA.
+   *
+   * Um apoio que regressa, uma esquiva que volta: quando chega, há tropa
+   * disponível que até aí contava como ausente. O reforço e o apoio ficavam a
+   * saber só na passagem seguinte — até dois minutos depois (18/09).
+   *
+   * Guarda-se o conjunto dos regressos em curso; o que sai do conjunto
+   * chegou. */
+  let regressosEmCurso = new Set();
+
+  function regressosAgora() {
+    const s = new Set();
+    try {
+      const mv = (uw.MM.getModels() || {}).MovementsUnits || {};
+      for (const k of Object.keys(mv)) {
+        const a = (mv[k] || {}).attributes || {};
+        if (!a.is_returning) continue;
+        s.add(String(a.id || a.command_id || ''));
+      }
+    } catch (e) {}
+    return s;
+  }
+
   function feiticosActivosAgora() {
     const s = new Set();
     try {
@@ -1716,6 +1883,25 @@
     for (const a of ataquesAChegar()) ataquesVistos.add(String(a.id));
 
     setInterval(() => {
+      /* A TROPA CHEGOU A CASA.
+       *
+       * Um regresso que sai da lista é tropa que já está em casa e pode ser
+       * usada. Quem a pode querer: o reforço, para defender; o apoio, para
+       * mandar; e a esquiva, que conta com ela. */
+      try {
+        const agoraR = regressosAgora();
+        if (regressosEmCurso.size) {
+          const chegaram = [...regressosEmCurso].filter((k) => !agoraR.has(k));
+          if (chegaram.length) {
+            acordar('reforco', 0);
+            acordar('apoio', 0);
+            acordar('esquiva', 0);
+            log('core', `🏠 ${chegaram.length} regresso(s) chegaram — há tropa disponível.`);
+          }
+        }
+        regressosEmCurso = agoraR;
+      } catch (e) { seErroDeCodigo(e, 'núcleo'); }
+
       /* UM FEITIÇO QUE DESAPARECE FOI PURIFICADO.
        *
        * Corre antes dos ataques porque é o caso urgente: repor um feitiço
@@ -3009,7 +3195,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.14.0900';
+  const MAESTRO_VERSAO = '2026.09.14.1100';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -43771,6 +43957,9 @@ function makeFrotaModule(opts) {
         </table>
       </div>
 
+      <div class="mEtiq" style="margin-top:11px;margin-bottom:4px">ligação ao Firebase</div>
+      <div id="frota-ligacao" style="font-size:11px;opacity:.75;margin-bottom:8px"></div>
+
       <div class="mEtiq" style="margin-top:11px;margin-bottom:4px">inventário</div>
       <div style="display:flex;gap:6px;margin-bottom:6px">
         <button class="frota-aba" data-aba="conta" style="cursor:pointer;font-size:11px">esta conta</button>
@@ -43780,6 +43969,29 @@ function makeFrotaModule(opts) {
       ${htmlApoio(contas)}
 
       <button id="frota-rec" style="cursor:pointer;font-size:12px;margin-top:6px">🔄 actualizar</button>`;
+
+    /* O ESTADO DA LIGAÇÃO ABERTA.
+     *
+     * Para se ver de relance se a conta está a receber avisos ou se caiu para
+     * o ritmo antigo (18/09). */
+    try {
+      const cx = container.querySelector('#frota-ligacao');
+      const lig = mUw.__maestroLigacao;
+      if (cx) {
+        if (!lig) { cx.textContent = 'não disponível nesta versão.'; }
+        else {
+          const e = lig.estado();
+          const ha = e.ultimoAviso
+            ? Math.round((Date.now() - e.ultimoAviso) / 1000) + 's'
+            : 'nenhum ainda';
+          cx.innerHTML = e.abertas
+            ? `<span style="color:#7ec27e">ligada</span> · ${e.avisos} aviso(s) recebido(s) `
+              + `· último há ${ha}${e.falhas ? ` · ${e.falhas} falha(s) pelo caminho` : ''}`
+            : '<span style="opacity:.7">sem ligação aberta — o Maestro lê como sempre, '
+              + 'só sem os avisos imediatos.</span>';
+        }
+      }
+    } catch (e) { seErroDeCodigo(e, 'Frota'); }
 
     /* As abas do inventário: esta conta ou a frota inteira. */
     try {
@@ -47534,6 +47746,24 @@ function makeExpansaoModule(opts) {
       /* O vigia dos ataques: acorda os módulos de reacção no instante em que
        * um ataque aparece, em vez de esperarem pela sua vez. */
       try { ligarVigiaDosAtaques(); } catch (e) { seErroDeCodigo(e, 'núcleo'); }
+
+      /* A LIGAÇÃO ABERTA À LISTA DO APOIO.
+       *
+       * É onde o tempo de reacção mais conta: pões um alvo na main e as vinte
+       * contas ficam a saber em segundos, em vez de até dois minutos.
+       *
+       * Uma ligação por conta — ver o orçamento em "LIGAÇÃO ABERTA AO
+       * FIREBASE". Quem receber o aviso vai LER como sempre; a ligação só diz
+       * que há coisa nova. */
+      try {
+        const lig = uw.__maestroLigacao;
+        if (lig) {
+          lig.abrir(`apoio/${WORLD}`, () => {
+            acordar('apoio', 0);
+            log('core', '📡 A lista do apoio mudou — acordei o módulo.');
+          });
+        }
+      } catch (e) { seErroDeCodigo(e, 'núcleo'); }
       startMaestro();
     } else {
       log('core', 'Pronto. Arranque automático desligado: carrega em "Iniciar" quando quiseres.');
