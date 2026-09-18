@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.14.0500
+// @version      2026.09.14.0600
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1654,20 +1654,33 @@
   const ataquesVistos = new Set();
   let vigiaLigado = false;
 
-  function ataquesAChegar() {
+  /* Os ataques que interessam: os que me chegam E os que eu mando.
+   *
+   * Os que chegam acordam a esquiva e os alertas. Os que eu mando acordam os
+   * feitiços, que lançam reforços nos meus próprios ataques — e um ataque de
+   * conquista, que leva colonizador, é o caso em que isso mais vale (17/09). */
+  function ataquesRelevantes() {
     const out = [];
     try {
       const mv = (uw.MM.getModels() || {}).MovementsUnits || {};
       const minhas = new Set(Object.keys(uw.ITowns.towns).map(Number));
+      const eu = Number(uw.Game.player_id);
       for (const k of Object.keys(mv)) {
         const a = (mv[k] || {}).attributes || {};
         if (!/attack/i.test(String(a.type || ''))) continue;
-        if (!minhas.has(Number(a.target_town_id))) continue;
-        if (Number(a.player_id) === Number(uw.Game.player_id)) continue;   // meu
-        out.push(a);
+
+        const chegaAMim = minhas.has(Number(a.target_town_id)) && Number(a.player_id) !== eu;
+        const saiDeMim = minhas.has(Number(a.home_town_id));
+        if (!chegaAMim && !saiDeMim) continue;
+
+        out.push(Object.assign({ __chegaAMim: chegaAMim, __saiDeMim: saiDeMim }, a));
       }
     } catch (e) {}
     return out;
+  }
+
+  function ataquesAChegar() {
+    return ataquesRelevantes().filter((a) => a.__chegaAMim);
   }
 
   function ligarVigiaDosAtaques() {
@@ -1680,7 +1693,7 @@
 
     setInterval(() => {
       try {
-        const agora = ataquesAChegar();
+        const agora = ataquesRelevantes();
         const novos = agora.filter((a) => !ataquesVistos.has(String(a.id)));
         if (!novos.length) return;
 
@@ -1697,13 +1710,22 @@
           } catch (e) {}
         }
 
-        /* Quem quer saber de um ataque novo. */
-        acordar('alertas', 0);
-        acordar('esquiva', 0);
-        acordar('reforco', 0);
-        acordar('feiticos', 0);
+        /* Cada tipo acorda quem precisa. */
+        const aChegar = novos.filter((a) => a.__chegaAMim).length;
+        const aSair = novos.filter((a) => a.__saiDeMim).length;
 
-        log('core', `⚡ ${novos.length} ataque(s) novo(s) — acordei os módulos de reacção.`);
+        if (aChegar) {
+          acordar('alertas', 0);
+          acordar('esquiva', 0);
+          acordar('reforco', 0);
+          acordar('feiticos', 0);
+        }
+        /* Um ataque MEU a sair: os feitiços podem querer reforçá-lo. */
+        if (aSair) acordar('feiticos', 0);
+
+        log('core', `⚡ ${aChegar ? `${aChegar} ataque(s) a chegar` : ''}`
+          + `${aChegar && aSair ? ' e ' : ''}`
+          + `${aSair ? `${aSair} ataque(s) meu(s) a sair` : ''} — acordei os módulos.`);
 
         /* Limpar o que já passou, para o conjunto não crescer sem fim. */
         if (ataquesVistos.size > 400) {
@@ -2938,7 +2960,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.14.0500';
+  const MAESTRO_VERSAO = '2026.09.14.0600';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -18733,10 +18755,35 @@ function makeFeiticosModule(opts) {
          * O que distingue: a origem é minha. */
         const minhasCidades = new Set((ctx.getMyTowns() || []).map((t) => Number(t.id)));
 
-        const meus = ((col && col[0] && col[0].models) || [])
-          .map((m) => m.attributes || {})
+        /* OS MODELOS TRAZEM O QUE A COLECÇÃO NÃO TRAZ.
+         *
+         * A colecção `MovementsUnits` é o que a página desenhou; os modelos
+         * são tudo o que o jogo carregou. Um ataque de conquista — `type`
+         * igual a `attack_takeover` — estava nos modelos e não na colecção, e
+         * o painel dizia "não tens ataques a caminho" com um colonizador a
+         * voar (visto em jogo, 17/09).
+         *
+         * Lêem-se os dois e junta-se, sem repetir. */
+        const vistos = new Set();
+        const juntar = (a) => {
+          const id = String(a.command_id || a.id || '');
+          if (!id || vistos.has(id)) return false;
+          vistos.add(id);
+          return true;
+        };
+
+        const daColeccao = ((col && col[0] && col[0].models) || []).map((m) => m.attributes || {});
+        const dosModelos = (() => {
+          try {
+            const mm = (mUw.MM.getModels() || {}).MovementsUnits || {};
+            return Object.keys(mm).map((k) => (mm[k] || {}).attributes || {});
+          } catch (e) { return []; }
+        })();
+
+        const meus = daColeccao.concat(dosModelos)
           .filter((a) => /attack/i.test(String(a.type || '')))
-          .filter((a) => minhasCidades.has(Number(a.home_town_id)));
+          .filter((a) => minhasCidades.has(Number(a.home_town_id)))
+          .filter(juntar);
 
         if (!meus.length) {
           return '<div style="opacity:.55;font-size:13px">Não tens ataques a caminho.</div>';
