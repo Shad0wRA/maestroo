@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.14.1300
+// @version      2026.09.14.1400
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -717,7 +717,7 @@
         + '&json=' + encodeURIComponent(JSON.stringify({
             target_id: Number(alvoId), town_id: Number(minhaCidade), nl_init: true }))
         + '&_=' + Date.now();
-      const r = await uw.fetch(url, {
+      const r = await pedirJogo(url, {
         headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
       }).then(lerRespostaComum);
       const j = (r && r.json && r.json.json) || (r && r.json) || {};
@@ -1013,7 +1013,7 @@
         + '&action=outer_units&h=' + uw.Game.csrfToken
         + '&json=' + encodeURIComponent(JSON.stringify({ town_id: t, nl_init: true }))
         + '&_=' + Date.now();
-      const r = await uw.fetch(url, {
+      const r = await pedirJogo(url, {
         headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
       }).then((x) => x.json());
 
@@ -1685,7 +1685,7 @@
 
     const texto = async (f) => {
       try {
-        const r = await uw.fetch('/data/' + f + '.txt', { cache: 'no-store' });
+        const r = await pedirJogo('/data/' + f + '.txt', { cache: 'no-store' });
         if (!r.ok) return null;
         const t = await r.text();
         return (t && t.length > 10) ? t : null;
@@ -2349,6 +2349,121 @@
     uw.__maestroTemCapitao = temCapitao;
   } catch (e) {}
 
+  /* ============ O BROKER: TODOS OS PEDIDOS PASSAM POR AQUI =============
+   *
+   * O `lerRespostaComum`, logo abaixo, trata do que vem DEPOIS de um pedido —
+   * incluindo o 429. Mas isso é reagir a um estrago já feito. O que faltava
+   * era controlar QUANDO os pedidos saem.
+   *
+   * Corrigi a mesma falha três vezes numa semana, sempre noutro sítio: o
+   * `infoDaCidade` com quatro ciclos a pedir ao mapa sem pausa; o botão do
+   * apoio a disparar dezenas de pedidos seguidos; a fundação a varrer o mapa
+   * e a trazer quarenta erros. Cada correcção foi um remendo local, e o quarto
+   * sítio havia de aparecer.
+   *
+   * Este é o sítio único. Quem pede ao jogo passa por aqui, e aqui garante-se:
+   *
+   *   · UM PEDIDO DE CADA VEZ. Nunca há dois a sair ao mesmo tempo, mesmo com
+   *     dois módulos a pedir. É o que evita as rajadas.
+   *
+   *   · UMA PAUSA ENTRE ELES, com uma variação ao acaso — o mesmo ritmo que
+   *     os módulos já usavam, agora aplicado a tudo.
+   *
+   *   · O TRAVÃO RESPEITADO ANTES DE PEDIR, não depois de levar 429. Com o
+   *     servidor travado, o pedido nem sai.
+   *
+   *   · PRIORIDADE. Um pedido da esquiva não espera atrás de trinta pedidos
+   *     da fundação. Quem tem pressa passa à frente.
+   *
+   * O que isto NÃO faz: não repete pedidos falhados nem interpreta respostas.
+   * Devolve o que o jogo respondeu, tal e qual — quem pediu é que sabe o que
+   * fazer com ele.
+   * ==================================================================== */
+  const PEDIDOS_PAUSA_MIN = 250;
+  const PEDIDOS_PAUSA_MAX = 600;
+
+  const filaDePedidos = [];
+  let filaACorrer = false;
+  let ultimoPedidoEm = 0;
+  const pedidosEstado = { feitos: 0, recusados: 0, naFila: 0, esperaTotalMs: 0 };
+
+  /* `prioridade`: 0 é o mais urgente. A esquiva e os alertas usam 0; o resto
+   * fica em 5; varrimentos grandes (mapa, fundação) em 9. */
+  function pedirAoJogo(url, opcoes, prioridade) {
+    return new Promise((resolve) => {
+      filaDePedidos.push({
+        url, opcoes: opcoes || {},
+        prioridade: Number.isFinite(prioridade) ? Number(prioridade) : 5,
+        posto: Date.now(),
+        resolve,
+      });
+      /* Estável dentro da mesma prioridade: quem chegou primeiro sai
+       * primeiro. */
+      filaDePedidos.sort((a, b) => (a.prioridade - b.prioridade) || (a.posto - b.posto));
+      pedidosEstado.naFila = filaDePedidos.length;
+      correrFila();
+    });
+  }
+
+  async function correrFila() {
+    if (filaACorrer) return;
+    filaACorrer = true;
+    try {
+      while (filaDePedidos.length) {
+        const p = filaDePedidos.shift();
+        pedidosEstado.naFila = filaDePedidos.length;
+        pedidosEstado.esperaTotalMs += (Date.now() - p.posto);
+
+        /* O TRAVÃO ANTES DE PEDIR.
+         *
+         * Com o servidor a recusar, mandar mais é insistir na parede. Quem
+         * pediu recebe uma resposta que diz isso, e trata como achar. */
+        let travado = false;
+        try { travado = !!(uw.__maestroServidorTravado && uw.__maestroServidorTravado()); } catch (e) {}
+        if (travado) {
+          pedidosEstado.recusados++;
+          p.resolve({ ok: false, status: 429, travado: true,
+            text: async () => '', json: async () => ({}) });
+          continue;
+        }
+
+        /* A pausa conta-se desde o pedido anterior: se já passou tempo que
+         * chegue, não se espera nada. */
+        const pausa = PEDIDOS_PAUSA_MIN
+          + Math.floor(Math.random() * (PEDIDOS_PAUSA_MAX - PEDIDOS_PAUSA_MIN));
+        const desdeOUltimo = Date.now() - ultimoPedidoEm;
+        if (ultimoPedidoEm && desdeOUltimo < pausa) {
+          await new Promise((r) => setTimeout(r, pausa - desdeOUltimo));
+        }
+
+        try {
+          const r = await uw.fetch(p.url, p.opcoes);
+          ultimoPedidoEm = Date.now();
+          pedidosEstado.feitos++;
+          p.resolve(r);
+        } catch (e) {
+          ultimoPedidoEm = Date.now();
+          p.resolve({ ok: false, status: 0, erro: e.message,
+            text: async () => '', json: async () => ({}) });
+        }
+      }
+    } finally {
+      filaACorrer = false;
+    }
+  }
+
+  try {
+    uw.__maestroPedir = pedirAoJogo;
+    uw.__maestroPedidosEstado = () => Object.assign({}, pedidosEstado);
+  } catch (e) {}
+
+  /* O próprio núcleo também passa pelo broker. Prioridade 3: o que ele pede é
+   * infraestrutura — a visão geral, o sinal de vida — nem urgente nem
+   * dispensável. */
+  function pedirJogo(url, opcoes) {
+    return pedirAoJogo(url, opcoes, 3);
+  }
+
   /* ============ O LEITOR COMUM DAS RESPOSTAS ==========================
    *
    * Vinte e dois módulos passam por um `lerResposta` próprio que trata do 429
@@ -2542,7 +2657,7 @@
         + '&action=command_overview&h=' + uw.Game.csrfToken
         + '&json=' + encodeURIComponent(JSON.stringify({ town_id: townId, nl_init: true }))
         + '&_=' + Date.now();
-      const resp = await uw.fetch(url, {
+      const resp = await pedirJogo(url, {
         headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
       });
       r = await lerRespostaComum(resp);      // trata do 429 e das páginas de erro
@@ -2884,7 +2999,7 @@
     }
 
     try {
-      const r = await uw.fetch(url, {
+      const r = await pedirJogo(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(corpo),
@@ -3208,7 +3323,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.14.1300';
+  const MAESTRO_VERSAO = '2026.09.14.1400';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -3324,7 +3439,7 @@
     } catch (e) {}
 
     try {
-      const r = await uw.fetch(FONTE_ATUALIZACAO + '?_=' + Date.now(), { cache: 'no-store' });
+      const r = await pedirJogo(FONTE_ATUALIZACAO + '?_=' + Date.now(), { cache: 'no-store' });
       if (!r.ok) return;
       const txt = await r.text();
       const nova = (txt.match(/@version\s+(\S+)/) || [])[1];
@@ -4263,7 +4378,7 @@
       let conteudo = f.content;
       if ((!conteudo || f.truncated) && f.raw_url) {
         try {
-          const rr = await uw.fetch(f.raw_url, { headers: { Accept: 'text/plain' } });
+          const rr = await pedirJogo(f.raw_url, { headers: { Accept: 'text/plain' } });
           if (rr.ok) conteudo = await rr.text();
         } catch (e) { seErroDeCodigo(e, 'núcleo'); }
       }
@@ -5066,7 +5181,7 @@
       const url = uw.location.origin + '/game/notify?town_id=' + Number(t)
         + '&action=delete_all&h=' + uw.Game.csrfToken;
 
-      const r = await uw.fetch(url, {
+      const r = await pedirJogo(url, {
         method: 'POST',
         headers: {
           'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
@@ -7361,6 +7476,23 @@
 // Este ficheiro é escrito como uma função-fábrica que devolve o objeto-módulo,
 // para ser registada no maestro: registerModule(makeConstrucaoModule(cfg)).
 function makeConstrucaoModule(opts) {
+
+  /* TODOS OS PEDIDOS AO JOGO PASSAM PELO BROKER.
+   *
+   * Um de cada vez, com pausa entre eles e o travão respeitado ANTES de pedir.
+   * É o que evita as rajadas que davam 429 — corrigi a mesma falha três vezes
+   * em sítios diferentes antes de haver um sítio só (18/09).
+   *
+   * Prioridade 5: trabalho normal */
+  function pedirJogo(url, opcoes) {
+    try {
+      const p = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroPedir;
+      if (p) return p(url, opcoes, 5);
+    } catch (e) {}
+    /* Sem broker (versão antiga a correr), pede-se como antes. */
+    return (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).fetch(url, opcoes);
+  }
+
   /* A caixa de confirmação do núcleo — o `confirm()` do navegador deixa de
    * funcionar se o utilizador marcar "não voltar a perguntar". */
   const perguntar = (t) => {
@@ -7764,7 +7896,7 @@ function makeConstrucaoModule(opts) {
         + '&action=index&h=' + uw.Game.csrfToken
         + '&json=' + encodeURIComponent(JSON.stringify({ town_id: Number(townId), nl_init: true }))
         + '&_=' + Date.now();
-      await uw.fetch(url, {
+      await pedirJogo(url, {
         headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
       }).then(lerResposta).catch(() => null);
       return true;
@@ -7877,7 +8009,7 @@ function makeConstrucaoModule(opts) {
       town_id: Number(townId), nl_init: true,
     };
     try {
-      const r = await uw.fetch(url, {
+      const r = await pedirJogo(url, {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8', 'x-requested-with': 'XMLHttpRequest' },
         credentials: 'include',
@@ -7946,7 +8078,7 @@ function makeConstrucaoModule(opts) {
     if (!GIST.id) return loadTemplatesLocal();
     try {
       const url = 'https://api.github.com/gists/' + GIST.id;
-      const r = await uw.fetch(url, { headers: cabecalhoGist() });
+      const r = await pedirJogo(url, { headers: cabecalhoGist() });
       const j = await r.json();
       const file = j.files && j.files[ficheiroGist()];
       if (!file) return loadTemplatesLocal();
@@ -7956,7 +8088,7 @@ function makeConstrucaoModule(opts) {
       let __txt = file.content;
       if ((!__txt || file.truncated) && file.raw_url) {
         try {
-          const __rr = await uw.fetch(file.raw_url, { headers: { Accept: 'text/plain' } });
+          const __rr = await pedirJogo(file.raw_url, { headers: { Accept: 'text/plain' } });
           if (__rr.ok) __txt = await __rr.text();
         } catch (e) { seErroDeCodigo(e, 'Construcao'); }
       }
@@ -8004,7 +8136,7 @@ function makeConstrucaoModule(opts) {
     try {
       const url = 'https://api.github.com/gists/' + GIST.id;
       const body = { files: { [ficheiroGist()]: { content: JSON.stringify(tpls, null, 2) } } };
-      const r = await uw.fetch(url, {
+      const r = await pedirJogo(url, {
         method: 'PATCH',
         headers: { 'Accept': 'application/vnd.github+json', 'Authorization': 'Bearer ' + GIST.token, 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -8093,7 +8225,7 @@ function makeConstrucaoModule(opts) {
     const url = uw.location.origin + '/game/frontend_bridge?town_id=' + Number(townId)
       + '&action=execute&h=' + uw.Game.csrfToken;
     try {
-      const r = await uw.fetch(url, {
+      const r = await pedirJogo(url, {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8', 'x-requested-with': 'XMLHttpRequest' },
         credentials: 'include',
@@ -8152,7 +8284,7 @@ function makeConstrucaoModule(opts) {
     const url = uw.location.origin + '/game/frontend_bridge?town_id=' + Number(townId)
       + '&action=execute&h=' + uw.Game.csrfToken;
     try {
-      const r = await uw.fetch(url, {
+      const r = await pedirJogo(url, {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8', 'x-requested-with': 'XMLHttpRequest' },
         credentials: 'include',
@@ -8302,7 +8434,7 @@ function makeConstrucaoModule(opts) {
                 + '&action=index&h=' + uw.Game.csrfToken
                 + '&json=' + encodeURIComponent(JSON.stringify({ town_id: Number(a.town_id), nl_init: true }))
                 + '&_=' + Date.now();
-              const rr = await uw.fetch(url2, {
+              const rr = await pedirJogo(url2, {
                 headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
               }).then(lerResposta);
               aplicarNotificacoes(rr);
@@ -9587,6 +9719,23 @@ function makeConstrucaoModule(opts) {
  * ========================================================================== */
 
 function makePesquisaModule(opts) {
+
+  /* TODOS OS PEDIDOS AO JOGO PASSAM PELO BROKER.
+   *
+   * Um de cada vez, com pausa entre eles e o travão respeitado ANTES de pedir.
+   * É o que evita as rajadas que davam 429 — corrigi a mesma falha três vezes
+   * em sítios diferentes antes de haver um sítio só (18/09).
+   *
+   * Prioridade 5: trabalho normal */
+  function pedirJogo(url, opcoes) {
+    try {
+      const p = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroPedir;
+      if (p) return p(url, opcoes, 5);
+    } catch (e) {}
+    /* Sem broker (versão antiga a correr), pede-se como antes. */
+    return (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).fetch(url, opcoes);
+  }
+
   /* A caixa de confirmação do núcleo — o `confirm()` do navegador deixa de
    * funcionar se o utilizador marcar "não voltar a perguntar". */
   const perguntar = (t) => {
@@ -9907,7 +10056,7 @@ function makePesquisaModule(opts) {
       arguments: { id: researchId }, town_id: Number(townId), nl_init: true,
     };
     try {
-      const r = await mUw.fetch(url, {
+      const r = await pedirJogo(url, {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8', 'x-requested-with': 'XMLHttpRequest' },
         credentials: 'include',
@@ -10007,7 +10156,7 @@ function makePesquisaModule(opts) {
     try { if (typeof t2 !== 'undefined' && t2 && t2.unref) t2.unref(); } catch (e) { seErroDeCodigo(e, 'Pesquisa'); }
     if (!GIST.id) return loadTemplatesLocal();
     try {
-      const r = await mUw.fetch('https://api.github.com/gists/' + GIST.id, { headers: cabecalhoGist() });
+      const r = await pedirJogo('https://api.github.com/gists/' + GIST.id, { headers: cabecalhoGist() });
       const j = await r.json();
       const file = j.files && j.files[ficheiroGist()];
       if (!file) return loadTemplatesLocal();
@@ -10059,7 +10208,7 @@ function makePesquisaModule(opts) {
     if (!GIST.id || !GIST.token) return { ok: false, msg: 'sem Gist id/token — guardado só localmente' };
     try {
       const body = { files: { [ficheiroGist()]: { content: JSON.stringify(t, null, 2) } } };
-      const r = await mUw.fetch('https://api.github.com/gists/' + GIST.id, {
+      const r = await pedirJogo('https://api.github.com/gists/' + GIST.id, {
         method: 'PATCH',
         headers: { 'Accept': 'application/vnd.github+json', 'Authorization': 'Bearer ' + GIST.token, 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -10097,7 +10246,7 @@ function makePesquisaModule(opts) {
     const url = mUw.location.origin + '/game/frontend_bridge?town_id=' + Number(townId)
       + '&action=execute&h=' + mUw.Game.csrfToken;
     try {
-      const r = await mUw.fetch(url, {
+      const r = await pedirJogo(url, {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8', 'x-requested-with': 'XMLHttpRequest' },
         credentials: 'include',
@@ -10614,6 +10763,23 @@ function makePesquisaModule(opts) {
  * ========================================================================== */
 
 function makeRecrutamentoModule(opts) {
+
+  /* TODOS OS PEDIDOS AO JOGO PASSAM PELO BROKER.
+   *
+   * Um de cada vez, com pausa entre eles e o travão respeitado ANTES de pedir.
+   * É o que evita as rajadas que davam 429 — corrigi a mesma falha três vezes
+   * em sítios diferentes antes de haver um sítio só (18/09).
+   *
+   * Prioridade 5: trabalho normal */
+  function pedirJogo(url, opcoes) {
+    try {
+      const p = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroPedir;
+      if (p) return p(url, opcoes, 5);
+    } catch (e) {}
+    /* Sem broker (versão antiga a correr), pede-se como antes. */
+    return (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).fetch(url, opcoes);
+  }
+
   /* A caixa de confirmação do núcleo — o `confirm()` do navegador deixa de
    * funcionar se o utilizador marcar "não voltar a perguntar". */
   const perguntar = (t) => {
@@ -10795,7 +10961,7 @@ function makeRecrutamentoModule(opts) {
           + '&action=index&h=' + mUw.Game.csrfToken
           + '&json=' + encodeURIComponent(JSON.stringify({ town_id: chave, nl_init: true }))
           + '&_=' + Date.now();
-        await mUw.fetch(url, {
+        await pedirJogo(url, {
           headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
         }).then((r) => r.text()).catch(() => null);
       }
@@ -10819,7 +10985,7 @@ function makeRecrutamentoModule(opts) {
           + '&action=index&h=' + mUw.Game.csrfToken
           + '&json=' + encodeURIComponent(JSON.stringify({ town_id: Number(townId), nl_init: true }))
           + '&_=' + Date.now();
-        const txt = await mUw.fetch(url, {
+        const txt = await pedirJogo(url, {
           headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
         }).then((r) => r.text());
         if (!txt) continue;
@@ -10964,7 +11130,7 @@ function makeRecrutamentoModule(opts) {
     try {
       const url = mUw.location.origin + '/game/frontend_bridge?town_id=' + Number(townId)
         + '&action=execute&h=' + mUw.Game.csrfToken;
-      const r = await mUw.fetch(url, {
+      const r = await pedirJogo(url, {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
                    'x-requested-with': 'XMLHttpRequest' },
@@ -11012,7 +11178,7 @@ function makeRecrutamentoModule(opts) {
     try {
       const url = mUw.location.origin + '/game/frontend_bridge?town_id=' + Number(townId)
         + '&action=execute&h=' + mUw.Game.csrfToken;
-      const r = await mUw.fetch(url, {
+      const r = await pedirJogo(url, {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
                    'x-requested-with': 'XMLHttpRequest' },
@@ -11284,7 +11450,7 @@ function makeRecrutamentoModule(opts) {
       + '&action=build&h=' + mUw.Game.csrfToken;
     const payload = { unit_id: unitId, amount: Number(amount), town_id: Number(townId), nl_init: true };
     try {
-      const r = await mUw.fetch(url, {
+      const r = await pedirJogo(url, {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8', 'x-requested-with': 'XMLHttpRequest' },
         credentials: 'include',
@@ -11788,7 +11954,7 @@ function makeRecrutamentoModule(opts) {
     const url = mUw.location.origin + '/game/frontend_bridge?town_id=' + Number(townId)
       + '&action=execute&h=' + mUw.Game.csrfToken;
     try {
-      const r = await mUw.fetch(url, {
+      const r = await pedirJogo(url, {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8', 'x-requested-with': 'XMLHttpRequest' },
         credentials: 'include',
@@ -12344,7 +12510,7 @@ function makeRecrutamentoModule(opts) {
 
     if (!GIST.id) return loadLocal();
     try {
-      const r = await mUw.fetch('https://api.github.com/gists/' + GIST.id, { headers: cabecalhoGist() });
+      const r = await pedirJogo('https://api.github.com/gists/' + GIST.id, { headers: cabecalhoGist() });
       const j = await r.json();
       const f = j.files && j.files[ficheiroGist()];
       if (!f) return loadLocal();
@@ -12413,7 +12579,7 @@ function makeRecrutamentoModule(opts) {
      * `grepoRecruta_templates_v1` com o sufixo do perfil. */
     return { ok: true, msg: 'guardado nesta conta' };
     try {
-      const r = await mUw.fetch('https://api.github.com/gists/' + GIST.id, {
+      const r = await pedirJogo('https://api.github.com/gists/' + GIST.id, {
         method: 'PATCH',
         headers: { 'Accept': 'application/vnd.github+json', 'Authorization': 'Bearer ' + GIST.token, 'Content-Type': 'application/json' },
         body: JSON.stringify({ files: { [ficheiroGist()]: { content: JSON.stringify(t, null, 2) } } }),
@@ -13853,6 +14019,23 @@ function makeRecrutamentoModule(opts) {
  * ========================================================================== */
 
 function makeHeroisModule(opts) {
+
+  /* TODOS OS PEDIDOS AO JOGO PASSAM PELO BROKER.
+   *
+   * Um de cada vez, com pausa entre eles e o travão respeitado ANTES de pedir.
+   * É o que evita as rajadas que davam 429 — corrigi a mesma falha três vezes
+   * em sítios diferentes antes de haver um sítio só (18/09).
+   *
+   * Prioridade 5: trabalho normal */
+  function pedirJogo(url, opcoes) {
+    try {
+      const p = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroPedir;
+      if (p) return p(url, opcoes, 5);
+    } catch (e) {}
+    /* Sem broker (versão antiga a correr), pede-se como antes. */
+    return (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).fetch(url, opcoes);
+  }
+
   /* Ler a resposta do jogo. Cada módulo tem a sua cópia porque não alcança a
    * do núcleo. */
   async function lerResposta(resposta) {
@@ -13991,7 +14174,7 @@ function makeHeroisModule(opts) {
       const url = mUw.location.origin + '/game/frontend_bridge?town_id=' + Number(t)
         + '&action=execute&h=' + mUw.Game.csrfToken;
 
-      const r = await mUw.fetch(url, {
+      const r = await pedirJogo(url, {
         method: 'POST',
         headers: {
           'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
@@ -14125,7 +14308,7 @@ function makeHeroisModule(opts) {
         }))
         + '&_=' + Date.now();
 
-      const r = await mUw.fetch(url, {
+      const r = await pedirJogo(url, {
         headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
       });
       const txt = await r.text();
@@ -14248,7 +14431,7 @@ function makeHeroisModule(opts) {
       arguments: args, town_id: Number(townId), nl_init: true,
     };
     try {
-      const resp = await mUw.fetch(url, {
+      const resp = await pedirJogo(url, {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8', 'x-requested-with': 'XMLHttpRequest' },
         credentials: 'include',
@@ -15244,7 +15427,7 @@ function makeHeroisModule(opts) {
     try { if (typeof t2 !== 'undefined' && t2 && t2.unref) t2.unref(); } catch (e) { seErroDeCodigo(e, 'Herois'); }
     if (!GIST.id) return loadLocal();
     try {
-      const r = await mUw.fetch('https://api.github.com/gists/' + GIST.id, { headers: cabecalhoGist() });
+      const r = await pedirJogo('https://api.github.com/gists/' + GIST.id, { headers: cabecalhoGist() });
       const j = await r.json();
       const f = j.files && j.files[ficheiroGist()];
       if (!f) return loadLocal();
@@ -15295,7 +15478,7 @@ function makeHeroisModule(opts) {
     saveLocal(c);
     if (!GIST.id || !GIST.token) return { ok: false, msg: 'sem Gist id/token — guardado só localmente' };
     try {
-      const r = await mUw.fetch('https://api.github.com/gists/' + GIST.id, {
+      const r = await pedirJogo('https://api.github.com/gists/' + GIST.id, {
         method: 'PATCH',
         headers: { 'Accept': 'application/vnd.github+json', 'Authorization': 'Bearer ' + GIST.token, 'Content-Type': 'application/json' },
         body: JSON.stringify({ files: { [ficheiroGist()]: { content: JSON.stringify(c, null, 2) } } }),
@@ -15757,6 +15940,23 @@ function makeHeroisModule(opts) {
  *  há recompensa por recolher.
  * ========================================================================= */
 function makeBandidosModule(opts) {
+
+  /* TODOS OS PEDIDOS AO JOGO PASSAM PELO BROKER.
+   *
+   * Um de cada vez, com pausa entre eles e o travão respeitado ANTES de pedir.
+   * É o que evita as rajadas que davam 429 — corrigi a mesma falha três vezes
+   * em sítios diferentes antes de haver um sítio só (18/09).
+   *
+   * Prioridade 5: trabalho normal */
+  function pedirJogo(url, opcoes) {
+    try {
+      const p = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroPedir;
+      if (p) return p(url, opcoes, 5);
+    } catch (e) {}
+    /* Sem broker (versão antiga a correr), pede-se como antes. */
+    return (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).fetch(url, opcoes);
+  }
+
   /* Ler a resposta do jogo. Cada módulo tem a sua cópia porque não alcança a
    * do núcleo. */
   async function lerResposta(resposta) {
@@ -15820,7 +16020,7 @@ function makeBandidosModule(opts) {
         + '&action=index&h=' + mUw.Game.csrfToken
         + '&json=' + encodeURIComponent(JSON.stringify({
             island_id: Number(p.island_id), town_id: base, nl_init: true }));
-      const r = await mUw.fetch(url, {
+      const r = await pedirJogo(url, {
         headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
       }).then(lerResposta);
 
@@ -15860,7 +16060,7 @@ function makeBandidosModule(opts) {
       const jogador = Number(mUw.Game.player_id);
       const url = mUw.location.origin + '/game/frontend_bridge?town_id=' + Number(townId)
         + '&action=execute&h=' + mUw.Game.csrfToken;
-      const r = await mUw.fetch(url, {
+      const r = await pedirJogo(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
                    'x-requested-with': 'XMLHttpRequest' },
@@ -16137,6 +16337,23 @@ function makeBandidosModule(opts) {
  *  tropa outra vez.
  * ========================================================================= */
 function makeSentinelasModule(opts) {
+
+  /* TODOS OS PEDIDOS AO JOGO PASSAM PELO BROKER.
+   *
+   * Um de cada vez, com pausa entre eles e o travão respeitado ANTES de pedir.
+   * É o que evita as rajadas que davam 429 — corrigi a mesma falha três vezes
+   * em sítios diferentes antes de haver um sítio só (18/09).
+   *
+   * Prioridade 8: leitura em massa, pode esperar */
+  function pedirJogo(url, opcoes) {
+    try {
+      const p = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroPedir;
+      if (p) return p(url, opcoes, 8);
+    } catch (e) {}
+    /* Sem broker (versão antiga a correr), pede-se como antes. */
+    return (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).fetch(url, opcoes);
+  }
+
   /* Quanto se espera antes de repor uma sentinela que não se vê. */
   const ESPERA_REPOR = 12 * 3600;
   let mUw = null;
@@ -16307,7 +16524,7 @@ function makeSentinelasModule(opts) {
         + '&action=index&h=' + mUw.Game.csrfToken
         + '&json=' + encodeURIComponent(JSON.stringify({
             island_id: Number(islandId), town_id: Number(base), nl_init: true }));
-      const r = await mUw.fetch(url, {
+      const r = await pedirJogo(url, {
         headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
       }).then(lerResposta);
 
@@ -16416,7 +16633,7 @@ function makeSentinelasModule(opts) {
       corpo.town_id = Number(origem);
       corpo.nl_init = true;
 
-      const r = await mUw.fetch(url, {
+      const r = await pedirJogo(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
                    'x-requested-with': 'XMLHttpRequest' },
@@ -16533,7 +16750,7 @@ function makeSentinelasModule(opts) {
           + '&action=get_chunks&h=' + mUw.Game.csrfToken
           + '&json=' + encodeURIComponent(JSON.stringify({
               chunks: [{ x: cx, y: cy, timestamp: 0 }], town_id: Number(minhaCidade.id), nl_init: true }));
-        const r0 = await mUw.fetch(u0, {
+        const r0 = await pedirJogo(u0, {
           headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
         }).then(lerResposta);
         const d0 = (r0 && r0.json && r0.json.data) || {};
@@ -16723,6 +16940,23 @@ function makeSentinelasModule(opts) {
  *  raramente são o que se quer.
  * ========================================================================= */
 function makeDiariaModule(opts) {
+
+  /* TODOS OS PEDIDOS AO JOGO PASSAM PELO BROKER.
+   *
+   * Um de cada vez, com pausa entre eles e o travão respeitado ANTES de pedir.
+   * É o que evita as rajadas que davam 429 — corrigi a mesma falha três vezes
+   * em sítios diferentes antes de haver um sítio só (18/09).
+   *
+   * Prioridade 5: trabalho normal */
+  function pedirJogo(url, opcoes) {
+    try {
+      const p = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroPedir;
+      if (p) return p(url, opcoes, 5);
+    } catch (e) {}
+    /* Sem broker (versão antiga a correr), pede-se como antes. */
+    return (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).fetch(url, opcoes);
+  }
+
   let mUw = null;
   let mWorld = '';
 
@@ -16785,7 +17019,7 @@ function makeDiariaModule(opts) {
       const t = Number(mUw.Game.townId);
       const url = mUw.location.origin + '/game/frontend_bridge?town_id=' + t
         + '&action=execute&h=' + mUw.Game.csrfToken;
-      const r = await mUw.fetch(url, {
+      const r = await pedirJogo(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
                    'x-requested-with': 'XMLHttpRequest' },
@@ -17032,6 +17266,23 @@ function makeDiariaModule(opts) {
  *    5. passar à cidade seguinte
  * ========================================================================= */
 function makeFabricaNCModule(opts) {
+
+  /* TODOS OS PEDIDOS AO JOGO PASSAM PELO BROKER.
+   *
+   * Um de cada vez, com pausa entre eles e o travão respeitado ANTES de pedir.
+   * É o que evita as rajadas que davam 429 — corrigi a mesma falha três vezes
+   * em sítios diferentes antes de haver um sítio só (18/09).
+   *
+   * Prioridade 5: trabalho normal */
+  function pedirJogo(url, opcoes) {
+    try {
+      const p = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroPedir;
+      if (p) return p(url, opcoes, 5);
+    } catch (e) {}
+    /* Sem broker (versão antiga a correr), pede-se como antes. */
+    return (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).fetch(url, opcoes);
+  }
+
   let mUw = null;
   let mWorld = '';
 
@@ -17230,7 +17481,7 @@ function makeFabricaNCModule(opts) {
     try {
       const url = mUw.location.origin + '/game/town_info?town_id=' + Number(origem)
         + '&action=trade&h=' + mUw.Game.csrfToken;
-      const r = await mUw.fetch(url, {
+      const r = await pedirJogo(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
                    'x-requested-with': 'XMLHttpRequest' },
@@ -17255,7 +17506,7 @@ function makeFabricaNCModule(opts) {
     try {
       const url = mUw.location.origin + '/game/building_docks?town_id=' + Number(townId)
         + '&action=build&h=' + mUw.Game.csrfToken;
-      const r = await mUw.fetch(url, {
+      const r = await pedirJogo(url, {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
                    'x-requested-with': 'XMLHttpRequest' },
@@ -17719,7 +17970,7 @@ function makeFabricaNCModule(opts) {
         if (!jaActivo && favor >= 60) {
           const url = mUw.location.origin + '/game/frontend_bridge?town_id=' + Number(alvo.id)
             + '&action=execute&h=' + mUw.Game.csrfToken;
-          const rf = await mUw.fetch(url, {
+          const rf = await pedirJogo(url, {
             method: 'POST',
             headers: { 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
                        'x-requested-with': 'XMLHttpRequest' },
@@ -17871,6 +18122,23 @@ function makeFabricaNCModule(opts) {
  *  hipótese de uma apanhar a janela.
  * ========================================================================= */
 function makeFeiticosModule(opts) {
+
+  /* TODOS OS PEDIDOS AO JOGO PASSAM PELO BROKER.
+   *
+   * Um de cada vez, com pausa entre eles e o travão respeitado ANTES de pedir.
+   * É o que evita as rajadas que davam 429 — corrigi a mesma falha três vezes
+   * em sítios diferentes antes de haver um sítio só (18/09).
+   *
+   * Prioridade 1: reage a ataques */
+  function pedirJogo(url, opcoes) {
+    try {
+      const p = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroPedir;
+      if (p) return p(url, opcoes, 1);
+    } catch (e) {}
+    /* Sem broker (versão antiga a correr), pede-se como antes. */
+    return (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).fetch(url, opcoes);
+  }
+
   let mUw = null;
   let mWorld = '';
 
@@ -18001,7 +18269,7 @@ function makeFeiticosModule(opts) {
     try {
       const url = mUw.location.origin + '/game/frontend_bridge?town_id=' + Number(deCidade)
         + '&action=execute&h=' + mUw.Game.csrfToken;
-      const r = await mUw.fetch(url, {
+      const r = await pedirJogo(url, {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
                    'x-requested-with': 'XMLHttpRequest' },
@@ -18044,7 +18312,7 @@ function makeFeiticosModule(opts) {
     try {
       const url = mUw.location.origin + '/game/frontend_bridge?town_id=' + Number(deCidade)
         + '&action=execute&h=' + mUw.Game.csrfToken;
-      const r = await mUw.fetch(url, {
+      const r = await pedirJogo(url, {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
                    'x-requested-with': 'XMLHttpRequest' },
@@ -18233,7 +18501,7 @@ function makeFeiticosModule(opts) {
     try {
       const url = mUw.location.origin + '/game/report?town_id=' + Number(townId)
         + '&action=view&h=' + mUw.Game.csrfToken;
-      const r = await mUw.fetch(url, {
+      const r = await pedirJogo(url, {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
                    'x-requested-with': 'XMLHttpRequest' },
@@ -19732,6 +20000,23 @@ function makePartirCercoModule(opts) {
 }
 
 function makeAldeiasModule(opts) {
+
+  /* TODOS OS PEDIDOS AO JOGO PASSAM PELO BROKER.
+   *
+   * Um de cada vez, com pausa entre eles e o travão respeitado ANTES de pedir.
+   * É o que evita as rajadas que davam 429 — corrigi a mesma falha três vezes
+   * em sítios diferentes antes de haver um sítio só (18/09).
+   *
+   * Prioridade 5: trabalho normal */
+  function pedirJogo(url, opcoes) {
+    try {
+      const p = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroPedir;
+      if (p) return p(url, opcoes, 5);
+    } catch (e) {}
+    /* Sem broker (versão antiga a correr), pede-se como antes. */
+    return (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).fetch(url, opcoes);
+  }
+
   /* A caixa de confirmação do núcleo — o `confirm()` do navegador deixa de
    * funcionar se o utilizador marcar "não voltar a perguntar". */
   const perguntar = (t) => {
@@ -19988,7 +20273,7 @@ function makeAldeiasModule(opts) {
             known_data: { models: [], collections: [], templates: [] },
             arguments: {}, town_id: Number(townId), nl_init: true,
           })) + '&_=' + Date.now();
-      const r = await mUw.fetch(url, { headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include' })
+      const r = await pedirJogo(url, { headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include' })
         .then(lerResposta);
       aplicarNotificacoes(r);
 
@@ -20023,7 +20308,7 @@ function makeAldeiasModule(opts) {
       nl_init: true,
     };
     try {
-      const r = await mUw.fetch(url, {
+      const r = await pedirJogo(url, {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8', 'x-requested-with': 'XMLHttpRequest' },
         credentials: 'include',
@@ -20051,7 +20336,7 @@ function makeAldeiasModule(opts) {
       town_id: Number(townId), nl_init: true,
     };
     try {
-      const r = await mUw.fetch(url, {
+      const r = await pedirJogo(url, {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8', 'x-requested-with': 'XMLHttpRequest' },
         credentials: 'include',
@@ -20288,7 +20573,7 @@ function makeAldeiasModule(opts) {
     const url = mUw.location.origin + '/game/frontend_bridge?town_id=' + Number(townId)
       + '&action=execute&h=' + mUw.Game.csrfToken;
     try {
-      const d = await mUw.fetch(url, {
+      const d = await pedirJogo(url, {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8', 'x-requested-with': 'XMLHttpRequest' },
         credentials: 'include',
@@ -20486,7 +20771,7 @@ function makeAldeiasModule(opts) {
       town_id: Number(townId), nl_init: true,
     };
     try {
-      const r = await mUw.fetch(url, {
+      const r = await pedirJogo(url, {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8', 'x-requested-with': 'XMLHttpRequest' },
         credentials: 'include',
@@ -21457,6 +21742,23 @@ function makeAldeiasModule(opts) {
  * ========================================================================== */
 
 function makeAlertasModule(opts) {
+
+  /* TODOS OS PEDIDOS AO JOGO PASSAM PELO BROKER.
+   *
+   * Um de cada vez, com pausa entre eles e o travão respeitado ANTES de pedir.
+   * É o que evita as rajadas que davam 429 — corrigi a mesma falha três vezes
+   * em sítios diferentes antes de haver um sítio só (18/09).
+   *
+   * Prioridade 0: responder a ataques não espera por nada */
+  function pedirJogo(url, opcoes) {
+    try {
+      const p = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroPedir;
+      if (p) return p(url, opcoes, 0);
+    } catch (e) {}
+    /* Sem broker (versão antiga a correr), pede-se como antes. */
+    return (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).fetch(url, opcoes);
+  }
+
   let semAdmAte = 0;
   const marcarSemAdministrador = () => { semAdmAte = Date.now() + 30 * 60 * 1000; };
   /* Sabe-se à partida pelo modelo `PremiumFeatures`; a marca de 30 minutos
@@ -21896,7 +22198,7 @@ function makeAlertasModule(opts) {
         + '&action=get_chunks&h=' + mUw.Game.csrfToken
         + '&json=' + encodeURIComponent(JSON.stringify({
             chunks: [{ x: cx, y: cy, timestamp: 0 }], town_id: Number(townIdBase), nl_init: true }));
-      const r = await mUw.fetch(url, { headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include' })
+      const r = await pedirJogo(url, { headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include' })
         .then(lerResposta);
       const d = (r && r.json && r.json.data) || {};
       const bloco = d[0] || d['0'];
@@ -22757,6 +23059,23 @@ function makeAlertasModule(opts) {
  * ========================================================================== */
 
 function makeDeusesModule(opts) {
+
+  /* TODOS OS PEDIDOS AO JOGO PASSAM PELO BROKER.
+   *
+   * Um de cada vez, com pausa entre eles e o travão respeitado ANTES de pedir.
+   * É o que evita as rajadas que davam 429 — corrigi a mesma falha três vezes
+   * em sítios diferentes antes de haver um sítio só (18/09).
+   *
+   * Prioridade 5: trabalho normal */
+  function pedirJogo(url, opcoes) {
+    try {
+      const p = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroPedir;
+      if (p) return p(url, opcoes, 5);
+    } catch (e) {}
+    /* Sem broker (versão antiga a correr), pede-se como antes. */
+    return (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).fetch(url, opcoes);
+  }
+
   opts = opts || {};
 
   /* Nome do ficheiro no Gist, COM o mundo.
@@ -23152,7 +23471,7 @@ function makeDeusesModule(opts) {
     try { if (typeof t2 !== 'undefined' && t2 && t2.unref) t2.unref(); } catch (e) { seErroDeCodigo(e, 'Deuses'); }
     if (!GIST.id) return cfgLocal();
     try {
-      const r = await mUw.fetch('https://api.github.com/gists/' + GIST.id, { headers: cabecalhoGist() });
+      const r = await pedirJogo('https://api.github.com/gists/' + GIST.id, { headers: cabecalhoGist() });
       const j = await r.json();
       const f = j.files && j.files[ficheiroGist()];
       if (!f) return cfgLocal();
@@ -23193,7 +23512,7 @@ function makeDeusesModule(opts) {
     guardarLocal(c);
     if (!GIST.id || !GIST.token) return { ok: false, msg: 'sem Gist id/token — guardado só localmente' };
     try {
-      const r = await mUw.fetch('https://api.github.com/gists/' + GIST.id, {
+      const r = await pedirJogo('https://api.github.com/gists/' + GIST.id, {
         method: 'PATCH',
         headers: { 'Accept': 'application/vnd.github+json', 'Authorization': 'Bearer ' + GIST.token, 'Content-Type': 'application/json' },
         body: JSON.stringify({ files: { [ficheiroGist()]: { content: JSON.stringify(c, null, 2) } } }),
@@ -23280,7 +23599,7 @@ function makeDeusesModule(opts) {
     const url = mUw.location.origin + '/game/building_temple?town_id=' + Number(townId)
       + '&action=change_god&h=' + mUw.Game.csrfToken;
     try {
-      const r = await mUw.fetch(url, {
+      const r = await pedirJogo(url, {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8', 'x-requested-with': 'XMLHttpRequest' },
         credentials: 'include',
@@ -24371,7 +24690,7 @@ function makeDeusesModule(opts) {
     try {
       let towns = guardado;
       if (!towns) {
-        const r = await mUw.fetch(url, { headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include' })
+        const r = await pedirJogo(url, { headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include' })
           .then(lerResposta);
         const d = (r && r.json && r.json.data) || (r && r.json) || {};
         const bloco = d[0] || d['0'];
@@ -24579,7 +24898,7 @@ function makeDeusesModule(opts) {
     payload.town_id = Number(origemId);
     payload.nl_init = true;
     try {
-      const r = await mUw.fetch(url, {
+      const r = await pedirJogo(url, {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8', 'x-requested-with': 'XMLHttpRequest' },
         credentials: 'include',
@@ -25758,6 +26077,23 @@ function makeDeusesModule(opts) {
  * ========================================================================== */
 
 function makeEsquivaModule(opts) {
+
+  /* TODOS OS PEDIDOS AO JOGO PASSAM PELO BROKER.
+   *
+   * Um de cada vez, com pausa entre eles e o travão respeitado ANTES de pedir.
+   * É o que evita as rajadas que davam 429 — corrigi a mesma falha três vezes
+   * em sítios diferentes antes de haver um sítio só (18/09).
+   *
+   * Prioridade 0: responder a ataques não espera por nada */
+  function pedirJogo(url, opcoes) {
+    try {
+      const p = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroPedir;
+      if (p) return p(url, opcoes, 0);
+    } catch (e) {}
+    /* Sem broker (versão antiga a correr), pede-se como antes. */
+    return (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).fetch(url, opcoes);
+  }
+
   opts = opts || {};
 
   const CFG_KEY = 'grepoEsquiva_cfg_v1';
@@ -26496,7 +26832,7 @@ function makeEsquivaModule(opts) {
           + '&action=index&h=' + mUw.Game.csrfToken
           + '&json=' + encodeURIComponent(JSON.stringify({ town_id: Number(townId), nl_init: true }))
           + '&_=' + Date.now();
-        const txt = await mUw.fetch(url, {
+        const txt = await pedirJogo(url, {
           headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
         }).then((r) => r.text());
         if (!txt) continue;
@@ -26976,7 +27312,7 @@ function makeEsquivaModule(opts) {
   /* ---------------------- pedidos --------------------------------------- */
   async function post(url, payload) {
     try {
-      const r = await mUw.fetch(url, {
+      const r = await pedirJogo(url, {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8', 'x-requested-with': 'XMLHttpRequest' },
         credentials: 'include',
@@ -27084,7 +27420,7 @@ function makeEsquivaModule(opts) {
         + '&action=get_chunks&h=' + mUw.Game.csrfToken
         + '&json=' + encodeURIComponent(JSON.stringify({
             chunks: [{ x: cx, y: cy, timestamp: 0 }], town_id: Number(townIdBase), nl_init: true }));
-      const r = await mUw.fetch(url, { headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include' })
+      const r = await pedirJogo(url, { headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include' })
         .then(lerResposta);
       const d = (r && r.json && r.json.data) || (r && r.json) || {};
       const bloco = d[0] || d['0'];
@@ -28637,6 +28973,23 @@ function makeEsquivaModule(opts) {
  * ========================================================================== */
 
 function makeCulturaModule(opts) {
+
+  /* TODOS OS PEDIDOS AO JOGO PASSAM PELO BROKER.
+   *
+   * Um de cada vez, com pausa entre eles e o travão respeitado ANTES de pedir.
+   * É o que evita as rajadas que davam 429 — corrigi a mesma falha três vezes
+   * em sítios diferentes antes de haver um sítio só (18/09).
+   *
+   * Prioridade 5: trabalho normal */
+  function pedirJogo(url, opcoes) {
+    try {
+      const p = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroPedir;
+      if (p) return p(url, opcoes, 5);
+    } catch (e) {}
+    /* Sem broker (versão antiga a correr), pede-se como antes. */
+    return (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).fetch(url, opcoes);
+  }
+
   opts = opts || {};
 
   // Endpoint confirmado por captura para a PROCISSÃO:
@@ -28925,7 +29278,7 @@ function makeCulturaModule(opts) {
     const url = mUw.location.origin + '/game/' + controlador
       + '?town_id=' + Number(townId) + '&action=' + ACAO + '&h=' + mUw.Game.csrfToken;
     try {
-      const r = await mUw.fetch(url, {
+      const r = await pedirJogo(url, {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8', 'x-requested-with': 'XMLHttpRequest' },
         credentials: 'include',
@@ -29209,6 +29562,23 @@ function makeCulturaModule(opts) {
  * ========================================================================== */
 
 function makeGrutaModule(opts) {
+
+  /* TODOS OS PEDIDOS AO JOGO PASSAM PELO BROKER.
+   *
+   * Um de cada vez, com pausa entre eles e o travão respeitado ANTES de pedir.
+   * É o que evita as rajadas que davam 429 — corrigi a mesma falha três vezes
+   * em sítios diferentes antes de haver um sítio só (18/09).
+   *
+   * Prioridade 5: trabalho normal */
+  function pedirJogo(url, opcoes) {
+    try {
+      const p = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroPedir;
+      if (p) return p(url, opcoes, 5);
+    } catch (e) {}
+    /* Sem broker (versão antiga a correr), pede-se como antes. */
+    return (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).fetch(url, opcoes);
+  }
+
   opts = opts || {};
 
   const CFG_KEY = 'grepoGruta_cfg_v1';
@@ -29424,7 +29794,7 @@ function makeGrutaModule(opts) {
       town_id: Number(townId), nl_init: true,
     };
     try {
-      const r = await mUw.fetch(url, {
+      const r = await pedirJogo(url, {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8', 'x-requested-with': 'XMLHttpRequest' },
         credentials: 'include',
@@ -29714,6 +30084,23 @@ function makeGrutaModule(opts) {
  * ========================================================================== */
 
 function makeTrocaCidadesModule(opts) {
+
+  /* TODOS OS PEDIDOS AO JOGO PASSAM PELO BROKER.
+   *
+   * Um de cada vez, com pausa entre eles e o travão respeitado ANTES de pedir.
+   * É o que evita as rajadas que davam 429 — corrigi a mesma falha três vezes
+   * em sítios diferentes antes de haver um sítio só (18/09).
+   *
+   * Prioridade 5: trabalho normal */
+  function pedirJogo(url, opcoes) {
+    try {
+      const p = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroPedir;
+      if (p) return p(url, opcoes, 5);
+    } catch (e) {}
+    /* Sem broker (versão antiga a correr), pede-se como antes. */
+    return (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).fetch(url, opcoes);
+  }
+
   opts = opts || {};
 
   // Confirmado por captura:
@@ -30185,7 +30572,7 @@ function makeTrocaCidadesModule(opts) {
       town_id: Number(origem), nl_init: true,
     };
     try {
-      const r = await mUw.fetch(url, {
+      const r = await pedirJogo(url, {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8', 'x-requested-with': 'XMLHttpRequest' },
         credentials: 'include',
@@ -30566,6 +30953,23 @@ function makeTrocaCidadesModule(opts) {
  * ========================================================================== */
 
 function makeEncaixeModule(opts) {
+
+  /* TODOS OS PEDIDOS AO JOGO PASSAM PELO BROKER.
+   *
+   * Um de cada vez, com pausa entre eles e o travão respeitado ANTES de pedir.
+   * É o que evita as rajadas que davam 429 — corrigi a mesma falha três vezes
+   * em sítios diferentes antes de haver um sítio só (18/09).
+   *
+   * Prioridade 0: responder a ataques não espera por nada */
+  function pedirJogo(url, opcoes) {
+    try {
+      const p = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroPedir;
+      if (p) return p(url, opcoes, 0);
+    } catch (e) {}
+    /* Sem broker (versão antiga a correr), pede-se como antes. */
+    return (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).fetch(url, opcoes);
+  }
+
   opts = opts || {};
 
   const CFG_KEY = 'grepoEncaixe_cfg_v1';
@@ -30957,7 +31361,7 @@ function makeEncaixeModule(opts) {
 
 
   async function post(url, payload) {
-    const r = await mUw.fetch(url, {
+    const r = await pedirJogo(url, {
       method: 'POST',
       headers: { 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8', 'x-requested-with': 'XMLHttpRequest' },
       credentials: 'include',
@@ -31111,7 +31515,7 @@ function makeEncaixeModule(opts) {
     try {
       const url = mUw.location.origin + '/game/frontend_bridge?town_id=' + Number(origemId)
         + '&action=execute&h=' + mUw.Game.csrfToken;
-      const r = await mUw.fetch(url, {
+      const r = await pedirJogo(url, {
         method: 'POST',
         headers: {
           'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
@@ -33803,6 +34207,23 @@ function makeEncaixeModule(opts) {
  * ========================================================================== */
 
 function makeMissoesModule(opts) {
+
+  /* TODOS OS PEDIDOS AO JOGO PASSAM PELO BROKER.
+   *
+   * Um de cada vez, com pausa entre eles e o travão respeitado ANTES de pedir.
+   * É o que evita as rajadas que davam 429 — corrigi a mesma falha três vezes
+   * em sítios diferentes antes de haver um sítio só (18/09).
+   *
+   * Prioridade 5: trabalho normal */
+  function pedirJogo(url, opcoes) {
+    try {
+      const p = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroPedir;
+      if (p) return p(url, opcoes, 5);
+    } catch (e) {}
+    /* Sem broker (versão antiga a correr), pede-se como antes. */
+    return (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).fetch(url, opcoes);
+  }
+
   opts = opts || {};
 
   let mUw = null, mWorld = '';
@@ -34103,7 +34524,7 @@ function makeMissoesModule(opts) {
       const t = Number(mUw.Game.townId);
       const url = mUw.location.origin + '/game/frontend_bridge?town_id=' + t
         + '&action=execute&h=' + mUw.Game.csrfToken;
-      const r = await mUw.fetch(url, {
+      const r = await pedirJogo(url, {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
                    'x-requested-with': 'XMLHttpRequest' },
@@ -34144,7 +34565,7 @@ function makeMissoesModule(opts) {
     const url = mUw.location.origin + '/game/frontend_bridge?town_id=' + Number(townId)
       + '&action=execute&h=' + mUw.Game.csrfToken;
     try {
-      const r = await mUw.fetch(url, {
+      const r = await pedirJogo(url, {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8', 'x-requested-with': 'XMLHttpRequest' },
         credentials: 'include',
@@ -34291,7 +34712,7 @@ function makeMissoesModule(opts) {
     const url = mUw.location.origin + '/game/building_farm?town_id=' + Number(townId)
       + '&action=request_militia&h=' + mUw.Game.csrfToken;
     try {
-      const r = await mUw.fetch(url, {
+      const r = await pedirJogo(url, {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8', 'x-requested-with': 'XMLHttpRequest' },
         credentials: 'include',
@@ -35383,6 +35804,23 @@ function makeMissoesModule(opts) {
  * ========================================================================== */
 
 function makeColonosModule(opts) {
+
+  /* TODOS OS PEDIDOS AO JOGO PASSAM PELO BROKER.
+   *
+   * Um de cada vez, com pausa entre eles e o travão respeitado ANTES de pedir.
+   * É o que evita as rajadas que davam 429 — corrigi a mesma falha três vezes
+   * em sítios diferentes antes de haver um sítio só (18/09).
+   *
+   * Prioridade 2: coordenação entre contas */
+  function pedirJogo(url, opcoes) {
+    try {
+      const p = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroPedir;
+      if (p) return p(url, opcoes, 2);
+    } catch (e) {}
+    /* Sem broker (versão antiga a correr), pede-se como antes. */
+    return (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).fetch(url, opcoes);
+  }
+
   /* Pedidos a domínios de fora, pela ponte do carregador quando existe.
    * Ver `pedirFora` no núcleo. */
   const pedirForaM = (url, op) => {
@@ -35813,7 +36251,7 @@ function makeColonosModule(opts) {
       town_id: Number(origemId), nl_init: true,
     });
     try {
-      const r = await mUw.fetch(url, {
+      const r = await pedirJogo(url, {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8', 'x-requested-with': 'XMLHttpRequest' },
         credentials: 'include',
@@ -36522,6 +36960,23 @@ function makeColonosModule(opts) {
  * ========================================================================== */
 
 function makeApoioModule(opts) {
+
+  /* TODOS OS PEDIDOS AO JOGO PASSAM PELO BROKER.
+   *
+   * Um de cada vez, com pausa entre eles e o travão respeitado ANTES de pedir.
+   * É o que evita as rajadas que davam 429 — corrigi a mesma falha três vezes
+   * em sítios diferentes antes de haver um sítio só (18/09).
+   *
+   * Prioridade 2: coordenação entre contas */
+  function pedirJogo(url, opcoes) {
+    try {
+      const p = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroPedir;
+      if (p) return p(url, opcoes, 2);
+    } catch (e) {}
+    /* Sem broker (versão antiga a correr), pede-se como antes. */
+    return (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).fetch(url, opcoes);
+  }
+
   /* A caixa de confirmação do núcleo — o `confirm()` do navegador deixa de
    * funcionar se o utilizador marcar "não voltar a perguntar". */
   const perguntar = (t) => {
@@ -37383,7 +37838,7 @@ function makeApoioModule(opts) {
         const url = mUw.location.origin + '/game/map_data?town_id=' + base
           + '&action=get_chunks&h=' + mUw.Game.csrfToken
           + '&json=' + encodeURIComponent(JSON.stringify({ chunks: lote, town_id: base, nl_init: true }));
-        const r = await mUw.fetch(url, {
+        const r = await pedirJogo(url, {
           headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
         }).then(lerResposta);
         const d = (r && r.json && r.json.data) || {};
@@ -37537,7 +37992,7 @@ function makeApoioModule(opts) {
         nl_init: true,
       });
 
-      const r = await mUw.fetch(url, {
+      const r = await pedirJogo(url, {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
                    'x-requested-with': 'XMLHttpRequest' },
@@ -37970,7 +38425,7 @@ function makeApoioModule(opts) {
         + '&action=get_chunks&h=' + mUw.Game.csrfToken
         + '&json=' + encodeURIComponent(JSON.stringify({
             chunks: [{ x: cx, y: cy, timestamp: 0 }], town_id: Number(base), nl_init: true }));
-      const r = await mUw.fetch(url, {
+      const r = await pedirJogo(url, {
         headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
       }).then(lerResposta);
       const d = (r && r.json && r.json.data) || {};
@@ -38275,7 +38730,7 @@ function makeApoioModule(opts) {
       id: Number(alvoId), type: 'support', town_id: Number(origemId), nl_init: true,
     });
     try {
-      const r = await mUw.fetch(url, {
+      const r = await pedirJogo(url, {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8', 'x-requested-with': 'XMLHttpRequest' },
         credentials: 'include',
@@ -38411,7 +38866,7 @@ function makeApoioModule(opts) {
     try {
       const url = mUw.location.origin + '/game/building_place?town_id=' + Number(origemId)
         + '&action=send_back&h=' + mUw.Game.csrfToken;
-      const r = await mUw.fetch(url, {
+      const r = await pedirJogo(url, {
         method: 'POST',
         headers: {
           'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
@@ -38435,7 +38890,7 @@ function makeApoioModule(opts) {
     const url = mUw.location.origin + '/game/frontend_bridge?town_id=' + Number(mov.home_town_id)
       + '&action=execute&h=' + mUw.Game.csrfToken;
     try {
-      const r = await mUw.fetch(url, {
+      const r = await pedirJogo(url, {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8', 'x-requested-with': 'XMLHttpRequest' },
         credentials: 'include',
@@ -40890,6 +41345,23 @@ function makeApoioModule(opts) {
  * ========================================================================== */
 
 function makeFundacaoModule(opts) {
+
+  /* TODOS OS PEDIDOS AO JOGO PASSAM PELO BROKER.
+   *
+   * Um de cada vez, com pausa entre eles e o travão respeitado ANTES de pedir.
+   * É o que evita as rajadas que davam 429 — corrigi a mesma falha três vezes
+   * em sítios diferentes antes de haver um sítio só (18/09).
+   *
+   * Prioridade 9: varre o mapa, é o último a passar */
+  function pedirJogo(url, opcoes) {
+    try {
+      const p = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroPedir;
+      if (p) return p(url, opcoes, 9);
+    } catch (e) {}
+    /* Sem broker (versão antiga a correr), pede-se como antes. */
+    return (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).fetch(url, opcoes);
+  }
+
   opts = opts || {};
 
   let mUw = null, mWorld = '';
@@ -41067,7 +41539,7 @@ function makeFundacaoModule(opts) {
           town_id: Number(townId), nl_init: true,
         }));
     try {
-      const r = await mUw.fetch(url, { headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include' })
+      const r = await pedirJogo(url, { headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include' })
         .then(lerResposta);
       const d = (((r || {}).json || {}).models || {}).Colonization;
       return (d && d.data) || null;
@@ -41078,7 +41550,7 @@ function makeFundacaoModule(opts) {
     const url = mUw.location.origin + '/game/frontend_bridge?town_id=' + Number(townId)
       + '&action=execute&h=' + mUw.Game.csrfToken;
     try {
-      const r = await mUw.fetch(url, {
+      const r = await pedirJogo(url, {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8', 'x-requested-with': 'XMLHttpRequest' },
         credentials: 'include',
@@ -41219,7 +41691,7 @@ function makeFundacaoModule(opts) {
           + '&json=' + encodeURIComponent(JSON.stringify({
               chunks: lote.map((c) => ({ x: c.x, y: c.y, timestamp: 0 })),
               town_id: base, nl_init: true }));
-        const r = await mUw.fetch(url, {
+        const r = await pedirJogo(url, {
           headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
         }).then(lerResposta).catch(() => null);
         const d = (r && r.json && r.json.data) || {};
@@ -41243,7 +41715,7 @@ function makeFundacaoModule(opts) {
           + '&action=get_chunks&h=' + mUw.Game.csrfToken
           + '&json=' + encodeURIComponent(JSON.stringify({
               chunks: [{ x: cx, y: cy, timestamp: 0 }], town_id: base0, nl_init: true }));
-        const r0 = await mUw.fetch(u0, {
+        const r0 = await pedirJogo(u0, {
           headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
         }).then(lerResposta);
         const d0 = (r0 && r0.json && r0.json.data) || {};
@@ -41260,7 +41732,7 @@ function makeFundacaoModule(opts) {
         + '&action=index&h=' + mUw.Game.csrfToken
         + '&json=' + encodeURIComponent(JSON.stringify({
             island_id: Number(islandId), town_id: base, nl_init: true }));
-      const r = await mUw.fetch(url, {
+      const r = await pedirJogo(url, {
         headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
       }).then(lerResposta);
 
@@ -41315,7 +41787,7 @@ function makeFundacaoModule(opts) {
         + '&action=get_chunks&h=' + mUw.Game.csrfToken
         + '&json=' + encodeURIComponent(JSON.stringify({
             chunks: [{ x: cx, y: cy, timestamp: 0 }], town_id: Number(townIdBase), nl_init: true }));
-      const r = await mUw.fetch(url, { headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include' })
+      const r = await pedirJogo(url, { headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include' })
         .then(lerResposta);
       const d = (r && r.json && r.json.data) || {};
       const bloco = d[0] || d['0'];
@@ -42554,6 +43026,23 @@ function makeFundacaoModule(opts) {
  * passagem.
  * ========================================================================== */
 function makeRelatoriosModule(opts) {
+
+  /* TODOS OS PEDIDOS AO JOGO PASSAM PELO BROKER.
+   *
+   * Um de cada vez, com pausa entre eles e o travão respeitado ANTES de pedir.
+   * É o que evita as rajadas que davam 429 — corrigi a mesma falha três vezes
+   * em sítios diferentes antes de haver um sítio só (18/09).
+   *
+   * Prioridade 8: leitura em massa, pode esperar */
+  function pedirJogo(url, opcoes) {
+    try {
+      const p = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroPedir;
+      if (p) return p(url, opcoes, 8);
+    } catch (e) {}
+    /* Sem broker (versão antiga a correr), pede-se como antes. */
+    return (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).fetch(url, opcoes);
+  }
+
   let mUw = null, mWorld = null;
 
   const CFG_KEY = 'grepoRelatorios_cfg_v1';
@@ -42673,7 +43162,7 @@ function makeRelatoriosModule(opts) {
        * O `lerResposta` devolve o objecto já convertido, e voltar a passá-lo
        * por `JSON.stringify` muda o escape das aspas — o padrão deixava de
        * encontrar os `data-reportid`. Sobre o texto original funciona. */
-      const resp = await mUw.fetch(url, {
+      const resp = await pedirJogo(url, {
         headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
       });
       const bruto = await resp.text();
@@ -42710,7 +43199,7 @@ function makeRelatoriosModule(opts) {
       const url = mUw.location.origin + '/game/report?town_id=' + Number(t)
         + '&action=delete_many&h=' + mUw.Game.csrfToken;
 
-      const r = await mUw.fetch(url, {
+      const r = await pedirJogo(url, {
         method: 'POST',
         headers: {
           'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
@@ -42846,7 +43335,7 @@ function makeRelatoriosModule(opts) {
     try {
       const url = mUw.location.origin + '/game/report?town_id=' + Number(townId)
         + '&action=view&h=' + mUw.Game.csrfToken;
-      const r = await mUw.fetch(url, {
+      const r = await pedirJogo(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
           'x-requested-with': 'XMLHttpRequest' },
@@ -42871,7 +43360,7 @@ function makeRelatoriosModule(opts) {
         + '&json=' + encodeURIComponent(JSON.stringify({
           filter_type: filtro, folder_id: 0, town_id: Number(townId), nl_init: true }))
         + '&_=' + Date.now();
-      const bruto = await (await mUw.fetch(url, {
+      const bruto = await (await pedirJogo(url, {
         headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include' })).text();
       const re = /data-reportid=\\?\\?"?(\d+)([\s\S]{0,500}?)report_subject_header\\?"?>([\s\S]{0,200}?)<\\?\/span>/g;
       let m;
@@ -44242,6 +44731,23 @@ function makeFrotaModule(opts) {
  *  por omissão.
  * ========================================================================== */
 function makeFecharIlhaModule(opts) {
+
+  /* TODOS OS PEDIDOS AO JOGO PASSAM PELO BROKER.
+   *
+   * Um de cada vez, com pausa entre eles e o travão respeitado ANTES de pedir.
+   * É o que evita as rajadas que davam 429 — corrigi a mesma falha três vezes
+   * em sítios diferentes antes de haver um sítio só (18/09).
+   *
+   * Prioridade 2: coordenação entre contas */
+  function pedirJogo(url, opcoes) {
+    try {
+      const p = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroPedir;
+      if (p) return p(url, opcoes, 2);
+    } catch (e) {}
+    /* Sem broker (versão antiga a correr), pede-se como antes. */
+    return (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).fetch(url, opcoes);
+  }
+
   opts = opts || {};
   let mUw = null, mWorld = '';
 
@@ -44491,7 +44997,7 @@ function makeFecharIlhaModule(opts) {
        * este módulo continuar a bater sozinho. */
       const lr = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window)
         .__maestroLerResposta;
-      const rr = await mUw.fetch(url, {
+      const rr = await pedirJogo(url, {
         headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
       });
       const r = lr ? await lr(rr) : await rr.json();
@@ -44676,7 +45182,7 @@ function makeFecharIlhaModule(opts) {
     try {
       const args = { target_x: Number(x), target_y: Number(y) };
       if (Number.isFinite(Number(lugarSugerido))) args.target_number_on_island = Number(lugarSugerido);
-      const r = await mUw.fetch(url, {
+      const r = await pedirJogo(url, {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
           'x-requested-with': 'XMLHttpRequest' },
@@ -44802,7 +45308,7 @@ function makeFecharIlhaModule(opts) {
     const url = mUw.location.origin + '/game/frontend_bridge?town_id=' + Number(townId)
       + '&action=execute&h=' + mUw.Game.csrfToken;
     try {
-      const r = await mUw.fetch(url, {
+      const r = await pedirJogo(url, {
         method: 'POST',
         headers: {
           'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
@@ -45648,6 +46154,23 @@ function makeFecharIlhaModule(opts) {
  *  Desligado por omissão.
  * ========================================================================== */
 function makeTiqueModule(opts) {
+
+  /* TODOS OS PEDIDOS AO JOGO PASSAM PELO BROKER.
+   *
+   * Um de cada vez, com pausa entre eles e o travão respeitado ANTES de pedir.
+   * É o que evita as rajadas que davam 429 — corrigi a mesma falha três vezes
+   * em sítios diferentes antes de haver um sítio só (18/09).
+   *
+   * Prioridade 5: trabalho normal */
+  function pedirJogo(url, opcoes) {
+    try {
+      const p = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroPedir;
+      if (p) return p(url, opcoes, 5);
+    } catch (e) {}
+    /* Sem broker (versão antiga a correr), pede-se como antes. */
+    return (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).fetch(url, opcoes);
+  }
+
   opts = opts || {};
   let mUw = null;
 
@@ -45695,7 +46218,7 @@ function makeTiqueModule(opts) {
           }))
         + '&_=' + Date.now();
 
-      const rr = await mUw.fetch(url, {
+      const rr = await pedirJogo(url, {
         headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include',
       });
       const lr = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window)
@@ -45761,7 +46284,7 @@ function makeTiqueModule(opts) {
       const t = Number(mUw.Game.townId);
       const url = mUw.location.origin + '/game/frontend_bridge?town_id=' + t
         + '&action=execute&h=' + mUw.Game.csrfToken;
-      const r = await mUw.fetch(url, {
+      const r = await pedirJogo(url, {
         method: 'POST',
         headers: {
           'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
@@ -46266,6 +46789,23 @@ function makeTiqueModule(opts) {
  *  Desligado por omissão: mexe em tropa durante ataques.
  * ========================================================================== */
 function makeReforcoModule(opts) {
+
+  /* TODOS OS PEDIDOS AO JOGO PASSAM PELO BROKER.
+   *
+   * Um de cada vez, com pausa entre eles e o travão respeitado ANTES de pedir.
+   * É o que evita as rajadas que davam 429 — corrigi a mesma falha três vezes
+   * em sítios diferentes antes de haver um sítio só (18/09).
+   *
+   * Prioridade 1: reage a ataques */
+  function pedirJogo(url, opcoes) {
+    try {
+      const p = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroPedir;
+      if (p) return p(url, opcoes, 1);
+    } catch (e) {}
+    /* Sem broker (versão antiga a correr), pede-se como antes. */
+    return (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).fetch(url, opcoes);
+  }
+
   opts = opts || {};
   let mUw = null;
 
@@ -46693,7 +47233,7 @@ function makeReforcoModule(opts) {
       });
       const url = mUw.location.origin + '/game/town_info?town_id=' + Number(origemId)
         + '&action=send_units&h=' + mUw.Game.csrfToken;
-      const r = await mUw.fetch(url, {
+      const r = await pedirJogo(url, {
         method: 'POST',
         headers: {
           'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
@@ -46815,7 +47355,7 @@ function makeReforcoModule(opts) {
     try {
       const url = mUw.location.origin + '/game/building_place?town_id=' + Number(origemId)
         + '&action=send_back&h=' + mUw.Game.csrfToken;
-      const r = await mUw.fetch(url, {
+      const r = await pedirJogo(url, {
         method: 'POST',
         headers: {
           'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
