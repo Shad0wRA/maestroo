@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.13.2500
+// @version      2026.09.14.0200
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1192,6 +1192,60 @@
        * conclui "não tenho lá tropa" precisa de saber isso: uma sentinela
        * enviada de uma cidade por ler não aparece, e mandar outra é duplicá-la. */
       ultimaLeitura: () => Object.assign({}, ultimaLeitura),
+
+      /* ============ A LEITURA DIZ O QUE É ==============================
+       *
+       * O `porAlvo` devolve o que se leu. Se vier vazio, quem o recebe não
+       * sabe se não há tropa fora ou se a leitura falhou — e é dessa confusão
+       * que vieram os erros que nos ocuparam o dia: o apoio a retirar com
+       * números de horas antes, as sentinelas a duplicar tropa, o reforço a
+       * dar comandos por perdidos.
+       *
+       * Este devolve a mesma coisa com a etiqueta: quando foi lido, se cobre
+       * TODAS as cidades desta conta, e de onde veio. E o módulo pergunta
+       * `podeAgir` em vez de inventar a sua própria regra.
+       *
+       * `completa` é o que mais interessa: a leitura vai a poucas cidades por
+       * passagem, por isso quase nunca cobre tudo. Quem vai retirar tropa
+       * precisa de saber. */
+      leitura: (validadeMs) => {
+        const api = uw.__maestroLeitura;
+        const cache = lerCacheApoioFora();
+        const limite = Number(validadeMs) || (APOIO_FORA_VALIDADE * 4);
+        const agora = Date.now();
+
+        const cobertas = Object.keys(cache)
+          .filter((id) => (agora - Number((cache[id] || {}).quando || 0)) <= limite)
+          .map(Number);
+
+        /* Todas as cidades desta conta, para saber se a leitura as cobre. */
+        let minhas = [];
+        try { minhas = Object.keys(uw.ITowns.towns).map(Number); } catch (e) {}
+
+        const emFalta = minhas.filter((id) => cobertas.indexOf(id) < 0);
+        const maisRecente = cobertas.reduce((m, id) => {
+          const q = Number((cache[id] || {}).quando || 0);
+          return q > m ? q : m;
+        }, 0);
+
+        const valor = { porAlvo: apoioForaPorAlvo(), cobertas, emFalta };
+
+        if (!api) {
+          /* Sem a semântica, devolve-se o essencial na mesma. */
+          return { ok: cobertas.length > 0, valor, quando: maisRecente,
+            completa: minhas.length > 0 && emFalta.length === 0, origem: 'servidor' };
+        }
+
+        return api.nova(valor, {
+          ok: cobertas.length > 0,
+          quando: maisRecente || agora,
+          completa: minhas.length > 0 && emFalta.length === 0,
+          origem: 'servidor',
+          razao: cobertas.length
+            ? (emFalta.length ? `${emFalta.length} cidade(s) por ler` : '')
+            : 'a Ágora não foi lida em nenhuma cidade',
+        });
+      },
       lidas: (validadeMs) => {
         const cache = lerCacheApoioFora();
         const limite = Number(validadeMs) || (APOIO_FORA_VALIDADE * 4);
@@ -2780,7 +2834,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.13.2500';
+  const MAESTRO_VERSAO = '2026.09.14.0200';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -36731,6 +36785,10 @@ function makeApoioModule(opts) {
     } catch (e) { return false; }
   }
 
+  /* As cidades cuja Ágora foi lida há pouco. Só dessas se retira tropa —
+   * ver "O QUE A LEITURA COBRE" (17/09). */
+  let cidadesComLeituraFresca = null;
+
   /* ============ TECTO DE 14 HORAS POR ALVO =============================
    *
    * Um alvo sai da lista quando a revolta acaba — mas isso exige LER, e a
@@ -37636,8 +37694,16 @@ function makeApoioModule(opts) {
           try { localStorage.setItem('grepoMaestro_apoioFora_v1', JSON.stringify(cacheU)); } catch (e) {}
           rotina(`Apoio: releio primeiro ${urgentes.length} cidade(s) com envios já chegados por ver.`);
         }
+        /* CINCO CIDADES POR PASSAGEM, NÃO DUAS.
+         *
+         * A retirada de tropa passou a exigir que a Ágora da cidade tenha sido
+         * lida nos últimos 35 minutos. Com duas cidades por passagem e 63
+         * cidades, uma volta completa demora perto de uma hora — e nessa
+         * altura as primeiras já envelheceram. Com cinco, a volta faz-se em
+         * pouco mais de vinte minutos e a leitura chega sempre a tempo
+         * (17/09). */
         const lidas = await api.refrescar(
-          Array.from(new Set(urgentes.concat(api.candidatas(meus) || []))), 2);
+          Array.from(new Set(urgentes.concat(api.candidatas(meus) || []))), 5);
     /* ZERO NÃO É FALHA.
      *
      * As leituras valem 30 minutos. Se estiverem todas frescas, não há nada a
@@ -37657,6 +37723,32 @@ function makeApoioModule(opts) {
     } else {
       log(`Apoio: li a Ágora de ${lidas} cidade(s) — os números passam a ser os do servidor.`);
     }
+
+    /* O QUE A LEITURA COBRE, DITO UMA VEZ.
+     *
+     * A retirada de tropa é a decisão mais cara que este módulo toma: traz
+     * para casa o que está fora. Com a Ágora lida a duas cidades por
+     * passagem, decidir com o que se tem é decidir com metade da informação —
+     * e foi assim que apoio ficou espalhado por cidades que ninguém mandou
+     * retirar (15-17/09).
+     *
+     * A leitura agora diz-se: quando foi feita, e se cobre as cidades todas.
+     * Quem vai retirar pergunta antes de agir. */
+    try {
+      if (api.leitura) {
+        const est = api.leitura(35 * 60 * 1000);
+        /* NÃO SE EXIGE A LEITURA TODA — EXIGE-SE A DA CIDADE.
+         *
+         * A Ágora é lida a duas cidades por passagem: exigir que cubra as 63
+         * bloquearia a retirada para sempre. O que se exige é que a cidade de
+         * onde se vai tirar tropa tenha sido lida há pouco. */
+        cidadesComLeituraFresca = new Set((est && est.valor && est.valor.cobertas) || []);
+        if (!cidadesComLeituraFresca.size) {
+          (ctx.logRotina || log)('Apoio: a Ágora não foi lida em nenhuma cidade nos últimos '
+            + '35 min — não retiro tropa nesta passagem.');
+        }
+      }
+    } catch (e) { seErroDeCodigo(e, 'Apoio'); }
       }
     } catch (e) { seErroDeCodigo(e, 'Apoio'); }
 
@@ -38323,6 +38415,20 @@ function makeApoioModule(opts) {
           }
         }
       } catch (e) { seErroDeCodigo(e, 'Apoio'); }
+
+      /* Só se retira de onde a leitura é fresca: de uma cidade lida há horas
+       * não se sabe o que lá está agora. */
+      if (cidadesComLeituraFresca && ondeTenho.size) {
+        const antes = ondeTenho.size;
+        for (const c of [...ondeTenho]) {
+          if (!cidadesComLeituraFresca.has(Number(c))) ondeTenho.delete(c);
+        }
+        const ficaram = antes - ondeTenho.size;
+        if (ficaram) {
+          rotina(`Apoio: ${ficaram} cidade(s) com tropa a mais ficam para a próxima `
+            + 'passagem — a Ágora delas não foi lida há pouco.');
+        }
+      }
 
       for (const cidade of ondeTenho) {
         const n = await retirarApoio(ctx, cidade);
