@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.14.0200
+// @version      2026.09.14.0400
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1612,6 +1612,110 @@
     };
   } catch (e) {}
 
+  /* ============ ACORDAR UM MÓDULO ======================================
+   *
+   * Um módulo espera pela sua vez. Para a esquiva e os alertas isso é caro:
+   * um ataque aparece e ficam minutos à espera — e a detecção de
+   * colonizadores mede o tempo de viagem DESDE QUE O VÊ, por isso cada
+   * minuto de atraso estraga a medição.
+   *
+   * E a margem é apertada: um colonizador com todos os bónus aparenta 5,87
+   * (escala 1x) e um hoplita sem nenhum, 6. Dois por cento. Com o módulo a
+   * acordar no instante em que o ataque aparece, o tempo medido fica a
+   * segundos do real e a diferença volta a ser visível (17/09).
+   *
+   * Quem chama isto: quem vir trabalho novo — um ataque nos modelos, um
+   * pedido no Firebase, um agendamento no encaixe.
+   *
+   * Nunca adia, só antecipa. E não corre nada por si: só põe a passagem mais
+   * cedo, para o ciclo lá chegar. */
+  function acordar(modId, dentroDeSegundos) {
+    try {
+      const st = modState[modId];
+      if (!st || !st.ativo) return false;
+      const quando = Date.now() + Math.max(0, Number(dentroDeSegundos) || 0) * 1000;
+      if (quando < st.proximaExec) {
+        st.proximaExec = quando;
+        atualizarPainelEstado();
+        return true;
+      }
+    } catch (e) { seErroDeCodigo(e, 'núcleo'); }
+    return false;
+  }
+
+  /* ============ O VIGIA DOS ATAQUES ====================================
+   *
+   * Olha para os comandos a chegar de segundo a segundo — sem pedir nada ao
+   * jogo, só para os modelos que a página já tem — e acorda quem precisa
+   * assim que aparece um ataque novo.
+   *
+   * É barato: percorrer uma lista em memória não custa nada, e não há
+   * pedidos nenhuns. O que se ganha é o tempo de reacção. */
+  const ataquesVistos = new Set();
+  let vigiaLigado = false;
+
+  function ataquesAChegar() {
+    const out = [];
+    try {
+      const mv = (uw.MM.getModels() || {}).MovementsUnits || {};
+      const minhas = new Set(Object.keys(uw.ITowns.towns).map(Number));
+      for (const k of Object.keys(mv)) {
+        const a = (mv[k] || {}).attributes || {};
+        if (!/attack/i.test(String(a.type || ''))) continue;
+        if (!minhas.has(Number(a.target_town_id))) continue;
+        if (Number(a.player_id) === Number(uw.Game.player_id)) continue;   // meu
+        out.push(a);
+      }
+    } catch (e) {}
+    return out;
+  }
+
+  function ligarVigiaDosAtaques() {
+    if (vigiaLigado) return;
+    vigiaLigado = true;
+
+    /* A primeira passagem só regista o que já lá está: o que interessa é o
+     * que APARECE a partir de agora. */
+    for (const a of ataquesAChegar()) ataquesVistos.add(String(a.id));
+
+    setInterval(() => {
+      try {
+        const agora = ataquesAChegar();
+        const novos = agora.filter((a) => !ataquesVistos.has(String(a.id)));
+        if (!novos.length) return;
+
+        for (const a of novos) {
+          ataquesVistos.add(String(a.id));
+          /* A HORA A QUE O VIMOS PELA PRIMEIRA VEZ.
+           *
+           * É isto que a detecção de colonizadores usa para medir a viagem.
+           * Guardar aqui, no instante exacto, vale mais do que qualquer
+           * cálculo a seguir. */
+          try {
+            if (!uw.__maestroVistoEm) uw.__maestroVistoEm = {};
+            uw.__maestroVistoEm[String(a.id)] = Date.now();
+          } catch (e) {}
+        }
+
+        /* Quem quer saber de um ataque novo. */
+        acordar('alertas', 0);
+        acordar('esquiva', 0);
+        acordar('reforco', 0);
+        acordar('feiticos', 0);
+
+        log('core', `⚡ ${novos.length} ataque(s) novo(s) — acordei os módulos de reacção.`);
+
+        /* Limpar o que já passou, para o conjunto não crescer sem fim. */
+        if (ataquesVistos.size > 400) {
+          const vivos = new Set(agora.map((a) => String(a.id)));
+          for (const id of [...ataquesVistos]) if (!vivos.has(id)) ataquesVistos.delete(id);
+        }
+      } catch (e) { seErroDeCodigo(e, 'núcleo'); }
+    }, 1000);
+  }
+
+  try { uw.__maestroAcordar = acordar; } catch (e) {}
+
   /* ============ CAIXA NEGRA ============================================
    *
    * O registo do ecrã perde-se ao recarregar a página, e a VPS recarrega de
@@ -2834,7 +2938,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.14.0200';
+  const MAESTRO_VERSAO = '2026.09.14.0400';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -23657,10 +23761,55 @@ function makeDeusesModule(opts) {
   
 
   // Cidades das multis nesta ilha, por ordem rotativa.
+  /* ============ AS CIDADES EM REVOLTA FICAM DE FORA DO FARM ============
+   *
+   * O farm de favores ataca as multis para gerar favor. Se uma delas está em
+   * revolta, está a receber apoio das outras dezanove — e atacá-la mata essa
+   * tropa e os enviados divinos que lá vão (17/09).
+   *
+   * Sai de fora quem cumpre as DUAS coisas: está em revolta e está na lista
+   * de alvos do apoio. Uma revolta que não estejas a defender não muda nada;
+   * uma cidade na lista sem revolta também não.
+   *
+   * A informação já existe na lista partilhada — é a mesma que alimenta o
+   * quadro do Discord. */
+  let emRevoltaEApoiadas = null;
+  let emRevoltaLidoEm = 0;
+
+  async function cidadesAPoupar() {
+    /* Vale por cinco minutos: uma revolta não começa nem acaba mais depressa
+     * do que isso. */
+    if (emRevoltaEApoiadas && (Date.now() - emRevoltaLidoEm) < 5 * 60 * 1000) {
+      return emRevoltaEApoiadas;
+    }
+    const out = new Set();
+    try {
+      const fb = mUw.__maestroFb;
+      if (fb && fb.url && fb.url()) {
+        const lista = (await fb.ler(`apoio/${mWorld}`)) || {};
+        const naLista = new Set((lista.alvos || []).map(Number));
+        const agoraS = Math.floor(Date.now() / 1000);
+        for (const id of Object.keys(lista.revoltasAuto || {})) {
+          const r = lista.revoltasAuto[id] || {};
+          if (Number(r.ultima) && Number(r.ultima) <= agoraS) continue;   // já acabou
+          if (!naLista.has(Number(id))) continue;                         // não a defendo
+          out.add(Number(id));
+        }
+      }
+    } catch (e) { seErroDeCodigo(e, 'Deuses'); }
+
+    emRevoltaEApoiadas = out;
+    emRevoltaLidoEm = Date.now();
+    return out;
+  }
+
   async function alvosNaIlha(ix, iy, townIdBase, multis) {
     const viz = await vizinhosDaIlha(ix, iy, townIdBase);
     const nomes = new Set((multis || []).map(String));
-    return viz.filter((v) => nomes.has(String(v.jogador)));
+    const poupar = await cidadesAPoupar();
+    return viz
+      .filter((v) => nomes.has(String(v.jogador)))
+      .filter((v) => !poupar.has(Number(v.id)));
   }
 
   const ALVO_KEY = 'grepoDeuses_ultimoAlvo_v1';
@@ -25913,7 +26062,25 @@ function makeEsquivaModule(opts) {
       const l = JSON.parse(armazem.getItem(VISTOS_KEY) || '{}');
       if (l[id]) return { quando: Number(l[id]), novo: false };
 
-      const t = agora();
+      /* A HORA DO VIGIA MANDA SOBRE A DESTA PASSAGEM.
+       *
+       * O vigia do núcleo olha para os comandos de segundo a segundo e guarda
+       * o instante exacto em que cada ataque apareceu. Esta função só corre
+       * quando o módulo chega à sua vez — que pode ser meio minuto depois.
+       *
+       * Meio minuto numa viagem de vinte estraga a medição: um colonizador com
+       * todos os bónus aparenta 5,87 e um hoplita sem nenhum, 6 — dois por
+       * cento de margem (17/09). Usar a hora do vigia devolve essa margem. */
+      let t = agora();
+      try {
+        const doVigia = ((typeof unsafeWindow !== 'undefined' ? unsafeWindow : window)
+          .__maestroVistoEm || {})[String(a.id || '')];
+        if (doVigia) {
+          const emSegundos = Math.floor(Number(doVigia) / 1000);
+          /* Só se for ANTES: nunca se finge que se viu mais tarde. */
+          if (emSegundos > 0 && emSegundos < t) t = emSegundos;
+        }
+      } catch (e) {}
       l[id] = t;
 
       // limpar os que já chegaram há muito, para não crescer sem fim
@@ -46717,6 +46884,10 @@ function makeExpansaoModule(opts) {
     } catch (e) { seErroDeCodigo(e, 'núcleo'); }
     if (autoStartLigado()) {
       log('core', 'Pronto — arranque automático ligado.');
+
+      /* O vigia dos ataques: acorda os módulos de reacção no instante em que
+       * um ataque aparece, em vez de esperarem pela sua vez. */
+      try { ligarVigiaDosAtaques(); } catch (e) { seErroDeCodigo(e, 'núcleo'); }
       startMaestro();
     } else {
       log('core', 'Pronto. Arranque automático desligado: carrega em "Iniciar" quando quiseres.');
