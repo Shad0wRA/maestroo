@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.14.0600
+// @version      2026.09.14.0700
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2960,7 +2960,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.14.0600';
+  const MAESTRO_VERSAO = '2026.09.14.0700';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -43330,9 +43330,9 @@ function makeFrotaModule(opts) {
         ev.preventDefault();
         const conta = a.getAttribute('data-desligar');
         if (!conta) return;
-        if (!mUw.confirm(`Apagar "${conta}" do Maestro?\n\n`
-          + 'Sai do sinal de vida, das equipas dos colonizadores e das revoltas '
-          + 'que publicou. É definitivo.')) return;
+        if (!mUw.confirm(`Apagar "${conta}" do Maestro, em TODOS os mundos?\n\n`
+          + 'Sai do sinal de vida, das equipas dos colonizadores, das revoltas '
+          + 'que publicou e dos planos de fechar ilha. É definitivo.')) return;
 
         const chave = String(conta).replace(/[.#$\[\]\/:]/g, '_');
         const apagados = [];
@@ -43343,56 +43343,86 @@ function makeFrotaModule(opts) {
             return;
           }
 
-          /* 1. O sinal de vida. */
-          try {
-            const fr = (await fb.ler(`frota/${mWorld}`)) || {};
-            for (const k of Object.keys(fr)) {
-              if (String((fr[k] || {}).conta || k) === conta) { delete fr[k]; apagados.push('frota'); }
+          /* EM TODOS OS MUNDOS, NÃO SÓ NESTE.
+           *
+           * Quem leva ban leva-o na conta, não num mundo: deixa de correr o
+           * Maestro em todo o lado. Apagar só do mundo actual deixava-a nos
+           * outros a fazer o vigia disparar e a contar para as equipas
+           * (17/09).
+           *
+           * Os mundos descobrem-se pelo que está publicado — não há lista
+           * fixa, e assim apanha os que houver. */
+          const mundos = await (async () => {
+            const s = new Set([mWorld]);
+            for (const raiz of ['frota', 'equipas', 'revoltasMultis']) {
+              try {
+                const d = (await fb.ler(raiz)) || {};
+                for (const w of Object.keys(d)) if (/^[a-z]{2}\d+$/i.test(w)) s.add(w);
+              } catch (e) {}
             }
-            if (apagados.length) await fb.escrever(`frota/${mWorld}`, fr);
-          } catch (e) { seErroDeCodigo(e, 'Frota'); }
+            return [...s];
+          })();
 
-          /* 2. As equipas dos colonizadores. */
-          try {
-            const eq = (await fb.ler(`equipas/${mWorld}`)) || {};
-            if (eq[conta]) {
-              delete eq[conta];
-              await fb.escrever(`equipas/${mWorld}`, eq);
-              apagados.push('equipas');
-            }
-          } catch (e) { seErroDeCodigo(e, 'Frota'); }
+          for (const w of mundos) {
+            const nesteMundo = [];
 
-          /* 3. As revoltas que publicou. */
-          try {
-            const rv = (await fb.ler(`revoltasMultis/${mWorld}`)) || {};
-            if (rv[chave]) {
-              delete rv[chave];
-              await fb.escrever(`revoltasMultis/${mWorld}`, rv);
-              apagados.push('revoltas');
-            }
-          } catch (e) { seErroDeCodigo(e, 'Frota'); }
-
-          /* 4. O que ela tivesse reservado no fechar ilha. */
-          try {
-            const fila = (await fb.ler(`fecharIlhaFila/${mWorld}`)) || {};
-            let mexeu = false;
-            for (const p of (fila.planos || [])) {
-              if (p && p.atribuicoes && p.atribuicoes[conta] !== undefined) {
-                delete p.atribuicoes[conta];
-                if (p.enviados) delete p.enviados[conta];
-                mexeu = true;
+            /* 1. O sinal de vida. */
+            try {
+              const fr = (await fb.ler(`frota/${w}`)) || {};
+              let mexeu = false;
+              for (const k of Object.keys(fr)) {
+                if (String((fr[k] || {}).conta || k) === conta) { delete fr[k]; mexeu = true; }
               }
-            }
-            if (mexeu) {
-              await fb.escrever(`fecharIlhaFila/${mWorld}`, fila);
-              apagados.push('fechar ilha');
-            }
-          } catch (e) { seErroDeCodigo(e, 'Frota'); }
+              if (mexeu) { await fb.escrever(`frota/${w}`, fr); nesteMundo.push('frota'); }
+            } catch (e) { seErroDeCodigo(e, 'Frota'); }
+
+            /* 2. As equipas dos colonizadores. */
+            try {
+              const eq = (await fb.ler(`equipas/${w}`)) || {};
+              if (eq[conta]) {
+                delete eq[conta];
+                await fb.escrever(`equipas/${w}`, eq);
+                nesteMundo.push('equipas');
+              }
+            } catch (e) { seErroDeCodigo(e, 'Frota'); }
+
+            /* 3. As revoltas que publicou. */
+            try {
+              const rv = (await fb.ler(`revoltasMultis/${w}`)) || {};
+              if (rv[chave]) {
+                delete rv[chave];
+                await fb.escrever(`revoltasMultis/${w}`, rv);
+                nesteMundo.push('revoltas');
+              }
+            } catch (e) { seErroDeCodigo(e, 'Frota'); }
+
+            /* 4. O que ela tivesse reservado no fechar ilha. */
+            try {
+              const fila = (await fb.ler(`fecharIlhaFila/${w}`)) || {};
+              let mexeu = false;
+              for (const p of (fila.planos || [])) {
+                if (p && p.atribuicoes && p.atribuicoes[conta] !== undefined) {
+                  delete p.atribuicoes[conta];
+                  if (p.enviados) delete p.enviados[conta];
+                  mexeu = true;
+                }
+              }
+              if (mexeu) {
+                await fb.escrever(`fecharIlhaFila/${w}`, fila);
+                nesteMundo.push('fechar ilha');
+              }
+            } catch (e) { seErroDeCodigo(e, 'Frota'); }
+
+            if (nesteMundo.length) apagados.push(`${w}: ${nesteMundo.join(', ')}`);
+          }
 
           ctx.log(apagados.length
             ? `🚫 ${conta} apagada do Maestro (${apagados.join(', ')}).`
             : `${conta} já não estava em lado nenhum.`);
-          comRolamento(() => painel(container, ctx));
+          /* O `comRolamento` é do módulo da construção, não deste: usá-lo aqui
+           * rebentava com "comRolamento is not defined" (17/09). A tabela
+           * redesenha-se na passagem seguinte; aqui basta tirar a linha. */
+          try { a.closest('tr').style.opacity = '.3'; a.remove(); } catch (e) {}
         } catch (e) { seErroDeCodigo(e, 'Frota'); }
       };
     });
