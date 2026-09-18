@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.14.1900
+// @version      2026.09.14.2000
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -3342,7 +3342,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.14.1900';
+  const MAESTRO_VERSAO = '2026.09.14.2000';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -5705,10 +5705,16 @@
        * correr, âmbar quando o servidor trava, vermelho quando há erros. */
       btn.innerHTML = '<span id="maestro-btn-luz"></span><span>M</span>';
       btn.style.cssText = [
-        /* O sítio livre à esquerda do retrato, medido no jogo: 17 px da
-         * esquerda da caixa e 72 do topo. É onde o Rafa o quis, ao lado do
-         * que outros scripts já lá põem (18/09). */
-        'position:absolute', 'left:17px', 'top:72px', 'z-index:9999',
+        /* NA BARRA DE CIMA, EM POSIÇÃO FIXA.
+         *
+         * Tentei primeiro dentro da caixa do retrato: o sítio livre à esquerda
+         * afinal é do DIO-Tools, que lá tem um painel por cima. O espaço da
+         * barra superior, à esquerda do seletor de cidade, está mesmo vazio.
+         *
+         * Fixo ao ecrã, sem contentor: assim não depende da estrutura do jogo
+         * nem de outro script o tapar, e não há como o perder de vista
+         * (18/09). */
+        'position:fixed', 'left:392px', 'top:84px', 'z-index:9999',
         'width:22px', 'height:22px', 'border-radius:50%',
         'display:flex', 'align-items:center', 'justify-content:center',
         'background:linear-gradient(#2a3442,#1a222c)',
@@ -5728,12 +5734,9 @@
         ].join(';');
       }
 
-      /* A caixa tem de deixar posicionar lá dentro. */
-      try {
-        if (getComputedStyle(naBarraDoJogo).position === 'static') {
-          naBarraDoJogo.style.position = 'relative';
-        }
-      } catch (e) {}
+      /* Em posição fixa não precisa de contentor: vai para o corpo da
+       * página, e fica no mesmo sítio independentemente do que o jogo faça
+       * à sua volta. */
     }
 
     const luz = btn.querySelector('#maestro-btn-luz');
@@ -5928,8 +5931,8 @@
       });
     } catch (e) {}
 
-    if (naBarraDoJogo) naBarraDoJogo.appendChild(btn);
-    else document.body.appendChild(btn);
+    /* Fixo ao ecrã: vai sempre para o corpo, esteja o jogo como estiver. */
+    document.body.appendChild(btn);
 
     const p = document.createElement('div');
     p.id = 'maestro-panel';
