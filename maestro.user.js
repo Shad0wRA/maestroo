@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.14.0400
+// @version      2026.09.14.0500
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2938,7 +2938,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.14.0400';
+  const MAESTRO_VERSAO = '2026.09.14.0500';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -43191,7 +43191,9 @@ function makeFrotaModule(opts) {
 
       return `<tr style="${mudo ? 'opacity:.55' : ''}">
         <td style="padding:2px 4px">${esc(x.conta)}
-          <span style="opacity:.5;font-size:11px">${esc(x.perfil || '')}</span></td>
+          <span style="opacity:.5;font-size:11px">${esc(x.perfil || '')}</span>
+          <a href="#" data-desligar="${esc(x.conta)}" title="apagar esta conta do Maestro — definitivo"
+            style="margin-left:5px;opacity:.45;text-decoration:none">✖</a></td>
         <td style="padding:2px 4px;color:${velha ? '#e8a33d' : 'inherit'}">${esc(x.versao)}</td>
         <td style="padding:2px 4px;color:${mudo ? '#f88' : 'inherit'}">${esc(haQuanto(x.quando))}</td>
         <td style="padding:2px 4px;text-align:center">${Number(x.captcha) ? '🛑' : ''}</td>
@@ -43266,6 +43268,87 @@ function makeFrotaModule(opts) {
       try { inicial = localStorage.getItem('grepoFrota_aba_v1') || 'frota'; } catch (e) {}
       mostrar(inicial);
     } catch (e) { seErroDeCodigo(e, 'Frota'); }
+
+    /* ============ APAGAR UMA CONTA DO MAESTRO ==========================
+     *
+     * Uma conta banida não volta a correr o Maestro. Fica no sinal de vida a
+     * fazer o vigia disparar, nas equipas dos colonizadores a contar para o
+     * equilíbrio, e a publicar revoltas que ninguém vai defender (17/09).
+     *
+     * Este botão apaga-a de todos os sítios onde o grupo a conhece. É
+     * definitivo: se a conta voltar a correr o Maestro, republica sozinha na
+     * primeira passagem. */
+    container.querySelectorAll('[data-desligar]').forEach((a) => {
+      a.onclick = async (ev) => {
+        ev.preventDefault();
+        const conta = a.getAttribute('data-desligar');
+        if (!conta) return;
+        if (!mUw.confirm(`Apagar "${conta}" do Maestro?\n\n`
+          + 'Sai do sinal de vida, das equipas dos colonizadores e das revoltas '
+          + 'que publicou. É definitivo.')) return;
+
+        const chave = String(conta).replace(/[.#$\[\]\/:]/g, '_');
+        const apagados = [];
+        try {
+          const fb = mUw.__maestroFb;
+          if (!fb || !fb.url || !fb.url()) {
+            ctx.log('Frota: sem Firebase configurado — não há de onde apagar.');
+            return;
+          }
+
+          /* 1. O sinal de vida. */
+          try {
+            const fr = (await fb.ler(`frota/${mWorld}`)) || {};
+            for (const k of Object.keys(fr)) {
+              if (String((fr[k] || {}).conta || k) === conta) { delete fr[k]; apagados.push('frota'); }
+            }
+            if (apagados.length) await fb.escrever(`frota/${mWorld}`, fr);
+          } catch (e) { seErroDeCodigo(e, 'Frota'); }
+
+          /* 2. As equipas dos colonizadores. */
+          try {
+            const eq = (await fb.ler(`equipas/${mWorld}`)) || {};
+            if (eq[conta]) {
+              delete eq[conta];
+              await fb.escrever(`equipas/${mWorld}`, eq);
+              apagados.push('equipas');
+            }
+          } catch (e) { seErroDeCodigo(e, 'Frota'); }
+
+          /* 3. As revoltas que publicou. */
+          try {
+            const rv = (await fb.ler(`revoltasMultis/${mWorld}`)) || {};
+            if (rv[chave]) {
+              delete rv[chave];
+              await fb.escrever(`revoltasMultis/${mWorld}`, rv);
+              apagados.push('revoltas');
+            }
+          } catch (e) { seErroDeCodigo(e, 'Frota'); }
+
+          /* 4. O que ela tivesse reservado no fechar ilha. */
+          try {
+            const fila = (await fb.ler(`fecharIlhaFila/${mWorld}`)) || {};
+            let mexeu = false;
+            for (const p of (fila.planos || [])) {
+              if (p && p.atribuicoes && p.atribuicoes[conta] !== undefined) {
+                delete p.atribuicoes[conta];
+                if (p.enviados) delete p.enviados[conta];
+                mexeu = true;
+              }
+            }
+            if (mexeu) {
+              await fb.escrever(`fecharIlhaFila/${mWorld}`, fila);
+              apagados.push('fechar ilha');
+            }
+          } catch (e) { seErroDeCodigo(e, 'Frota'); }
+
+          ctx.log(apagados.length
+            ? `🚫 ${conta} apagada do Maestro (${apagados.join(', ')}).`
+            : `${conta} já não estava em lado nenhum.`);
+          comRolamento(() => painel(container, ctx));
+        } catch (e) { seErroDeCodigo(e, 'Frota'); }
+      };
+    });
 
     const b = container.querySelector('#frota-rec');
     if (b) b.onclick = () => painel(container, ctx);
