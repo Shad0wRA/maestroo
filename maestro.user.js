@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.14.1600
+// @version      2026.09.14.1700
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2390,6 +2390,25 @@
   /* `prioridade`: 0 é o mais urgente. A esquiva e os alertas usam 0; o resto
    * fica em 5; varrimentos grandes (mapa, fundação) em 9. */
   function pedirAoJogo(url, opcoes, prioridade) {
+    /* ============ O QUE ACERTA AO SEGUNDO NÃO ESPERA ==================
+     *
+     * O broker impõe uma pausa entre pedidos — é o que evita as rajadas. Mas
+     * o Encaixe existe para acertar ao segundo: um envio que espera 600 ms na
+     * fila chega tarde, e o trabalho todo dele fica perdido.
+     *
+     * Por isso a prioridade -1 sai JÁ, sem fila e sem pausa. Usa-se só onde o
+     * instante é o ponto: o envio do encaixe e o cancelamento de comandos.
+     * Tudo o resto espera a vez (18/09). */
+    if (prioridade === -1) {
+      pedidosEstado.feitos++;
+      ultimoPedidoEm = Date.now();
+      try { return uw.fetch(url, opcoes); }
+      catch (e) {
+        return Promise.resolve({ ok: false, status: 0, erro: e.message,
+          text: async () => '', json: async () => ({}) });
+      }
+    }
+
     return new Promise((resolve) => {
       filaDePedidos.push({
         url, opcoes: opcoes || {},
@@ -3323,7 +3342,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.14.1600';
+  const MAESTRO_VERSAO = '2026.09.14.1700';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -31025,13 +31044,16 @@ function makeEncaixeModule(opts) {
    * É o que evita as rajadas que davam 429 — corrigi a mesma falha três vezes
    * em sítios diferentes antes de haver um sítio só (18/09).
    *
-   * Prioridade 0: responder a ataques não espera por nada */
+   * Prioridade -1: o encaixe acerta ao segundo — não pode esperar na fila.
+   *
+   * É a única excepção ao broker, e existe porque o valor deste módulo é
+   * exactamente o instante em que o pedido sai. Uma pausa de meio segundo
+   * deita fora o trabalho todo (18/09). */
   function pedirJogo(url, opcoes) {
     try {
       const p = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroPedir;
-      if (p) return p(url, opcoes, 0);
+      if (p) return p(url, opcoes, -1);
     } catch (e) {}
-    /* Sem broker (versão antiga a correr), pede-se como antes. */
     return (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).fetch(url, opcoes);
   }
 
@@ -47113,7 +47135,14 @@ function makeReforcoModule(opts) {
             .map((m) => Number(m.arrival_at))
             .sort((a, b) => a - b);
           const chega = chegadas.length ? chegadas[0] : 0;
-          out.set(chaveDe(0, alvo, chega), { alvo, chega, semHora: !chega });
+          /* O tipo do movimento mais próximo: é o que decide se este ataque
+           * é do "Partir cercos" num mundo de cerco. */
+          const tipo = (() => {
+            const m = mods.find((y) => Number(y.target_town_id) === alvo
+              && Number(y.arrival_at) === chega);
+            return String((m && m.type) || '');
+          })();
+          out.set(chaveDe(0, alvo, chega), { alvo, chega, tipo, semHora: !chega });
         }
 
         razaoLeitura = '';
@@ -47134,7 +47163,12 @@ function makeReforcoModule(opts) {
         if (!minhas.has(alvo)) continue;
         const chega = Number(x.arrival_at) || 0;
         const k = chaveDe(x.origin_town_id, alvo, chega);
-        if (!out.has(k)) out.set(k, { alvo, chega });
+        /* O TIPO VAI JUNTO.
+         *
+         * Num mundo de cerco, um `attack_takeover` é do "Partir cercos", não
+         * deste módulo — defender e atacar a mesma cidade era o pior dos dois
+         * mundos. Sem o tipo, não havia por onde distinguir (18/09). */
+        if (!out.has(k)) out.set(k, { alvo, chega, tipo: String(x.type || '') });
       }
     } catch (e) {
       seErroDeCodigo(e, 'Reforco');
@@ -47817,6 +47851,37 @@ function makeReforcoModule(opts) {
      *
      * Conta-se o que já lá está, incluindo o que este módulo mandou e ainda
      * vai a caminho. Sem isso, mandava-se duas vezes. */
+    /* ============ NUM MUNDO DE CERCO, UM COLONIZADOR É OUTRO CASO =====
+     *
+     * O módulo "Partir cercos" manda as vinte contas atacar a cidade no
+     * instante em que o colonizador bate. Se o reforço estiver ao mesmo tempo
+     * a encher essa cidade de tropa, acontece o pior dos dois mundos: ou a
+     * defesa aguenta e os faróis do grupo batem na tropa que acabámos de lá
+     * pôr, ou a defesa cai e perdeu-se tropa a mais (18/09).
+     *
+     * Nos mundos de cerco, um ataque com colonizador é do Partir cercos. O
+     * reforço trata dos outros.
+     *
+     * Nos mundos de revolta isto não se aplica: lá o colonizador só entra na
+     * R2, e defender a cidade é exactamente o que se quer. */
+    const deCerco = (() => {
+      try {
+        const f = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window)
+          .__maestroTipoDoMundo;
+        return f ? f() === 'cerco' : false;
+      } catch (e) { return false; }
+    })();
+
+    if (deCerco) {
+      const antes = ataques.length;
+      ataques = ataques.filter((x) => !/takeover/i.test(String(x.tipo || x.type || '')));
+      const fora = antes - ataques.length;
+      if (fora) {
+        rotina(`Reforço: ${fora} ataque(s) com colonizador ficam para o "Partir cercos" `
+          + '— defender e atacar a mesma cidade era o pior dos dois mundos.');
+      }
+    }
+
     /* A PARTE QUE TOCA A ESTA CONTA.
      *
      * O objectivo é por cidade atacada e divide-se pelas contas vivas: com
@@ -48601,9 +48666,23 @@ function makeExpansaoModule(opts) {
       try {
         const lig = uw.__maestroLigacao;
         if (lig) {
-          lig.abrir(`apoio/${WORLD}`, () => {
-            acordar('apoio', 0);
-            log('core', '📡 A lista do apoio mudou — acordei o módulo.');
+          /* O CAMINHO DEPENDE DO TIPO DO MUNDO.
+           *
+           * Há uma ligação por conta, e ela deve ser gasta no que aquele
+           * mundo usa: nos mundos de revolta é a lista do apoio; nos de cerco
+           * o apoio nem corre, e o que interessa saber depressa são os
+           * colonizadores a caminho que o grupo publica (18/09). */
+          const deCerco = tipoDoMundo() === 'cerco';
+          const caminho = deCerco ? `cercos/${WORLD}` : `apoio/${WORLD}`;
+
+          lig.abrir(caminho, () => {
+            if (deCerco) {
+              acordar('partircerco', 0);
+              log('core', '📡 Há novidades nos cercos — acordei o módulo.');
+            } else {
+              acordar('apoio', 0);
+              log('core', '📡 A lista do apoio mudou — acordei o módulo.');
+            }
           });
         }
       } catch (e) { seErroDeCodigo(e, 'núcleo'); }
