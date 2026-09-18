@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.14.1100
+// @version      2026.09.14.1200
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -3195,7 +3195,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.14.1100';
+  const MAESTRO_VERSAO = '2026.09.14.1200';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -4639,9 +4639,41 @@
     log('core', `Perfil "${p.nome}" aplicado. Cada perfil tem as suas definições.`);
   }
 
-  function modAplicaAoMundo(mod) {
-    return !mod.worlds || mod.worlds.includes(WORLD);
+  /* O TIPO DO MUNDO: REVOLTA OU CERCO.
+   *
+   * O jogo só carrega a colecção `MovementsRevoltDefender` nos mundos de
+   * revolta — confirmado no pt126 (tem) e no pt125, de cerco (não tem).
+   *
+   * Serve para dois módulos que se excluem: o apoio distribuído só faz sentido
+   * onde há revoltas para aguentar, e o partir cercos só onde há cercos. Ter
+   * os dois na barra em todo o lado confundia (18/09). */
+  function tipoDoMundo() {
+    try {
+      const m = uw.MM.getModels();
+      /* SEM MODELOS NÃO SE SABE — e não saber não é "cerco".
+       *
+       * No arranque, ou se o jogo ainda não carregou, devolver "cerco" fazia
+       * o apoio distribuído desaparecer da barra num mundo de revolta
+       * (apanhado em teste, 18/09). Sem resposta, deixa-se passar tudo. */
+      if (!m || typeof m !== 'object' || !Object.keys(m).length) return '';
+      return m.MovementsRevoltDefender ? 'revolta' : 'cerco';
+    } catch (e) { return ''; }
   }
+
+  function modAplicaAoMundo(mod) {
+    if (mod.worlds && !mod.worlds.includes(WORLD)) return false;
+
+    /* `tipoDeMundo` no módulo: 'revolta' ou 'cerco'. Sem ele, serve em todo o
+     * lado. Se não se conseguir saber o tipo, deixa-se passar — mais vale um
+     * módulo a mais do que a menos. */
+    if (mod.tipoDeMundo) {
+      const t = tipoDoMundo();
+      if (t && t !== mod.tipoDeMundo) return false;
+    }
+    return true;
+  }
+
+  try { uw.__maestroTipoDoMundo = tipoDoMundo; } catch (e) {}
 
   /* ------------------------------ loop principal ------------------------- */
   let maestroTimer = null;
@@ -19680,6 +19712,9 @@ function makePartirCercoModule(opts) {
   }
 
   return { id: 'partircerco', nome: 'Partir cercos',
+    /* Nos mundos de revolta não há cercos: o que aguenta uma cidade é o apoio
+     * distribuído (18/09). */
+    tipoDeMundo: 'cerco',
     intervaloMin: opts.intervaloMin || 1, run, painel };
 }
 
@@ -40785,6 +40820,10 @@ function makeApoioModule(opts) {
   return {
     id: 'apoio',
     nome: 'Apoio distribuído',
+    /* Só faz sentido onde há revoltas para aguentar. Nos mundos de cerco, o
+     * que se faz é partir o cerco depois de ele se formar — é o módulo
+     * "Partir cercos" (18/09). */
+    tipoDeMundo: 'revolta',
     intervaloMin: opts.intervaloMin || 2,
     autoStart: true,
     run, painel,
