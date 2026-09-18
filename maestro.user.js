@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.14.2100
+// @version      2026.09.14.2200
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -3342,7 +3342,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.14.2100';
+  const MAESTRO_VERSAO = '2026.09.14.2200';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -5964,19 +5964,46 @@
       let alvo = naBarraDoJogo;
       const TAM = 28, FOLGA = 8;
 
+      /* AFINAÇÃO FINA, medida no ecrã dele.
+       *
+       * Encostado ao seletor ficava em cima da moldura dourada. Estes dois
+       * números afastam-no mais para a esquerda e para cima — é o que ele
+       * pediu depois de o ver a correr (18/09).
+       *
+       * Para os mexer sem esperar por outra versão, na consola do jogo:
+       *   __maestroBotao(-20, -16)
+       * Move logo e devolve os dois números. Não se guardam: as vinte contas
+       * devem ficar todas iguais, e isso faz-se no ficheiro. */
+      let AJUSTE_X = -14, AJUSTE_Y = -12;
+
       const acompanharSeletor = () => {
         try {
           if (!alvo || !alvo.isConnected) alvo = acharSeletorDeCidade();
           if (!alvo) return;                       // some: fica onde estava
           const r = alvo.getBoundingClientRect();
           if (!r.width || !r.height) return;       // escondido nesta vista
-          let x = r.left - TAM - FOLGA;
-          if (x < 2) x = r.right + FOLGA;
-          const y = r.top + (r.height - TAM) / 2;
+          /* Do lado esquerdo o ajuste afasta-o do seletor; se tiver de ir
+           * para o outro lado, afasta-o na direcção contrária — senão a
+           * afinação encostava-o à moldura em vez de o afastar dela. */
+          const cabeAEsquerda = (r.left - TAM - FOLGA) >= 2;
+          const x = cabeAEsquerda
+            ? r.left - TAM - FOLGA + AJUSTE_X
+            : r.right + FOLGA - AJUSTE_X;
+          const y = r.top + (r.height - TAM) / 2 + AJUSTE_Y;
           btn.style.left = Math.max(2, Math.min(window.innerWidth - TAM - 2, x)) + 'px';
           btn.style.top = Math.max(2, Math.min(window.innerHeight - TAM - 2, y)) + 'px';
         } catch (e) {}
       };
+
+      /* A afinação à mão, para acertar o sítio de uma vez e sem recarregar. */
+      try {
+        uw.__maestroBotao = (x, y) => {
+          if (Number.isFinite(x)) AJUSTE_X = Number(x);
+          if (Number.isFinite(y)) AJUSTE_Y = Number(y);
+          acompanharSeletor();
+          return `ajuste: ${AJUSTE_X}, ${AJUSTE_Y} — diz-me estes dois números`;
+        };
+      } catch (e) {}
 
       acompanharSeletor();
       /* O jogo ainda acerta a barra depois de carregar. */
