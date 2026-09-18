@@ -9,7 +9,7 @@
  *   node ferramentas/teste-demoras.js maestro.user.js
  */
 const S = require('./simulador');
-const { vm, tira, funcao } = S;
+const { vm, tira, funcao, PEDIR_JOGO } = S;
 const SRC = S.ficheiroDoMaestro();
 const t = S.verificador('DEMORAS');
 
@@ -35,7 +35,7 @@ function montar(resposta) {
   vm.createContext(ctx);
   const a = SRC.indexOf('  const FOLGA_MEDICAO_NC =');
   const b = SRC.indexOf('  try {\n    uw.__maestroDemoras = {', a);
-  vm.runInContext(SRC.slice(a, b) + '\n({})', ctx);
+  vm.runInContext(PEDIR_JOGO + SRC.slice(a, b) + '\n({})', ctx);
   return { ctx, pedidos, loja };
 }
 

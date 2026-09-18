@@ -9,7 +9,7 @@
  */
 const S = require('./simulador');
 const { AGORA_S, vm, tira, funcao, jogo, carregarNucleo, semAdministrador, correr, ligar, lista, ERRO, LIMITADO,
-  igual } = S;
+  igual, PEDIR_JOGO } = S;
 const SRC = S.ficheiroDoMaestro();
 
 const t = S.verificador('FEITIÇOS, DEUSES, REFORÇO');
@@ -38,7 +38,7 @@ async function feiticos(j) {
   const ctx = { mUw: j.win, window: j.win, seErroDeCodigo: () => {},
     armazem: { getItem: (k) => (k === 'grepoEsquiva_cidadesGrupo_v1' ? JSON.stringify({ ids: [333] }) : null) } };
   vm.createContext(ctx);
-  const f = vm.runInContext("let razaoVisaoGeral = '';\n" + txt + '\n({ f: ataquesContraMim, razao: () => razaoVisaoGeral })', ctx);
+  const f = vm.runInContext(PEDIR_JOGO + "let razaoVisaoGeral = '';\n" + txt + '\n({ f: ataquesContraMim, razao: () => razaoVisaoGeral })', ctx);
   return { lista: await f.f(), razao: f.razao() };
 }
 
@@ -84,8 +84,14 @@ async function deuses(j) {
   for (const [nome, resp] of [['json.data.commands', lista(COMANDOS)], ['json.commands', { corpo: { json: { commands: COMANDOS } } }]]) {
     const j = jogo({ respostas: [resp], movimentos: MOVIMENTOS }); carregarNucleo(SRC, j);
     const r = await feiticos(j);
+    /* O identificador do SERVIDOR manda: é o único que o `cast` dos feitiços
+     * aceita. O dos modelos (números enormes) dá "erro interno" (15/09). */
     t.verifica(`${nome}: 3 ataques contra mim, sem repetidos nem os do meu grupo`,
-      igual(r.lista.map((x) => x.cid), [50, 51, 2]) && r.razao === '', r);
+      r.lista.length === 3 && r.razao === '', r);
+    t.verifica(`${nome}: o comando que veio das duas fontes fica com o id do servidor`,
+      r.lista.some((x) => x.cid === 1 && x.doServidor === true), r.lista.map((x) => x.cid));
+    t.verifica(`${nome}: o que só os modelos têm fica marcado como sem id do servidor`,
+      r.lista.some((x) => x.cid === 50 && x.doServidor === false), r.lista);
   }
   {
     const j = jogo({ respostas: [ERRO], movimentos: MOVIMENTOS }); carregarNucleo(SRC, j);
@@ -126,10 +132,24 @@ async function deuses(j) {
     t.verifica('... e o registo do envio fica', !!JSON.parse(j.localStorage.getItem('grepoReforco_envios_v1')).k1);
   }
   {
+    /* SEM ADMINISTRADOR não há visão geral — mas a página diz quais das
+     * minhas cidades têm ataques a chegar, e isso chega para reforçar. */
     const j = jogo({ respostas: [lista(COMANDOS)], units: BLOCO, semAdm: true }); carregarNucleo(SRC, j); reforcoLigado(j);
     const r = await reforco(j);
-    t.verifica('sem Administrador: nenhum pedido, não traz nada, diz porquê', j.pedidosVG() === 0 && sendBacks(j) === 0
-      && /sem Administrador/.test(r.ecra[0] || ''), r);
+    /* Sem Administrador não se pede a visão geral; a recolha passa a
+     * cumprir-se pela hora marcada no envio (7400). */
+    t.verifica('sem Administrador: não pede a visão geral', j.pedidosVG() === 0, j.pedidosVG());
+    t.verifica('... e a tropa cuja hora já passou volta para casa',
+      sendBacks(j) === 1, { sb: sendBacks(j), r });
+  }
+  {
+    const j = jogo({ respostas: [lista(COMANDOS)], units: BLOCO, semAdm: true,
+      attack: [{ town_id: 222, incoming: 1 }] });
+    carregarNucleo(SRC, j); reforcoLigado(j);
+    const r = await reforco(j);
+    t.verifica('sem Administrador, com a página a marcar um ataque: já trabalha',
+      j.pedidosVG() === 0 && r.rotina.concat(r.ecra).some((m) => /sem Administrador/.test(m)),
+      { rotina: r.rotina, ecra: r.ecra });
   }
 
   t.secao('DEUSES — favor que vem a caminho');

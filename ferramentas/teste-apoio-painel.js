@@ -8,7 +8,7 @@
  *   node ferramentas/teste-apoio-painel.js maestro.user.js
  */
 const S = require('./simulador');
-const { vm, funcao, igual } = S;
+const { vm, funcao, igual, PEDIR_JOGO } = S;
 const SRC = S.ficheiroDoMaestro();
 const t = S.verificador('APOIO — PAINEL');
 const AP = 'function makeApoioModule(opts)';
@@ -44,7 +44,7 @@ function ambiente(frota) {
     fbUrlM: () => 'https://falso', fbLerM: async () => frota,
   };
   vm.createContext(ctx);
-  const txt = funcao(SRC, '  async function nomesEmLote(ids, townIdBase) {', AP)
+  const txt = PEDIR_JOGO + funcao(SRC, '  async function nomesEmLote(ids, townIdBase) {', AP)
     + funcao(SRC, '  async function totaisNosAlvos() {', AP)
     + '\n({ nomesEmLote, totaisNosAlvos, cache: () => cacheCidades })';
   return { api: vm.runInContext(txt, ctx), pedidos };
@@ -92,7 +92,7 @@ const FROTA = {
       mUw: { GameData: { units: { sword: { population: 1 }, archer: { population: 1 },
         hoplite: { population: 1 }, bireme: { is_naval: true, population: 1 } } } } };
     vm.createContext(ctx);
-    const f = vm.runInContext(funcao(SRC, '  function quantosAlvosMais(casa, objetivo) {', AP) + '\nquantosAlvosMais', ctx);
+    const f = vm.runInContext(PEDIR_JOGO + funcao(SRC, '  function quantosAlvosMais(casa, objetivo) {', AP) + '\nquantosAlvosMais', ctx);
     const obj = { sword: 3000, archer: 3000, hoplite: 3000, bireme: 1500 };
     t.verifica('tropa para três alvos, travada pelos birremes',
       igual(f({ sword: 12000, archer: 12000, hoplite: 12000, bireme: 5200, __capacidade: 999999 }, obj), { quantos: 3, limita: 'bireme' }),

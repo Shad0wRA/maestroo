@@ -50,8 +50,13 @@ const agora = Math.floor(Date.now() / 1000);
   {
     t.verifica('aldeias a correr e a fazer: nada a dizer',
       igual(vigia({ aldeias: { a: 1, u: agora - 300, f: agora - 600 } }, agora), []));
-    t.verifica('aldeias a correr há 3 h sem fazer nada: avisa',
-      igual(vigia({ aldeias: { a: 1, u: agora - 300, f: h(4) } }, agora), ['aldeias']));
+    /* Três horas era pouco: com a opção de 10 minutos e as aldeias em fases
+     * diferentes, há períodos legítimos sem nada pronto, e o vigia disparava
+     * dezenas de vezes por hora em todas as contas (16/09). */
+    t.verifica('aldeias caladas 4 h: ainda não avisa',
+      igual(vigia({ aldeias: { a: 1, u: agora - 300, f: h(4) } }, agora), []));
+    t.verifica('aldeias caladas 7 h: aí sim',
+      igual(vigia({ aldeias: { a: 1, u: agora - 300, f: h(7) } }, agora), ['aldeias']));
     t.verifica('aldeias desligadas: não avisa',
       igual(vigia({ aldeias: { a: 0, u: agora - 300, f: h(9) } }, agora), []));
     t.verifica('módulo que nem está a correr: não avisa (é outro problema)',
@@ -69,8 +74,20 @@ const agora = Math.floor(Date.now() / 1000);
       igual(vigia({ expansao: { a: 1, u: agora - 300, f: h(48) },
         fecharilha: { a: 1, u: agora - 300, f: h(48) } }, agora), []));
     t.verifica('dois mudos ao mesmo tempo: ambos na lista',
-      igual(vigia({ aldeias: { a: 1, u: agora - 60, f: h(5) },
+      igual(vigia({ aldeias: { a: 1, u: agora - 60, f: h(9) },
         construcao: { a: 1, u: agora - 60, f: h(30) } }, agora).sort(), ['aldeias', 'construcao']));
+  }
+  t.secao('SÓ SE AVISA O QUE PERSISTE');
+  {
+    /* Bastava ver o problema uma vez para avisar, e deixar de o ver uma vez
+     * para dar por resolvido: o Discord encheu-se de pares "está parado" /
+     * "já não", de dez em dez minutos, nas vinte contas (16/09). */
+    t.verifica('um problema só é anunciado à segunda passagem seguida',
+      /if \(!jaAvisado && vezes >= 2\) novos\.push/.test(SRC));
+    t.verifica('... e conta as vezes que já foi visto',
+      /const vezes = \(\(antigo && antigo\.vezes\) \|\| 0\) \+ 1;/.test(SRC));
+    t.verifica('só se anuncia a resolução do que chegou a ser anunciado',
+      /if \(antigo\.avisado\) resolvidos\.push\(\{ nome, p \}\);/.test(SRC));
   }
   t.fim();
 })().catch((e) => { console.error('O TESTE REBENTOU:', e); process.exit(2); });

@@ -20,13 +20,14 @@ async function simular(passos) {
       __maestroAvisarDiscord: async (tipo, a) => { discord.push({ tipo, campos: a.campos }); } },
     localStorage: { getItem: (k) => (k in loja ? loja[k] : null), setItem: (k, v) => { loja[k] = String(v); } },
     log: (m, x) => registo.push(x), captchaNoEcra: () => captcha,
+    naoTrocarDeCidade: false,
   };
   ctx.Date = new Proxy(Date, { get: (tt, p) => (p === 'now' ? () => agora : tt[p]) });
   vm.createContext(ctx);
   const txt = tira(SRC, "  const CAPTCHA_AVISO_KEY = 'grepoMaestro_captchaAvisado_v1';", 'try { uw.__maestroAvisarCaptcha = avisarCaptcha; } catch (e) {}')
-    + '\nlet captchaNoEcraDesde = 0, captchaAvisadoEm = 0, captchaIgnorarAte = 0;\nasync function passo() {\n'
+    + '\nlet captchaNoEcraDesde = 0, captchaAvisadoEm = 0, captchaIgnorarAte = 0;\nlet naoTrocarDeCidade = false;\nasync function passo() {\n'
     + tira(SRC, '    const vistoNoEcra = (Date.now() < captchaIgnorarAte) ? null : captchaNoEcra();',
-      "      log('core', '▶️ O captcha saiu do ecrã — retomo o trabalho.');\n    }\n")
+      "        log('core', '▶️ O captcha saiu do ecrã — a recolha pode continuar.');\n      }\n    }\n")
     + "  return 'segue';\n}\npasso";
   const passo = vm.runInContext(txt, ctx);
   const out = [];
@@ -41,14 +42,34 @@ async function simular(passos) {
 }
 
 (async () => {
-  const d = await simular([{ min: 0 }, { min: 1, captcha: true }, { min: 10, captcha: true }, { min: 10, captcha: true },
-    { min: 11, captcha: true }, { min: 2, captcha: true }, { min: 3 }]);
-  t.verifica('com o captcha no ecrã, o ciclo pára', igual(d.out.slice(0, 5).map((x) => x.parado), [false, true, true, true, false]), d.out);
-  t.verifica('avisa no Discord logo que o vê', d.out[1].discord === 1, d.out);
-  t.verifica('... com a conta e o mundo', /MultiX/.test(JSON.stringify(d.discord[0])) && /pt126/.test(JSON.stringify(d.discord[0])), d.discord[0]);
-  t.verifica('... não repete aos 10 e 20 min', d.out[2].discord === 1 && d.out[3].discord === 1, d.out);
-  t.verifica('... e lembra outra vez passada meia hora', d.out[4].discord === 2, d.out);
-  t.verifica('o registo do ecrã diz que parou e que retomou', d.registo.some((x) => /Há um captcha no ecrã/.test(x))
-    && d.registo.some((x) => /30 min parado/.test(x)), d.registo);
+  /* Passagens: sem captcha · aparece · +10 min · +55 · +20 (passa a hora
+   * desde o aviso) · sai. */
+  const d = await simular([{ min: 0 }, { min: 1, captcha: true }, { min: 10, captcha: true },
+    { min: 55, captcha: true }, { min: 20, captcha: true }, { min: 3 }]);
+
+  /* O CAPTCHA JÁ NÃO PÁRA O MAESTRO INTEIRO (16/09).
+   *
+   * Quem fica bloqueado é a recolha das aldeias, que se suspende sozinha. A
+   * construção, o apoio e a esquiva não têm culpa — uma esquiva perdida por
+   * causa de um captcha das aldeias é um mau negócio. */
+  t.verifica('o ciclo continua, mesmo com o captcha no ecrã',
+    d.out.every((p) => !p.parado), d.out);
+  t.verifica('mas trava a troca de cidade enquanto ele lá estiver',
+    /if \(naoTrocarDeCidade\) return false;/.test(SRC));
+
+  /* UM MINUTO ANTES DE AVISAR (17/09).
+   *
+   * O aviso saía assim que o captcha aparecia — e quem está a jogar resolve-o
+   * em segundos, ficando o Discord cheio de avisos de coisas já resolvidas. */
+  t.verifica('no primeiro minuto não avisa ninguém', d.out[1].discord === 0, d.out);
+  t.verifica('passado o minuto, avisa', d.out[2].discord === 1, d.out);
+  t.verifica('... e não repete a cada passagem', d.out[3].discord === 1, d.out);
+  t.verifica('... mas repete ao fim de uma hora', d.discord.length >= 2, d.discord.length);
+  t.verifica('a recolha suspende-se logo, sem esperar pelo aviso',
+    /captchaNoEcraDesde = Date\.now\(\);\s*\n\s*captchaAvisadoEm = 0;/.test(SRC));
+
+  t.verifica('o registo diz o que ficou suspenso e quando voltou',
+    d.registo.some((x) => /a recolha fica suspensa/.test(x))
+    && d.registo.some((x) => /a recolha pode continuar/.test(x)), d.registo);
   t.fim();
 })().catch((e) => { console.error('O TESTE REBENTOU:', e); process.exit(2); });

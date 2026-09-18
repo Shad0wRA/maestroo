@@ -8,7 +8,7 @@
  *   node ferramentas/teste-fundacao-mapa.js maestro.user.js
  */
 const S = require('./simulador');
-const { vm, funcao } = S;
+const { vm, funcao, PEDIR_JOGO } = S;
 const SRC = S.ficheiroDoMaestro();
 const t = S.verificador('FUNDAÇÃO — MAPA');
 const FU = 'function makeFundacaoModule(opts)';
@@ -35,7 +35,7 @@ function montar(travadoAoFim) {
     seErroDeCodigo: () => {}, console, setTimeout,
   };
   vm.createContext(ctx);
-  const f = vm.runInContext(funcao(SRC, '  function servidorTravadoAgora() {', FU)
+  const f = vm.runInContext(PEDIR_JOGO + funcao(SRC, '  function servidorTravadoAgora() {', FU)
     + funcao(SRC, '  async function pedirBlocos(lista, townIdBase) {', FU) + '\npedirBlocos', ctx);
   return { f, pedidos };
 }
@@ -88,7 +88,7 @@ const blocos = (n) => Array.from({ length: n }, (_, i) => ({ x: i, y: i }));
       CHUNK: 20, oceanoDe: () => 55, seErroDeCodigo: () => {}, console, setTimeout,
     };
     vm.createContext(ctx);
-    const f = vm.runInContext(funcao(SRC, '  function servidorTravadoAgora() {', FU)
+    const f = vm.runInContext(PEDIR_JOGO + funcao(SRC, '  function servidorTravadoAgora() {', FU)
       + funcao(SRC, '  async function pedirBlocos(lista, townIdBase) {', FU)
       + funcao(SRC, '  async function ilhasPertoDe(centro, oceanos, townIdBase, minimo, anelDe, anelAte) {', FU)
       + '\nilhasPertoDe', ctx);

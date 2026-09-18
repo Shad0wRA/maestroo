@@ -8,7 +8,7 @@
  *   node ferramentas/teste-cancelamento.js maestro.user.js
  */
 const S = require('./simulador');
-const { vm, tira, funcao } = S;
+const { vm, tira, funcao, PEDIR_JOGO } = S;
 const SRC = S.ficheiroDoMaestro();
 const t = S.verificador('CANCELAR COMANDOS');
 
@@ -30,7 +30,7 @@ function ambiente(resposta) {
 function posts(qual, resposta) {
   const ini = SRC.indexOf(qual === 'encaixe' ? 'MÓDULO: ENCAIXE DE COMANDOS' : 'MÓDULO: ESQUIVA DE ATAQUES');
   const a = SRC.indexOf('  async function post(url, payload) {', ini);
-  const txt = SRC.slice(a, SRC.indexOf('\n  }\n', a) + 4) + '\npost';
+  const txt = PEDIR_JOGO + SRC.slice(a, SRC.indexOf('\n  }\n', a) + 4) + '\npost';
   const ctx = ambiente(resposta);
   vm.createContext(ctx);
   return vm.runInContext(txt, ctx)('https://x', {});
@@ -38,7 +38,8 @@ function posts(qual, resposta) {
 
 /* O cancelamento do Apoio devolve true/false. */
 function apoio(resposta) {
-  const txt = funcao(SRC, '  async function cancelarOuRetirar(mov, alvoId) {') + '\ncancelarOuRetirar';
+  const txt = PEDIR_JOGO
+    + funcao(SRC, '  async function cancelarOuRetirar(mov, alvoId) {') + '\ncancelarOuRetirar';
   const ctx = ambiente(resposta);
   ctx.registarEnvio = () => {};
   vm.createContext(ctx);

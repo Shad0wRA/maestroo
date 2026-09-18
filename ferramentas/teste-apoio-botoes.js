@@ -70,5 +70,51 @@ function montar(guardado) {
     t.verifica('o que sai desconta ao reforço; o que ficou por mandar mantém-se',
       igual(ctx2.__ultimo, { 5512: { sword: 200 } }), ctx2.__ultimo);
   }
+  t.secao('O REFORÇO CONTA UMA VEZ SÓ, NA QUOTA');
+  {
+    /* O reforço soma-se ao objectivo de propósito. Mas a retirada do excesso
+     * olhava só para o objectivo: cada conta mandava o extra e retirava-o a
+     * seguir (15/09). A quota é o sítio certo — é dela que sai o que falta
+     * mandar E o que conta por excesso. */
+    t.verifica('a quota inclui o reforço pedido',
+      /const extra = lerReforco\(\)\[alvoId\] \|\| \{\};/.test(SRC)
+      && /out\[u\] = \(out\[u\] \|\| 0\) \+ n;/.test(SRC));
+    t.verifica('... e já não é somado outra vez ao que há a mandar',
+      /O REFORÇO JÁ ESTÁ NA QUOTA/.test(SRC));
+    t.verifica('o reforço de um alvo que saiu da lista é apagado',
+      /não tem onde ser entregue/.test(SRC));
+  }
+  t.secao('ALVOS QUE NÃO EXPIRAM');
+  {
+    /* O tecto das 14 h foi pensado para revoltas. Mas a lista serve também
+     * para apoios de longa duração — cidades tomadas a um adversário — e
+     * esses estavam a ser tirados a cada passagem (17/09). */
+    const i = SRC.indexOf('OS ALVOS MARCADOS PARA FICAR NÃO EXPIRAM');
+    const bloco = SRC.slice(i, i + 1400);
+    t.verifica('há um registo de alvos fixos', i > 0
+      && /const FIXOS_KEY = 'grepoApoio_alvosFixos_v1';/.test(bloco));
+    t.verifica('o tecto salta os que estão marcados',
+      /\.filter\(\(id\) => !fixos\[id\]\)/.test(SRC));
+    t.verifica('e o painel tem o visto por alvo',
+      /<input type="checkbox" data-fixo="\$\{id\}"/.test(SRC)
+      && /marcarFixo\(id, !!cb\.checked\);/.test(SRC));
+  }
+  t.secao('QUEM TIRA ALVOS DA LISTA');
+  {
+    /* A remoção lê a lista, tira o que expirou e reescreve-a inteira. Com
+     * vinte contas a fazer isso ao mesmo tempo, a última repõe o que as
+     * outras tiraram — a mensagem repetia-se a cada passagem e os alvos
+     * nunca saíam (17/09: a 3058 e a 652, quatro vezes em sete minutos). */
+    const i = SRC.indexOf('SÓ A CONTA PRINCIPAL TIRA ALVOS DA LISTA');
+    const bloco = SRC.slice(i, i + 1400);
+    t.verifica('a remoção é só da conta principal', i > 0
+      && /const velhos = souAPrincipal \? alvosPassadosDoTecto\(alvos\) : \[\];/.test(SRC));
+    t.verifica('... e sabe-se pela marca do painel',
+      /localStorage\.getItem\('grepoMaestro_principal_v1'\) === '1'/.test(bloco));
+    t.verifica('a limpeza dos pedidos segue a mesma regra',
+      /if \(souAPrincipal && typeof fbLerM === 'function'/.test(SRC));
+    t.verifica('as outras contas continuam a marcar a entrada de cada alvo',
+      /marcarEntrada\(alvos\);/.test(SRC));
+  }
   t.fim();
 })().catch((e) => { console.error('O TESTE REBENTOU:', e); process.exit(2); });

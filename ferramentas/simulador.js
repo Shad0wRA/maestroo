@@ -28,6 +28,23 @@ function tira(src, inicio, fim, depoisDe) {
 /* Uma função de indentação 2, até ao `  }` que a fecha. */
 const funcao = (src, inicio, depoisDe) => tira(src, inicio, '\n  }\n', depoisDe);
 
+/* O `pedirJogo` de cada módulo.
+ *
+ * Desde 18/09 todos os pedidos ao jogo passam por ele — está declarado ao
+ * nível de cada módulo, e os testes que extraem só uma função ficavam sem ele.
+ * Junta-se aqui, a encaminhar para o `fetch` que o teste preparou. */
+const PEDIR_JOGO = [
+  'function pedirJogo(url, opcoes) {',
+  /* O fetch pode estar em vários sítios, conforme o que o teste montou. */
+  '  if (typeof mUw !== "undefined" && mUw && mUw.fetch) return mUw.fetch(url, opcoes);',
+  '  if (typeof uw !== "undefined" && uw && uw.fetch) return uw.fetch(url, opcoes);',
+  '  if (typeof win !== "undefined" && win && win.fetch) return win.fetch(url, opcoes);',
+  '  if (typeof fetch === "function") return fetch(url, opcoes);',
+  '  throw new Error("o teste nao montou nenhum fetch");',
+  '}',
+  '',
+].join('\n');
+
 /* Uma fábrica de módulo (coluna 0), até ao `}` que a fecha. */
 const fabrica = (src, nome) => tira(src, `function ${nome}(opts) {`, '\n}\n');
 
@@ -91,7 +108,17 @@ function jogo(op) {
       return { status: r.status || 200, text: async () => texto, json: async () => JSON.parse(texto) };
     },
     __maestroTravar: () => {},
+    /* O BROKER, no jogo simulado.
+     *
+     * Desde 18/09 todos os pedidos ao jogo passam pelo `__maestroPedir` — um
+     * de cada vez, com pausa e com o travão respeitado antes de pedir. Aqui
+     * não há pausas nem filas: encaminha-se para o `fetch` simulado, que é o
+     * que os testes preparam. */
+    __maestroPedir: null,   // preenchido a seguir, quando o `win.fetch` existir
+    __maestroServidorTravado: () => false,
   };
+  win.__maestroPedir = (url, opcoes) => win.fetch(url, opcoes);
+
   win.__maestroTemAdministrador = () => {
     try { return Number(Object.values(win.MM.getModels().PremiumFeatures)[0].attributes.curator) > AGORA_S; }
     catch (e) { return false; }
@@ -120,7 +147,7 @@ function carregarNucleo(src, j) {
     avisarCaptcha: async () => {}, guardarNaCaixa: () => {}, seErroDeCodigo: () => {}, log: () => {},
   };
   vm.createContext(ctx);
-  vm.runInContext(blocoNucleo(src), ctx);
+  vm.runInContext(PEDIR_JOGO + blocoNucleo(src), ctx);
 }
 
 /* Um módulo inteiro, pronto a correr. */
@@ -138,7 +165,7 @@ function modulo(src, nome, j) {
     clearTimeout: () => {},
   };
   vm.createContext(ctx);
-  const mod = vm.runInContext(fabrica(src, nome) + `\n${nome}({ intervaloMin: 1 })`, ctx);
+  const mod = vm.runInContext(PEDIR_JOGO + fabrica(src, nome) + `\n${nome}({ intervaloMin: 1 })`, ctx);
   return { mod, erros };
 }
 
@@ -205,6 +232,7 @@ function ficheiroDoMaestro() {
 }
 
 module.exports = {
+  PEDIR_JOGO,
   AGORA_S, ler, tira, funcao, fabrica, blocoNucleo, jogo, semAdministrador, carregarNucleo, modulo,
   contexto, correr, ligar, lista, ERRO, LIMITADO, igual, verificador, ficheiroDoMaestro, vm,
 };

@@ -9,7 +9,7 @@
  */
 const S = require('./simulador');
 const { AGORA_S, vm, tira, funcao, jogo, carregarNucleo, semAdministrador, correr, ligar, lista, ERRO, LIMITADO,
-  igual } = S;
+  igual, PEDIR_JOGO } = S;
 const SRC = S.ficheiroDoMaestro();
 
 const t = S.verificador('ALERTAS E ESQUIVA');
@@ -151,6 +151,16 @@ const desmentidas = (r) => JSON.parse(r.j.localStorage.getItem('grepoEsquiva_des
       Object.assign({ respostas: [lista([INIMIGO_NC])] }, naAttack(111)), 1, ligaA);
     t.verifica('um ataque classificado como colonizador fica marcado para os feitiços',
       Object.keys(marca(r.j)).length >= 0, marca(r.j));
+  }
+  t.secao('SÓ AS CIDADES DESTA CONTA');
+  {
+    /* A lista de cidades a confirmar chegou a trazer cidades que não são da
+     * conta (650 e 5123, numa conta onde não existem): perguntava-se por elas
+     * ao servidor e gastava-se um pedido a não fazer nada (15/09). */
+    t.verifica('a esquiva filtra as cidades que não são desta conta',
+      /\.filter\(\(tid\) => saoMinhas\.has\(Number\(tid\)\)\)/.test(SRC));
+    t.verifica('e os comandos sem destino não contam para o desmentido',
+      /const comDestino = cmds\.filter\(\(cd\) => Number\(cd\.target_town_id\) > 0\);/.test(SRC));
   }
   t.fim();
 })().catch((e) => { console.error('O TESTE REBENTOU:', e); process.exit(2); });

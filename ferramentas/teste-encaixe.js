@@ -8,7 +8,7 @@
  */
 const S = require('./simulador');
 const { AGORA_S, vm, tira, funcao, jogo, carregarNucleo, semAdministrador, correr, ligar, lista, ERRO, LIMITADO,
-  igual } = S;
+  igual, PEDIR_JOGO } = S;
 const SRC = S.ficheiroDoMaestro();
 
 const t = S.verificador('ENCAIXE');
@@ -16,7 +16,7 @@ const t = S.verificador('ENCAIXE');
 function encaixe(j) {
   const ini = SRC.indexOf('MÓDULO: ENCAIXE DE COMANDOS');
   const marcas = tira(SRC, '  let semAdmAte = 0;', "  let ultimaRazaoVazio = '';\n", 'MÓDULO: ENCAIXE DE COMANDOS');
-  const txt = marcas + funcao(SRC, '  async function lerResposta(resposta) {', 'MÓDULO: ENCAIXE DE COMANDOS')
+  const txt = PEDIR_JOGO + marcas + funcao(SRC, '  async function lerResposta(resposta) {', 'MÓDULO: ENCAIXE DE COMANDOS')
     + funcao(SRC, "  async function comandosDoServidor(townId) {\n    if (semAdministrador())", 'MÓDULO: ENCAIXE DE COMANDOS')
     + '\n({ ler: comandosDoServidor, razao: () => ultimaRazaoVazio })';
   void ini;
@@ -66,6 +66,20 @@ const CMDS = [
     const e = encaixe(j); await e.ler(111); const r1 = e.razao(); await e.ler(111);
     t.verifica('o servidor diz que falta o Administrador: diz porquê e não volta a pedir', /falta o Administrador/.test(r1)
       && j.pedidosVG() === 1, { r1, pedidos: j.pedidosVG() });
+  }
+  t.secao('O PAINEL VAI PARA A JANELA CERTA');
+  {
+    /* Procurava-se a primeira janela com campos de unidades — e uma mensagem
+     * do fórum da aliança com tropa também os tem. Com as duas abertas, o
+     * painel foi parar ao post do fórum (16/09). */
+    const i = SRC.indexOf('A JANELA DE ENVIO, NÃO UMA QUALQUER COM UNIDADES');
+    const bloco = SRC.slice(i, i + 1400);
+    t.verifica('o painel distingue a janela pelo botão de atacar/apoiar', i > 0
+      && /\^\(atacar\|apoiar\|attack\|support\)\$/.test(bloco));
+    t.verifica('... e escolhe entre todas as janelas abertas',
+      /\[\.\.\.document\.querySelectorAll\('\.gpwindow_content'\)\]\.find\(ehJanelaDeEnvio\)/.test(bloco));
+    t.verifica('o tipo de envio é lido DESSA janela, não da primeira',
+      /const txt = String\(cont\.textContent \|\| ''\)\.toLowerCase\(\);/.test(SRC));
   }
   t.fim();
 })().catch((e) => { console.error('O TESTE REBENTOU:', e); process.exit(2); });

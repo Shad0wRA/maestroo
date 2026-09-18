@@ -8,7 +8,7 @@
  *   node ferramentas/teste-fechar-ilha-mapa.js maestro.user.js
  */
 const S = require('./simulador');
-const { vm, funcao, igual } = S;
+const { vm, funcao, igual, PEDIR_JOGO } = S;
 const SRC = S.ficheiroDoMaestro();
 const t = S.verificador('FECHAR ILHA — MAPA');
 const FI = 'function makeFecharIlhaModule(opts)';
@@ -38,7 +38,7 @@ function montar(grelhaBoa, falha) {
   };
   const ctx = { mUw, LUGARES: 20, seErroDeCodigo: () => {}, console, window: {} };
   vm.createContext(ctx);
-  const f = vm.runInContext(funcao(SRC, '  async function estadoDaIlha(ix, iy, townIdBase) {', FI) + '\nestadoDaIlha', ctx);
+  const f = vm.runInContext(PEDIR_JOGO + funcao(SRC, '  async function estadoDaIlha(ix, iy, townIdBase) {', FI) + '\nestadoDaIlha', ctx);
   return { f, pedidos };
 }
 

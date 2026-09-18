@@ -22,6 +22,7 @@ falha sem ela (estragar o código de propósito e ver a falha).
 
 | Ficheiro | O que tem de ser |
 |---|---|
+| `teste-botao-seletor.js` | O botão encosta ao nome da cidade, segue-o, e não sai do ecrã. |
 | `teste-nucleo.js` | O leitor da visão geral: cópia de 20 s, `fresca`, esquecer depois de um envio, pedidos ao mesmo tempo, 429, erros, sem Administrador. `ok: false` nunca é lista vazia. |
 | `teste-leitores.js` | Feitiços, Deuses e Reforço: a lista certa; o Reforço não traz tropa às cegas; o farm não ataca sem saber o favor a caminho; os três fazem um pedido só. |
 | `teste-alertas-esquiva.js` | Um ataque inimigo que só a visão geral traz é avisado e esquivado; voltas, revoltas, apoios de outros e comandos meus não; o mesmo ataque pelas duas fontes conta uma vez; leitura falhada não é desmentido. |

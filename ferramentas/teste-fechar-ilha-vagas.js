@@ -8,7 +8,7 @@
  *   node ferramentas/teste-fechar-ilha-vagas.js maestro.user.js
  */
 const S = require('./simulador');
-const { vm, funcao } = S;
+const { vm, funcao, PEDIR_JOGO } = S;
 const SRC = S.ficheiroDoMaestro();
 const t = S.verificador('FECHAR ILHA — VAGAS');
 const FI = 'function makeFecharIlhaModule(opts)';
@@ -43,7 +43,7 @@ function montar(propostas, formato) {
   };
   const ctx = { mUw, LUGARES: 20, seErroDeCodigo: () => {}, console, setTimeout, window: {} };
   vm.createContext(ctx);
-  const txt = funcao(SRC, '  async function vagasDaIlha(townId, x, y, lugarSugerido) {', FI)
+  const txt = PEDIR_JOGO + funcao(SRC, '  async function vagasDaIlha(townId, x, y, lugarSugerido) {', FI)
     + funcao(SRC, '  async function lugarLivrePorUsar(townId, x, y, jaUsados) {', FI)
     + '\n({ vagas: vagasDaIlha, livre: lugarLivrePorUsar })';
   return { api: vm.runInContext(txt, ctx), pedidos };
@@ -94,10 +94,63 @@ function montar(propostas, formato) {
       fetch: async () => ({ text: async () => '{"json":{"t_token":1}}' }) },
       LUGARES: 20, seErroDeCodigo: () => {}, console, setTimeout, window: {} };
     vm.createContext(ctx);
-    const f = vm.runInContext(funcao(SRC, '  async function vagasDaIlha(townId, x, y, lugarSugerido) {', FI)
+    const f = vm.runInContext(PEDIR_JOGO + funcao(SRC, '  async function vagasDaIlha(townId, x, y, lugarSugerido) {', FI)
       + '\nvagasDaIlha', ctx);
     const v = await f(111, 381, 470);
     t.verifica('resposta sem a ficha da ilha: diz que não deu (não inventa vagas)', !v.ok, v);
+  }
+  t.secao('O LUGAR 0 É UM LUGAR');
+  {
+    /* Numa ilha vazia o jogo propõe mesmo o número 0 — confirmado com a espia
+     * (15/09: 20 vagas, lugar proposto 0). Cheguei a recusá-lo e a conta
+     * ficava sem fundar. */
+    const m = montar([0], 'models');
+    const v = await m.api.vagas(111, 410, 661);
+    t.verifica('o jogo propõe o lugar 0: aceita-se', v.ok && v.lugar === 0, v);
+    const r = await m.api.livre(111, 410, 661, new Set());
+    t.verifica('... e usa-se para fundar', r.ok && r.lugar === 0, r);
+  }
+  {
+    const m = montar([0], 'models');
+    const r = await m.api.livre(111, 410, 661, new Set([0]));
+    t.verifica('mas se outra conta já o usar, pede-se outro', !r.ok, r);
+  }
+  t.secao('O DONO REPARTE OS LUGARES');
+  {
+    /* Numa ilha VAZIA o jogo propõe sempre o primeiro livre: as vinte contas
+     * recebiam o lugar 0 e ficavam à espera umas das outras (15/09). Mas o
+     * jogo aceita o lugar que se lhe pede — pedi 0, 3, 7 e 19 e devolveu os
+     * mesmos —, por isso o dono volta a repartir. */
+    t.verifica('o plano atribui um lugar a cada conta',
+      /atribuicoes\[n\] = \(i < livres\.length\) \? livres\[i\] : -1;/.test(SRC));
+    t.verifica('... a partir dos lugares livres da ilha',
+      /if \(!ocupados\.has\(n2\)\) livres\.push\(n2\);/.test(SRC));
+    t.verifica('a conta usa o lugar que lhe deram',
+      /let lugar = Number\(meuLugar\);/.test(SRC));
+    t.verifica('... e só pede ao jogo quando não veio nenhum',
+      /if \(!\(lugar >= 0\)\) \{/.test(SRC));
+  }
+  t.secao('NINGUÉM PARTE SEM TODOS PODEREM');
+  {
+    /* 17 colonizadores foram para uma ilha que precisava de 20, e três contas
+     * ficaram sem vaga: os 17 ficam lá sem fechar nada (16/09). */
+    const i = SRC.indexOf('NINGUÉM PARTE ENQUANTO TODOS NÃO PUDEREM');
+    const bloco = SRC.slice(i, i + 1600);
+    t.verifica('confirma-se que nenhuma conta do plano está impedida', i > 0
+      && /const impedidas = Object\.keys\(plano\.atribuicoes \|\| \{\}\)\.filter/.test(bloco));
+    t.verifica('... e quem já enviou não conta como impedida',
+      /if \(plano\.enviados\[n2\]\) return false;/.test(bloco));
+    t.verifica('... e o plano espera em vez de abortar',
+      /Ninguém parte enquanto todas não puderem/.test(bloco));
+  }
+  {
+    /* Com seis planos na fila, guardam-se seis colonizadores. */
+    const i = SRC.indexOf('UMA VAGA E UM COLONIZADOR POR PLANO EM QUE ESTOU');
+    const bloco = SRC.slice(i, i + 900);
+    t.verifica('a reserva acompanha o número de planos', i > 0
+      && /querNC\('fecharilha', 60, Math\.max\(1, meusPlanos\)\)/.test(bloco));
+    t.verifica('... contando só os planos onde esta conta entra',
+      /\(p2\.atribuicoes \|\| \{\}\)\[eu\] !== undefined/.test(bloco));
   }
   t.fim();
 })().catch((e) => { console.error('O TESTE REBENTOU:', e); process.exit(2); });

@@ -9,7 +9,7 @@
  */
 const S = require('./simulador');
 const { AGORA_S, vm, tira, funcao, jogo, carregarNucleo, semAdministrador, correr, ligar, lista, ERRO, LIMITADO,
-  igual } = S;
+  igual, PEDIR_JOGO } = S;
 const SRC = S.ficheiroDoMaestro();
 
 const t = S.verificador('APOIO, FUNDAÇÃO, EXPANSÃO');
@@ -19,7 +19,7 @@ async function apoio(j) {
   const porque = tira(SRC, "              const porque = !temAdm ? 'esta conta não tem Administrador'", ';\n');
   const ctx = { mUw: j.win, window: j.win, console };
   vm.createContext(ctx);
-  return vm.runInContext(`(async () => {\n${seg}\n${porque}\nreturn { cmdsLidos, visaoOk, porque }; })()`, ctx);
+  return vm.runInContext(PEDIR_JOGO + `(async () => {\n${seg}\n${porque}\nreturn { cmdsLidos, visaoOk, porque }; })()`, ctx);
 }
 async function fundacao(j) {
   const f = tira(SRC, "  let razaoColonizadores = '';", '\n    return out;\n  }\n');

@@ -13,7 +13,11 @@ const src = fs.readFileSync(ficheiro, 'utf8');
 const ini = src.indexOf('  async function lerRespostaComum(resposta) {');
 const fim = src.indexOf('  /* ============ AVISO DE VERIFICAÇÃO DE BOT');
 if (ini < 0 || fim < 0 || fim < ini) throw new Error('não encontrei o bloco do núcleo');
-const bloco = src.slice(ini, fim);
+/* O `pedirJogo` vive ao nível do núcleo, antes deste bloco — desde que todos
+ * os pedidos passam pelo broker (18/09). */
+const bloco = `
+function pedirJogo(url, opcoes) { return uw.fetch(url, opcoes); }
+` + src.slice(ini, fim);
 
 let falhas = 0;
 let n = 0;

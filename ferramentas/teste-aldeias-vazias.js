@@ -28,7 +28,12 @@ function montar(rende, apareceu) {
     aldeiaParaMostrarCaptcha: () => ({ farmTownId: 900, townId: 111 }),
   };
   vm.createContext(ctx);
-  const txt = funcao(SRC, '  async function fazerRecolha(ctx, towns) {', AL) + '\nfazerRecolha';
+  /* O `fazerRecolha` usa o `recursosEmCasa`, que vive ao nível do módulo. */
+  const txt = 'let antesDeRecolher = -1;\nlet semEntrada = 0;\n'
+    + 'let noLimiteHoje = new Set();\nlet diaDoLimite = new Date().getDate();\n'
+    + funcao(SRC, '  function limparLimiteSeMudouODia() {', AL)
+    + funcao(SRC, '  function recursosEmCasa() {', AL)
+    + funcao(SRC, '  async function fazerRecolha(ctx, towns) {', AL) + '\nfazerRecolha';
   const f = vm.runInContext(txt, ctx);
   const reg = { ecra: [], rotina: [] };
   const c = { log: (m) => reg.ecra.push(String(m)), logRotina: (m) => reg.rotina.push(String(m)),
@@ -81,6 +86,66 @@ function montar(rende, apareceu) {
     t.verifica('... e apaga a marca', !b.marca(), b.marca());
     const c2 = suspensao(true, 45);
     t.verifica('tecto de 30 min: não fica suspenso para sempre', c2.activo === false);
+  }
+  t.secao('RECOLHER E NADA ENTRAR NOS ARMAZÉNS');
+  {
+    /* O número do registo é o que as aldeias DEVIAM render, não o que entrou.
+     * Com um captcha por resolver, o servidor aceita, não dá nada, e o registo
+     * anuncia milhões — os armazéns é que não mexem (16/09). */
+    const i = SRC.indexOf('OS RECURSOS QUE ESTAVAM NOS ARMAZÉNS ANTES DE RECOLHER');
+    t.verifica('lê os armazéns antes de recolher', i > 0
+      && /^    antesDeRecolher = recursosEmCasa\(\);$/m.test(SRC));
+    t.verifica('... e compara depois', /const entrou = \(antesDeRecolher >= 0 && depois >= 0\)/.test(SRC));
+    t.verifica('nada entrou duas vezes seguidas: abre uma aldeia para ver o captcha',
+      /if \(semEntrada >= 2\) \{/.test(SRC) && /abro uma aldeia para ver se há verificação/.test(SRC));
+    t.verifica('uma passagem só não chega — os armazéns podem estar cheios',
+      /confirmo na passagem seguinte/.test(SRC));
+    t.verifica('e o registo passa a dizer quanto entrou de facto',
+      /entraram \$\{entrou\}/.test(SRC));
+  }
+  t.secao('AS FUNÇÕES ESTÃO AO ALCANCE UMAS DAS OUTRAS');
+  {
+    /* O `recursosEmCasa` estava declarado dentro do `fazerRecolha` e era usado
+     * no `recolhaIndividual`, que é outra função: o módulo rebentava com
+     * "recursosEmCasa is not defined" (16/09, na 9300). */
+    const nivelDe = (marca) => {
+      const linhas = SRC.split('\n');
+      const i = linhas.findIndex((l) => l.includes(marca));
+      for (let k = i; k >= 0; k--) {
+        if (/^  (async )?function /.test(linhas[k])) return linhas[k].trim();
+      }
+      return '?';
+    };
+    t.verifica('o recursosEmCasa vive ao nível do módulo',
+      nivelDe('  function recursosEmCasa() {').startsWith('function recursosEmCasa'),
+      nivelDe('  function recursosEmCasa() {'));
+    /* O mesmo erro, a segunda vez: o total de antes era declarado no
+     * `fazerRecolha` e lido no `recolhaIndividual`. O módulo morria a cada
+     * passagem e houve contas dez horas sem recolher (16/09). */
+    t.verifica('o total de antes de recolher também',
+      /^  let antesDeRecolher = -1;$/m.test(SRC)
+      && /^    antesDeRecolher = recursosEmCasa\(\);$/m.test(SRC));
+    t.verifica('... e nenhuma das duas é declarada dentro de uma função',
+      !/const antesDeRecolher = recursosEmCasa\(\);/.test(SRC)
+      && !/const recursosEmCasa = /.test(SRC));
+    t.verifica('... e as duas funções que o usam alcançam-no',
+      nivelDe('    antesDeRecolher = recursosEmCasa();').includes('fazerRecolha')
+      && nivelDe('const depois = recursosEmCasa();').includes('recolhaIndividual'));
+  }
+  t.secao('NO LIMITE DIÁRIO NÃO É SINAL DE VERIFICAÇÃO');
+  {
+    /* Uma aldeia que já deu o que tinha hoje rende zero — e isso não tem nada
+     * a ver com captchas. Numa conta com as 18 aldeias no limite, o módulo
+     * abria uma aldeia a cada passagem e o clique fazia aparecer a verificação
+     * que não existia antes (17/09, Lagostax no pt127). */
+    t.verifica('as aldeias no limite ficam registadas',
+      /noLimiteHoje\.add\(Number\(p\.farmTownId\)\)/.test(SRC));
+    t.verifica('... e não contam para a sonda do captcha',
+      /const foraDoLimite = prontas\.filter\(\(p\) => !noLimiteHoje\.has\(Number\(p\.farmTownId\)\)\);/.test(SRC));
+    t.verifica('só se sonda quando há aldeias fora do limite que não rendem',
+      /if \(foraDoLimite\.length\s*\n\s*&& foraDoLimite\.reduce/.test(SRC));
+    t.verifica('e o registo esvazia-se quando o dia muda',
+      /if \(hoje !== diaDoLimite\) \{ diaDoLimite = hoje; noLimiteHoje = new Set\(\); \}/.test(SRC));
   }
   t.fim();
 })().catch((e) => { console.error('O TESTE REBENTOU:', e); process.exit(2); });
