@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.14.1700
+// @version      2026.09.14.1800
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -3342,7 +3342,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.14.1700';
+  const MAESTRO_VERSAO = '2026.09.14.1800';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -5691,14 +5691,27 @@
     })();
 
     if (naBarraDoJogo) {
+      /* POR CIMA DO RETRATO, NÃO POR TRÁS.
+       *
+       * Metido dentro da caixa, o botão ficava escondido por trás da moldura
+       * do retrato — existia, tinha tamanho e estava visível, mas não se via
+       * (18/09). Fica encostado ao fundo da caixa, por cima de tudo. */
       btn.style.cssText = [
-        'position:relative', 'display:inline-flex', 'align-items:center', 'gap:5px',
-        'background:#161d26', 'border:1px solid #28323f', 'border-radius:5px',
-        'color:#8493a5', 'font:600 10px/1 system-ui,-apple-system,"Segoe UI",sans-serif',
-        'letter-spacing:.12em', 'padding:5px 9px', 'margin:3px',
-        'cursor:pointer', 'user-select:none', 'z-index:10',
+        'position:absolute', 'left:0', 'bottom:-24px', 'z-index:9999',
+        'display:inline-flex', 'align-items:center', 'gap:5px',
+        'background:#161d26', 'border:1px solid #3a4756', 'border-radius:5px',
+        'color:#a9b7c6', 'font:600 10px/1 system-ui,-apple-system,"Segoe UI",sans-serif',
+        'letter-spacing:.12em', 'padding:4px 8px',
+        'cursor:pointer', 'user-select:none',
+        'box-shadow:0 2px 6px rgba(0,0,0,.45)',
       ].join(';');
       btn.title = 'Abrir o Maestro';
+      /* A caixa tem de deixar posicionar lá dentro. */
+      try {
+        if (getComputedStyle(naBarraDoJogo).position === 'static') {
+          naBarraDoJogo.style.position = 'relative';
+        }
+      } catch (e) {}
     }
 
     const luz = btn.querySelector('#maestro-btn-luz');
@@ -5761,11 +5774,42 @@
       if (moveu) guardarSitio();
     });
 
-    btn.onclick = () => {
+    btn.onclick = (ev) => {
       if (moveu) { moveu = false; return; }      // foi arrasto, não clique
       const pn = document.getElementById('maestro-panel');
       if (pn) pn.style.display = pn.style.display === 'none' ? 'block' : 'none';
+      /* Não deixar este clique chegar ao documento: fecharia logo o que
+       * acabou de abrir. */
+      try { ev.stopPropagation(); } catch (e) {}
     };
+
+    /* ============ FECHAR SEM TER DE ACERTAR NO BOTÃO ==================
+     *
+     * O painel tapa meio ecrã e só fechava carregando outra vez no botão —
+     * que às vezes fica por baixo dele. Duas saídas naturais: a tecla Esc, e
+     * clicar fora (18/09).
+     *
+     * Não se fecha quando há uma janela do jogo por cima (o encaixe abre uma),
+     * nem quando se está a escrever num campo: nesses casos o Esc é do jogo ou
+     * do campo, não nosso. */
+    try {
+      document.addEventListener('keydown', (ev) => {
+        if (ev.key !== 'Escape') return;
+        const pn = document.getElementById('maestro-panel');
+        if (!pn || pn.style.display === 'none') return;
+        const act = document.activeElement;
+        if (act && /^(INPUT|TEXTAREA|SELECT)$/.test(act.tagName)) return;
+        pn.style.display = 'none';
+      });
+
+      document.addEventListener('mousedown', (ev) => {
+        const pn = document.getElementById('maestro-panel');
+        if (!pn || pn.style.display === 'none') return;
+        /* Dentro do painel ou no botão: não se mexe. */
+        if (pn.contains(ev.target) || btn.contains(ev.target)) return;
+        pn.style.display = 'none';
+      });
+    } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
     /* Sítio guardado manda. Só quem nunca lhe mexeu é que apanha a posição
      * calculada a partir da coluna do jogo. */
