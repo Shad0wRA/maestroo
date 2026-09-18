@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.14.1200
+// @version      2026.09.14.1300
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1038,6 +1038,15 @@
           unitsId: Number(l.id) || 0,
           alvoId,
           alvoNome: String(l.current_town_name || alvoId).trim(),
+          /* O DONO DA CIDADE ONDE A TROPA ESTÁ.
+           *
+           * Vem no bloco e estava a ser deitado fora. É o que permite saber
+           * que um alvo mudou de mãos: uma cidade que conquistaste continua na
+           * lista com o nome do dono antigo, e uma que perdeste continua a
+           * receber apoio (visto em jogo, 17/09 — a 2385, tomada ao Jomaras,
+           * aparecia como dele no painel). */
+          donoId: Number(l.player_id) || 0,
+          donoNome: String(l.player_name || '').trim(),
           unidades,
         });
       }
@@ -1117,6 +1126,10 @@
       algumaFresca = true;
       for (const b of (e.blocos || [])) {
         const alvo = out[b.alvoId] = out[b.alvoId] || { unidades: {}, blocos: [] };
+        /* O dono vem do bloco quando a leitura foi pela via rápida; pela via
+         * lenta não vem, e fica vazio. */
+        if (b.donoId && !alvo.donoId) { alvo.donoId = b.donoId; alvo.donoNome = b.donoNome; }
+        if (b.alvoNome && !alvo.nome) alvo.nome = b.alvoNome;
         alvo.blocos.push({ unitsId: b.unitsId, de: Number(id), unidades: b.unidades });
         for (const u of Object.keys(b.unidades || {})) {
           alvo.unidades[u] = (alvo.unidades[u] || 0) + Number(b.unidades[u] || 0);
@@ -3195,7 +3208,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.14.1200';
+  const MAESTRO_VERSAO = '2026.09.14.1300';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -40234,8 +40247,31 @@ function makeApoioModule(opts) {
         · <span id="ap-capacidade" style="opacity:.85">a somar a frota…</span>
       </div>`;
 
+    /* O DONO DE AGORA, NÃO O DE QUANDO SE LEU.
+     *
+     * A cache guarda o dono de quando a cidade foi vista pela primeira vez.
+     * Uma cidade conquistada continuava a aparecer com o dono antigo — a 2385,
+     * tomada ao Jomaras, aparecia como dele e parecia um erro (17/09).
+     *
+     * A leitura da Ágora traz o dono actual em cada bloco: quando houver, é
+     * esse que manda. */
+    const donoAgora = (() => {
+      const m = {};
+      try {
+        const api = mUw.__maestroApoioFora;
+        const porAlvo = (api && api.porAlvo && api.porAlvo()) || {};
+        for (const k of Object.keys(porAlvo)) {
+          const x = porAlvo[k] || {};
+          if (x.donoNome) m[Number(k)] = x.donoNome;
+        }
+      } catch (e) { seErroDeCodigo(e, 'Apoio'); }
+      return m;
+    })();
+
     const linhas = alvos.length ? alvos.map((id) => {
-      const info = cacheCidades[id] || { nome: '#' + id, jogador: '…' };
+      const guardado = cacheCidades[id] || { nome: '#' + id, jogador: '…' };
+      const info = Object.assign({}, guardado,
+        donoAgora[id] ? { jogador: donoAgora[id] } : {});
       const t = tropasEnviadasPara(id, reg);
 
       const det = Object.keys(t.detalhe).map((k) => `${t.detalhe[k]} ${k}`).join(', ');
