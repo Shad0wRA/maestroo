@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.14.1800
+// @version      2026.09.14.1900
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -3342,7 +3342,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.14.1800';
+  const MAESTRO_VERSAO = '2026.09.14.1900';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -5691,21 +5691,43 @@
     })();
 
     if (naBarraDoJogo) {
-      /* POR CIMA DO RETRATO, NÃO POR TRÁS.
+      /* ============ UM CÍRCULO, COMO OS DO JOGO =======================
        *
-       * Metido dentro da caixa, o botão ficava escondido por trás da moldura
-       * do retrato — existia, tinha tamanho e estava visível, mas não se via
-       * (18/09). Fica encostado ao fundo da caixa, por cima de tudo. */
+       * Primeiro foi uma barra a flutuar por cima do mapa; depois um botão
+       * com o nome, que ficou escondido por trás da moldura do retrato.
+       *
+       * O que faltava era parecer parte do jogo: um círculo pequeno com um M,
+       * do tamanho do que outros scripts põem ali, encostado ao canto da
+       * caixa do retrato. E FIXO — arrastá-lo fazia-o desaparecer para fora
+       * do ecrã (18/09).
+       *
+       * A luz do estado continua lá, agora como um anel à volta: verde a
+       * correr, âmbar quando o servidor trava, vermelho quando há erros. */
+      btn.innerHTML = '<span id="maestro-btn-luz"></span><span>M</span>';
       btn.style.cssText = [
-        'position:absolute', 'left:0', 'bottom:-24px', 'z-index:9999',
-        'display:inline-flex', 'align-items:center', 'gap:5px',
-        'background:#161d26', 'border:1px solid #3a4756', 'border-radius:5px',
-        'color:#a9b7c6', 'font:600 10px/1 system-ui,-apple-system,"Segoe UI",sans-serif',
-        'letter-spacing:.12em', 'padding:4px 8px',
+        /* O sítio livre à esquerda do retrato, medido no jogo: 17 px da
+         * esquerda da caixa e 72 do topo. É onde o Rafa o quis, ao lado do
+         * que outros scripts já lá põem (18/09). */
+        'position:absolute', 'left:17px', 'top:72px', 'z-index:9999',
+        'width:22px', 'height:22px', 'border-radius:50%',
+        'display:flex', 'align-items:center', 'justify-content:center',
+        'background:linear-gradient(#2a3442,#1a222c)',
+        'border:1px solid #4a5766',
+        'color:#cdd8e4', 'font:700 12px/1 "Trebuchet MS",system-ui,sans-serif',
         'cursor:pointer', 'user-select:none',
-        'box-shadow:0 2px 6px rgba(0,0,0,.45)',
+        'box-shadow:0 1px 3px rgba(0,0,0,.6), inset 0 1px 0 rgba(255,255,255,.08)',
       ].join(';');
-      btn.title = 'Abrir o Maestro';
+      btn.title = 'Maestro';
+
+      /* A luz passa a ser o anel do círculo. */
+      const l = btn.querySelector('#maestro-btn-luz');
+      if (l) {
+        l.style.cssText = [
+          'position:absolute', 'inset:-2px', 'border-radius:50%',
+          'border:2px solid #5b6878', 'pointer-events:none',
+        ].join(';');
+      }
+
       /* A caixa tem de deixar posicionar lá dentro. */
       try {
         if (getComputedStyle(naBarraDoJogo).position === 'static') {
@@ -5718,6 +5740,8 @@
     luz.style.cssText = 'width:7px;height:7px;border-radius:50%;background:#5b6878;flex:0 0 auto';
 
     function pintarLuz() {
+      /* No círculo, a luz é o anel à volta; a bola só existe quando o botão
+       * está a flutuar. */
       try {
         let cor = '#5b6878';                       // parado
         const algum = MODULES.some((m) => modState[m.id] && modState[m.id].ativo);
@@ -5727,15 +5751,21 @@
           if ((uw.__maestroErrosDeCodigo && uw.__maestroErrosDeCodigo() || []).length) cor = '#d9705f';
         } catch (e) {}
         try { if (haVerificacaoDeBot && haVerificacaoDeBot()) cor = '#d9705f'; } catch (e) {}
-        luz.style.background = cor;
-        btn.style.color = (cor === '#5b6878') ? '#5b6878' : '#dce4ee';
+        /* O elemento da luz é recriado quando o botão vira círculo: procura-se
+         * de cada vez, em vez de guardar a referência do arranque. */
+        const el = btn.querySelector('#maestro-btn-luz');
+        if (el) {
+          if (naBarraDoJogo) el.style.borderColor = cor;   // o anel
+          else el.style.background = cor;                  // a bola
+        }
+        btn.style.color = (cor === '#5b6878') ? '#8a97a6' : '#dce4ee';
       } catch (e) {}
     }
     setInterval(pintarLuz, 5000);
     setTimeout(pintarLuz, 1200);
 
     btn.onmouseover = () => { btn.style.borderColor = '#d8a33f'; };
-    btn.onmouseout = () => { btn.style.borderColor = '#28323f'; };
+    btn.onmouseout = () => { btn.style.borderColor = naBarraDoJogo ? '#4a5766' : '#28323f'; };
 
     /* ARRASTAR. O clique só abre o painel se o rato não se tiver mexido —
      * senão arrastar o botão abria o painel de cada vez. */
@@ -5750,6 +5780,11 @@
     }
 
     btn.addEventListener('mousedown', (ev) => {
+      /* FIXO NO CANTO.
+       *
+       * Arrastá-lo punha-o fora do ecrã e ficava sem forma de o recuperar
+       * (18/09). Dentro da caixa do jogo não se arrasta. */
+      if (naBarraDoJogo) return;
       aArrastar = true; moveu = false;
       const r = btn.getBoundingClientRect();
       dx = ev.clientX - r.left; dy = ev.clientY - r.top;
