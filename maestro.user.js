@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.14.0700
+// @version      2026.09.14.0900
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1654,6 +1654,30 @@
   const ataquesVistos = new Set();
   let vigiaLigado = false;
 
+  /* OS FEITIÇOS QUE ESTÃO NOS MEUS COMANDOS.
+   *
+   * Se um desaparece, foi purificado — e quem o lançou quer repô-lo já, não
+   * na passagem seguinte do módulo (17/09).
+   *
+   * Guarda-se o conjunto de "comando + feitiço" a cada segundo; o que sai do
+   * conjunto é uma purificação. */
+  let feiticosNosComandos = new Set();
+
+  function feiticosActivosAgora() {
+    const s = new Set();
+    try {
+      const cp = uw.MM.getCollections().CastedPowers;
+      for (const m of ((cp && cp[0] && cp[0].models) || [])) {
+        const a = m.attributes || {};
+        /* Só os que estão num COMANDO: os de cidade não interessam aqui. */
+        const cmd = Number(a.command_id) || 0;
+        if (!cmd) continue;
+        s.add(cmd + ':' + String(a.power_id || ''));
+      }
+    } catch (e) {}
+    return s;
+  }
+
   /* Os ataques que interessam: os que me chegam E os que eu mando.
    *
    * Os que chegam acordam a esquiva e os alertas. Os que eu mando acordam os
@@ -1692,6 +1716,23 @@
     for (const a of ataquesAChegar()) ataquesVistos.add(String(a.id));
 
     setInterval(() => {
+      /* UM FEITIÇO QUE DESAPARECE FOI PURIFICADO.
+       *
+       * Corre antes dos ataques porque é o caso urgente: repor um feitiço
+       * purificado vale mais quanto mais cedo for. */
+      try {
+        const feiticosAgora = feiticosActivosAgora();
+        if (feiticosNosComandos.size) {
+          const caidos = [...feiticosNosComandos].filter((k) => !feiticosAgora.has(k));
+          if (caidos.length) {
+            acordar('feiticos', 0);
+            log('core', `🪄 ${caidos.length} feitiço(s) purificado(s) — acordei os feitiços `
+              + 'para repor.');
+          }
+        }
+        feiticosNosComandos = feiticosAgora;
+      } catch (e) { seErroDeCodigo(e, 'núcleo'); }
+
       try {
         const agora = ataquesRelevantes();
         const novos = agora.filter((a) => !ataquesVistos.has(String(a.id)));
@@ -1719,6 +1760,14 @@
           acordar('esquiva', 0);
           acordar('reforco', 0);
           acordar('feiticos', 0);
+          /* UM COLONIZADOR A CAMINHO NÃO ESPERA.
+           *
+           * O módulo de partir cercos tem de agendar os ataques para baterem
+           * no segundo do impacto — quanto mais cedo souber, mais cidades
+           * cabem na janela (18/09). */
+          if (novos.some((a) => /takeover/i.test(String(a.type || '')))) {
+            acordar('partircerco', 0);
+          }
         }
         /* Um ataque MEU a sair: os feitiços podem querer reforçá-lo. */
         if (aSair) acordar('feiticos', 0);
@@ -2960,7 +3009,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.14.0700';
+  const MAESTRO_VERSAO = '2026.09.14.0900';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -19067,6 +19116,387 @@ function makeFeiticosModule(opts) {
     intervaloMin: opts.intervaloMin || 5, run, painel };
 }
 
+
+/* ============================================================================
+ * PARTIR CERCOS — mundos de cerco
+ * ============================================================================
+ *
+ * Num mundo de cerco, um ataque com colonizador que vence a defesa deixa a
+ * cidade CERCADA: a tropa do atacante fica lá dentro a segurá-la durante sete
+ * ou oito horas, e no fim a cidade muda de dono.
+ *
+ * Para partir o cerco é preciso limpar a frota que o segura — afundando os
+ * navios, o colonizador morre com eles.
+ *
+ * O QUE ESTE MÓDULO FAZ, e porquê assim (desenhado com o Rafa, 18/09):
+ *
+ *   · Não espera pelo cerco. Assim que vê um colonizador a caminho de uma
+ *     cidade do grupo, prepara os ataques para baterem NO MESMO SEGUNDO do
+ *     impacto dele.
+ *
+ *     A razão é uma regra do jogo: ao mesmo segundo, a ordem é a de quem
+ *     enviou primeiro. O colonizador já partiu quando o detectamos, por isso
+ *     bate primeiro e cria o cerco; os nossos ataques batem logo a seguir,
+ *     contra um cerco acabado de formar e ainda sem os apoios que o adversário
+ *     mandar depois.
+ *
+ *   · Cada conta manda um pacote configurável de navios de ataque. As cidades
+ *     que chegam a tempo agendam pelo Encaixe, que acerta ao segundo; o que
+ *     faltar sai das cidades mais próximas, sem agendamento — chega quando
+ *     chegar, e o cerco dura horas.
+ *
+ *   · Vale para as cidades de todas as contas do grupo, a principal incluída.
+ *
+ * O RISCO, aceite de propósito: se a defesa aguentar e o colonizador não
+ * passar, os ataques batem numa cidade que continua nossa. Perde-se frota.
+ * Contra perder a cidade, compensa.
+ * ========================================================================= */
+function makePartirCercoModule(opts) {
+  let mUw = null, mWorld = '';
+  const CFG_KEY = 'grepoPartirCerco_cfg_v1';
+  const FEITOS_KEY = 'grepoPartirCerco_feitos_v1';
+
+  const armazem = (() => {
+    try {
+      const a = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroArmazem;
+      return a || localStorage;
+    } catch (e) { return localStorage; }
+  })();
+
+  function cfg() {
+    let c = {};
+    try { c = JSON.parse(armazem.getItem(CFG_KEY) || '{}') || {}; } catch (e) {}
+    return Object.assign({
+      ativo: false,
+      /* Navios de ataque por conta. O valor certo depende do cerco; 500 é o
+       * que o Rafa usa. */
+      quantos: 500,
+      /* Só depois do impacto: bater antes seria contra a defesa própria. */
+      toleranciaDepois: 3,
+    }, c);
+  }
+  function guardarCfg(c) { try { armazem.setItem(CFG_KEY, JSON.stringify(c)); } catch (e) {} }
+
+  /* Os cercos que esta conta já tratou, para não repetir. */
+  function lerFeitos() {
+    try { return JSON.parse(armazem.getItem(FEITOS_KEY) || '{}') || {}; } catch (e) { return {}; }
+  }
+  function marcarFeito(cmdId) {
+    try {
+      const d = lerFeitos();
+      d[String(cmdId)] = Math.floor(Date.now() / 1000);
+      /* Esquecer o que tem mais de um dia. */
+      const limite = Math.floor(Date.now() / 1000) - 86400;
+      for (const k of Object.keys(d)) if (Number(d[k]) < limite) delete d[k];
+      armazem.setItem(FEITOS_KEY, JSON.stringify(d));
+    } catch (e) { seErroDeCodigo(e, 'PartirCerco'); }
+  }
+
+  /* O mundo é de cerco? O jogo só carrega a colecção das revoltas nos mundos
+   * de revolta — confirmado no pt126 (tem) e no pt125, de cerco (não tem). */
+  function mundoDeCerco() {
+    try { return !(mUw.MM.getModels() || {}).MovementsRevoltDefender; }
+    catch (e) { return false; }
+  }
+
+  const caminhoAvisos = () => `cercos/${mWorld}`;
+
+  /* ---------------------------------------------------------------------
+   * 1. DETECTAR: um colonizador a caminho de uma cidade minha.
+   * ------------------------------------------------------------------ */
+  function colonizadoresAChegar() {
+    const out = [];
+    try {
+      const minhas = new Set(Object.keys(mUw.ITowns.towns).map(Number));
+      const eu = Number(mUw.Game.player_id);
+      const mv = (mUw.MM.getModels() || {}).MovementsUnits || {};
+      for (const k of Object.keys(mv)) {
+        const a = (mv[k] || {}).attributes || {};
+        /* `attack_takeover` é o ataque que leva colonizador. */
+        if (!/takeover/i.test(String(a.type || ''))) continue;
+        if (!minhas.has(Number(a.target_town_id))) continue;
+        if (Number(a.player_id) === eu) continue;              // meu
+        const chega = Number(a.arrival_at) || 0;
+        if (!chega || chega <= Math.floor(Date.now() / 1000)) continue;
+        out.push({
+          cmd: String(a.command_id || a.id || ''),
+          alvo: Number(a.target_town_id),
+          chega,
+          quem: String(a.town_name_origin || '?'),
+        });
+      }
+    } catch (e) { seErroDeCodigo(e, 'PartirCerco'); }
+    return out;
+  }
+
+  /* Publica para as outras contas: é uma cidade minha, elas não a vêem. */
+  async function publicarCercos(lista) {
+    try {
+      const fb = mUw.__maestroFb;
+      if (!fb || !fb.url || !fb.url()) return;
+      const conta = String(mUw.Game.player_name || '?').replace(/[.#$[\]/:]/g, '_');
+      const d = {};
+      for (const c of lista) {
+        d[c.cmd] = { alvo: c.alvo, chega: c.chega, quem: c.quem,
+          nome: nomeDaCidade(c.alvo), conta: mUw.Game.player_name };
+      }
+      await fb.escrever(`${caminhoAvisos()}/${conta}`, { quando: Math.floor(Date.now() / 1000), cercos: d });
+    } catch (e) { seErroDeCodigo(e, 'PartirCerco'); }
+  }
+
+  /* O que as outras contas publicaram. */
+  async function cercosDoGrupo() {
+    const out = [];
+    try {
+      const fb = mUw.__maestroFb;
+      if (!fb || !fb.url || !fb.url()) return out;
+      const d = (await fb.ler(caminhoAvisos())) || {};
+      const agoraS = Math.floor(Date.now() / 1000);
+      for (const conta of Object.keys(d)) {
+        const x = d[conta] || {};
+        if (!x.quando || (agoraS - Number(x.quando)) > 3600) continue;
+        for (const cmd of Object.keys(x.cercos || {})) {
+          const c = x.cercos[cmd] || {};
+          if (!c.chega || Number(c.chega) <= agoraS) continue;   // já bateu
+          out.push({ cmd, alvo: Number(c.alvo), chega: Number(c.chega),
+            nome: String(c.nome || c.alvo), conta: String(c.conta || conta) });
+        }
+      }
+    } catch (e) { seErroDeCodigo(e, 'PartirCerco'); }
+    return out;
+  }
+
+  function nomeDaCidade(id) {
+    try { return mUw.ITowns.getTown(Number(id)).getName() || String(id); }
+    catch (e) { return String(id); }
+  }
+
+  /* ---------------------------------------------------------------------
+   * 2. QUEM PODE MANDAR, E A TEMPO DE QUÊ.
+   * ------------------------------------------------------------------ */
+  function faroisEm(townId) {
+    try { return Number((mUw.ITowns.getTown(Number(townId)).units() || {}).attack_ship) || 0; }
+    catch (e) { return 0; }
+  }
+
+  /* Quanto demora um ataque de faróis desta cidade até ao alvo. */
+  function viagemAte(origemId, alvoId, quantos) {
+    try {
+      const enc = mUw.__maestroDuracaoPrevista;
+      if (enc) {
+        const d = enc(origemId, alvoId, { attack_ship: quantos });
+        if (d > 0) return d;
+      }
+    } catch (e) {}
+    return 0;
+  }
+
+  /* ---------------------------------------------------------------------
+   * 3. O PLANO DESTA CONTA para um cerco.
+   * ------------------------------------------------------------------ */
+  function planoPara(cerco, c) {
+    const agoraS = Math.floor(Date.now() / 1000);
+    const faltam = cerco.chega - agoraS;
+    if (faltam <= 0) return null;
+
+    /* As cidades com faróis, da mais próxima à mais distante. */
+    const cidades = [];
+    try {
+      for (const t of Object.values(mUw.ITowns.towns)) {
+        const n = faroisEm(t.id);
+        if (n <= 0) continue;
+        const viagem = viagemAte(t.id, cerco.alvo, n);
+        cidades.push({ id: t.id, nome: nomeDaCidade(t.id), farois: n, viagem });
+      }
+    } catch (e) { seErroDeCodigo(e, 'PartirCerco'); }
+
+    cidades.sort((a, b) => (a.viagem || 1e9) - (b.viagem || 1e9));
+
+    let porMandar = Number(c.quantos) || 0;
+    const agendar = [];
+    const directos = [];
+
+    for (const cid of cidades) {
+      if (porMandar <= 0) break;
+      const leva = Math.min(cid.farois, porMandar);
+
+      /* Cabe na janela? Tem de chegar ANTES do impacto, com folga para o
+       * Encaixe tentar. */
+      const cabe = cid.viagem > 0 && (cid.viagem + 30) <= faltam;
+      if (cabe) agendar.push({ ...cid, leva });
+      else directos.push({ ...cid, leva });
+
+      porMandar -= leva;
+    }
+
+    return { agendar, directos, emFalta: Math.max(0, porMandar) };
+  }
+
+  /* ---------------------------------------------------------------------
+   * 4. EXECUTAR.
+   * ------------------------------------------------------------------ */
+  async function tratarCerco(ctx, cerco, c) {
+    const plano = planoPara(cerco, c);
+    if (!plano) return false;
+    if (!plano.agendar.length && !plano.directos.length) {
+      ctx.log(`Partir cerco: ${cerco.nome} — não tenho faróis para mandar.`);
+      return false;
+    }
+
+    const quando = new Date(cerco.chega * 1000);
+    ctx.log(`⚔️ Partir cerco em ${cerco.nome} (${cerco.conta}) — colonizador bate às `
+      + `${quando.toLocaleTimeString()}. Agendo ${plano.agendar.length} cidade(s), `
+      + `${plano.directos.length} vão directas.`);
+
+    /* As que cabem na janela: pelo Encaixe, a bater no segundo do impacto. */
+    for (const cid of plano.agendar) {
+      try {
+        const enc = mUw.__maestroAgendarEncaixe;
+        if (!enc) break;
+        await enc({
+          origem: cid.id,
+          alvo: cerco.alvo,
+          unidades: { attack_ship: cid.leva },
+          tipo: 'attack',
+          chegada: cerco.chega,
+          /* SÓ DEPOIS DO IMPACTO.
+           *
+           * Ao mesmo segundo, a ordem é a de quem enviou primeiro — e o
+           * colonizador enviou antes. Bater no mesmo segundo é bater logo a
+           * seguir a ele, contra o cerco acabado de formar. Bater ANTES seria
+           * contra a nossa própria defesa. */
+          toleranciaAntes: 0,
+          toleranciaDepois: Number(c.toleranciaDepois) || 3,
+          motivo: `partir cerco em ${cerco.nome}`,
+        });
+        ctx.log(`   ${cid.nome}: ${cid.leva} farol(óis) agendados (viagem ${Math.round(cid.viagem / 60)} min).`);
+      } catch (e) { seErroDeCodigo(e, 'PartirCerco'); }
+    }
+
+    /* As que não cabem: vão já, chegam quando chegarem. O cerco dura horas. */
+    for (const cid of plano.directos) {
+      try {
+        const env = mUw.__maestroEnviarComando;
+        if (!env) break;
+        const r = await env(cid.id, cerco.alvo, { attack_ship: cid.leva }, 'attack');
+        ctx.log(r && r.ok
+          ? `   ${cid.nome}: ${cid.leva} farol(óis) a caminho (sem agendamento).`
+          : `   ${cid.nome}: falhou — ${(r && r.msg) || '?'}`);
+        await ctx.sleep(ctx.rand(400, 900));
+      } catch (e) { seErroDeCodigo(e, 'PartirCerco'); }
+    }
+
+    if (plano.emFalta) {
+      ctx.log(`   faltaram ${plano.emFalta} farol(óis) para o pacote de ${c.quantos}.`);
+    }
+
+    marcarFeito(cerco.cmd);
+    return true;
+  }
+
+  async function run(ctx) {
+    mUw = ctx.uw; mWorld = ctx.WORLD;
+    const rotina = ctx.logRotina || ctx.log;
+    const c = cfg();
+
+    try {
+      const doPainel = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroLigado;
+      if (doPainel) {
+        const v = doPainel('partircerco');
+        if (v === true) c.ativo = true;
+        if (v === false) c.ativo = false;
+      }
+    } catch (e) { seErroDeCodigo(e, 'PartirCerco'); }
+
+    if (!c.ativo) { rotina('Partir cerco: está desligado.'); return; }
+
+    if (!mundoDeCerco()) {
+      rotina('Partir cerco: este mundo é de revolta — não há cercos a partir.');
+      return;
+    }
+
+    /* Publicar os colonizadores que vêm às MINHAS cidades. */
+    const meus = colonizadoresAChegar();
+    await publicarCercos(meus);
+
+    /* Tratar os do grupo todo, incluindo os meus. */
+    const todos = await cercosDoGrupo();
+    const feitos = lerFeitos();
+    const porFazer = todos.filter((x) => !feitos[String(x.cmd)]);
+
+    if (!porFazer.length) {
+      rotina(todos.length
+        ? `Partir cerco: ${todos.length} colonizador(es) a caminho, todos já tratados.`
+        : 'Partir cerco: nenhum colonizador a caminho do grupo.');
+      return;
+    }
+
+    for (const cerco of porFazer) {
+      await tratarCerco(ctx, cerco, c);
+    }
+  }
+
+  function painel(container, ctx) {
+    mUw = ctx.uw; mWorld = ctx.WORLD;
+    const c = cfg();
+    const cerco = mundoDeCerco();
+
+    container.innerHTML = `
+      <label style="display:block;margin-bottom:4px">
+        <input type="checkbox" id="pc-on"${c.ativo ? ' checked' : ''}>
+        <b>Partir cercos</b>
+      </label>
+      <div style="opacity:.6;font-size:12px;margin:0 0 8px 18px">
+        Quando um colonizador vem a caminho de uma cidade do grupo, as contas
+        mandam faróis para baterem no mesmo segundo do impacto — logo a seguir
+        a ele, contra o cerco acabado de formar e antes dos apoios dele.
+        <br><br>
+        <b>Atenção:</b> se a defesa aguentar e o colonizador não passar, os
+        ataques batem numa cidade que continua tua.
+      </div>
+
+      ${cerco ? '' : '<div style="color:#e8a33d;font-size:12px;margin-bottom:8px">'
+        + 'Este mundo é de revolta — o módulo não faz nada aqui.</div>'}
+
+      <div class="mCaixa">
+        <div style="display:flex;gap:6px;align-items:center;font-size:12px">
+          <span style="opacity:.7">navios de ataque por conta</span>
+          <input id="pc-quantos" type="number" value="${Number(c.quantos) || 0}" style="width:80px">
+        </div>
+        <div style="opacity:.6;font-size:11px;margin-top:4px">
+          Cada conta manda este número. As cidades que chegam a tempo agendam
+          pelo Encaixe; o que faltar sai das mais próximas, sem agendamento.
+        </div>
+      </div>
+
+      <button id="pc-guardar" style="margin-top:8px;cursor:pointer">Guardar</button>
+      <div id="pc-lista" style="font-size:12px;margin-top:9px;opacity:.8"></div>
+    `;
+
+    container.querySelector('#pc-guardar').onclick = () => {
+      const cc = cfg();
+      cc.ativo = container.querySelector('#pc-on').checked;
+      cc.quantos = Math.max(0, Number(container.querySelector('#pc-quantos').value) || 0);
+      guardarCfg(cc);
+      ctx.log('Partir cerco: definições guardadas.');
+    };
+
+    (async () => {
+      const cx = container.querySelector('#pc-lista');
+      if (!cx) return;
+      const todos = await cercosDoGrupo();
+      if (!todos.length) { cx.textContent = 'Nenhum colonizador a caminho do grupo.'; return; }
+      cx.innerHTML = todos.map((x) => {
+        const faltam = Math.max(0, x.chega - Math.floor(Date.now() / 1000));
+        return `<div>${x.nome} (${x.conta}) — bate daqui a ${Math.round(faltam / 60)} min</div>`;
+      }).join('');
+    })();
+  }
+
+  return { id: 'partircerco', nome: 'Partir cercos',
+    intervaloMin: opts.intervaloMin || 1, run, painel };
+}
+
 function makeAldeiasModule(opts) {
   /* A caixa de confirmação do núcleo — o `confirm()` do navegador deixa de
    * funcionar se o utilizador marcar "não voltar a perguntar". */
@@ -33049,6 +33479,59 @@ function makeEncaixeModule(opts) {
     });
   }
 
+  /* ============ O QUE OUTROS MÓDULOS PRECISAM ==========================
+   *
+   * O Encaixe sabe três coisas que mais ninguém sabe: quanto demora uma
+   * viagem, como agendar um envio ao segundo, e como enviar já. O módulo de
+   * partir cercos precisa das três (18/09).
+   *
+   * Expõe-se aqui, para não haver duas implementações do mesmo cálculo. */
+  try {
+    const uwj = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window);
+
+    uwj.__maestroDuracaoPrevista = (origemId, alvoId, unidades) => {
+      try {
+        const alvo = coordsCidade(alvoId);
+        if (!alvo) return 0;
+        return duracaoPrevista(origemId, alvo, unidades, cfg()) || 0;
+      } catch (e) { return 0; }
+    };
+
+    uwj.__maestroEnviarComando = async (origemId, alvoId, unidades, tipo) => {
+      try { return await enviarComando(origemId, alvoId, unidades, tipo || 'attack'); }
+      catch (e) { return { ok: false, msg: e.message }; }
+    };
+
+    /* Agendar um envio para bater a uma hora certa. */
+    uwj.__maestroAgendarEncaixe = async (p) => {
+      try {
+        const alvo = coordsCidade(p.alvo);
+        if (!alvo) return { ok: false, msg: 'não sei onde fica o alvo' };
+        const conf = cfg();
+        const dur = duracaoPrevista(p.origem, alvo, p.unidades, conf);
+        if (!dur) return { ok: false, msg: 'não consegui calcular a viagem' };
+
+        adicionarPlano({
+          origemId: p.origem, alvoId: p.alvo, alvoCoords: alvo,
+          unidades: p.unidades, tipo: p.tipo || 'attack',
+          chegada: Number(p.chegada),
+          alvoNome: p.alvoNome || undefined,
+          /* O motivo aparece no painel, para se saber de onde veio o plano. */
+          motivo: p.motivo || undefined,
+          /* SÓ DEPOIS: quem pede um encaixe destes quer bater a seguir a
+           * alguma coisa, nunca antes. */
+          desvioAntes: Number(p.toleranciaAntes) || 0,
+          desvioDepois: Number(p.toleranciaDepois) || 3,
+          atrasosSeguidosParaParar: conf.atrasosSeguidosParaParar,
+          limiteAposEnvioSeg: conf.limiteAposEnvioSeg,
+          comecarAntes: conf.comecarAntes,
+          duracaoJogo: dur,
+        });
+        return { ok: true, duracao: dur };
+      } catch (e) { return { ok: false, msg: e.message }; }
+    };
+  } catch (e) { seErroDeCodigo(e, 'Encaixe'); }
+
   return {
     id: 'encaixe',
     nome: 'Encaixe de comandos',
@@ -46956,6 +47439,9 @@ function makeExpansaoModule(opts) {
   registerModule(makeFabricaNCModule({ intervaloMin: 10 }));
   /* 5 min: a proteção tem de ser reposta no instante em que expira. */
   registerModule(makeFeiticosModule({ intervaloMin: 5 }));
+  /* 1 min: um colonizador a caminho não espera. O vigia acorda-o na mesma
+   * assim que vê um (18/09). */
+  registerModule(makePartirCercoModule({ intervaloMin: 1 }));
   /* Fundação e fechar ilha passaram a viver dentro do módulo Expansão: uma
    * regra de "uma cidade por ilha", um painel, uma entrada na barra. */
   registerModule(makeExpansaoModule({
