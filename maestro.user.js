@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.14.2200
+// @version      2026.09.19.0100
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -2845,12 +2845,36 @@
           && !/is not defined|is not a function|Cannot read propert|of undefined|of null/i.test(msg)) {
         return;   // falha prevista: silêncio, como antes
       }
-      /* Uma vez por mensagem: senão enche tudo numa passagem. */
-      const chave = onde + '|' + msg;
+      /* ============ DE ONDE VEIO ======================================
+       *
+       * Só a mensagem não chega. Numa noite (19/09) apareceu "Cannot read
+       * properties of undefined (reading 'getName')" em três módulos — e em
+       * dois deles o Maestro nem chama `getName`: o erro nasceu no código do
+       * próprio jogo, ou de outro script, disparado por algo que o Maestro
+       * fez. Sem saber quem rebentou, não há como corrigir.
+       *
+       * Vai a primeira linha da pilha, encurtada: quem (jogo ou script), o
+       * ficheiro e a linha. Chega para ir ao sítio exacto. */
+      let origem = '';
+      try {
+        const pilha = String((e && e.stack) || '').split('\n');
+        for (const l of pilha) {
+          const m = l.trim().match(/([^\s(@]+):(\d+):(\d+)\)?$/);
+          if (!m) continue;
+          const url = m[1];
+          const quem = /innogamescdn|grepolis/i.test(url) ? 'jogo'
+            : (/userscript|extension:|^VM\d/i.test(url) ? 'script' : '?');
+          origem = ` @ ${quem} ${url.split('/').pop().slice(0, 40)}:${m[2]}`;
+          break;
+        }
+      } catch (e3) {}
+
+      /* Uma vez por mensagem e sítio: senão enche tudo numa passagem. */
+      const chave = onde + '|' + msg + origem;
       if (errosJaVistos.has(chave)) return;
       errosJaVistos.add(chave);
 
-      log('core', `🐞 Erro de código em ${onde}: ${msg}`);
+      log('core', `🐞 Erro de código em ${onde}: ${msg}${origem}`);
     } catch (e2) {}
   }
   try { uw.__maestroErrosDeCodigo = () => [...errosJaVistos]; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
@@ -3342,7 +3366,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.14.2200';
+  const MAESTRO_VERSAO = '2026.09.19.0100';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -18368,6 +18392,22 @@ function makeFabricaNCModule(opts) {
  * ========================================================================= */
 function makeFeiticosModule(opts) {
 
+  /* ============ O NOME DE UMA CIDADE ==================================
+   *
+   * `ITowns.getTown` só conhece as cidades DESTA conta. Os feitiços também
+   * servem cidades das outras contas (os pedidos de recursos), colonizadores
+   * a caminho de cidades que entretanto se perderam, e cidades protegidas que
+   * já não são nossas. Aí devolve undefined, e o `.getName()` a seguir
+   * rebentava — e ia ao Discord como erro de código (19/09, 01:21), quando é
+   * só um nome que não se sabe. Fica o número, como já ficava. */
+  function nomeDaCidade(id, reserva) {
+    try {
+      const t = mUw.ITowns.getTown(Number(id));
+      if (t && typeof t.getName === 'function') return t.getName() || reserva;
+    } catch (e) {}
+    return reserva;
+  }
+
   /* TODOS OS PEDIDOS AO JOGO PASSAM PELO BROKER.
    *
    * Um de cada vez, com pausa entre eles e o travão respeitado ANTES de pedir.
@@ -19064,7 +19104,7 @@ function makeFeiticosModule(opts) {
         guardarEstado(est);
 
         let nome = alvo;
-        try { nome = mUw.ITowns.getTown(Number(alvo)).getName(); } catch (e) { seErroDeCodigo(e, 'Feiticos'); }
+        nome = nomeDaCidade(alvo, nome);
         const dura = r.acaba ? Math.round((r.acaba - agora) / 60) : '?';
         log(`🛡️ Proteção de Cidade em ${nome} — dura ${dura} min.`);
       } else if (/j[áa] est[áa]|already|protec/i.test(String(r.msg))) {
@@ -19255,7 +19295,7 @@ function makeFeiticosModule(opts) {
                * já, em vez de esperar pela passagem seguinte. */
               pedirFavor('poseidon', 280 * Math.max(0, (c.maxTempestades || 3) - jaFoi - 1));
               let nome = a.target_town_id;
-              try { nome = mUw.ITowns.getTown(Number(a.target_town_id)).getName(); } catch (e) { seErroDeCodigo(e, 'Feiticos'); }
+              nome = nomeDaCidade(a.target_town_id, nome);
               log(`🌊 Tempestade do mar no colonizador que vem para ${nome} `
                 + `(${jaFoi + 1}ª). Vê o relatório para saber o que afundou.`);
               /* Voltar antes de ele chegar, para lançar outra. */
@@ -19484,7 +19524,7 @@ function makeFeiticosModule(opts) {
 
     const linhas = (c.protegidas || []).map((id) => {
       let nome = id;
-      try { nome = mUw.ITowns.getTown(Number(id)).getName(); } catch (e) { seErroDeCodigo(e, 'Feiticos'); }
+      nome = nomeDaCidade(id, nome);
       const acaba = Number((est.protecao || {})[id]) || 0;
       const quanto = acaba > agora
         ? `protegida mais ${Math.round((acaba - agora) / 60)} min`
@@ -47775,7 +47815,18 @@ function makeReforcoModule(opts) {
      *
      * O que vem de fora entra na mesma lista: daí para a frente é tudo
      * tratado igual. */
-    if (c.partilhado) {
+    /* SÓ COM A LEITURA FEITA.
+     *
+     * `ataquesContraMim` devolve null quando não conseguiu ler — e aqui fazia-se
+     * `ataques.map` antes de alguém olhar para isso (Discord, 19/09, 00:03).
+     * O erro em si era apanhado; o pior estava na linha de cima: publicava-se
+     * uma lista VAZIA, e as outras contas liam "não há ataques às cidades
+     * desta conta" e deixavam de as defender até à leitura seguinte. Não saber
+     * não é o mesmo que não haver.
+     *
+     * Com null, fica publicado o que estava; o resto da passagem já sabe
+     * tratar a leitura falhada, mais abaixo. */
+    if (c.partilhado && ataques != null) {
       try {
         await publicarAtaques(ataques);
         const dosOutros = await ataquesDoGrupo();
