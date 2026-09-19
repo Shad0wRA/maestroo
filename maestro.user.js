@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.19.0300
+// @version      2026.09.19.0400
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -3366,7 +3366,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.19.0300';
+  const MAESTRO_VERSAO = '2026.09.19.0400';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -39840,18 +39840,39 @@ function makeApoioModule(opts) {
              * mostrava as da main).
              *
              * Uma revolta numa cidade que não é minha não me diz respeito:
-             * fica como está, e quem a pôs é que a tira. */
+             * fica como está, e quem a pôs é que a tira.
+             *
+             * ... MAS DEPOIS SÓ A MAIN PASSOU A ESCREVER A LISTA, e esta regra
+             * ficou: a main saltava as revoltas das cidades das multis, e as
+             * multis não podem escrever. Resultado: nenhuma revolta de uma
+             * multi saía do registo, nunca. O quadro do Discord mostrava-as
+             * todas — as de contas que já nem estão na frota incluídas (19/09).
+             *
+             * O que protegia as das outras contas já existe de outra maneira:
+             * a main junta as revoltas que elas publicam (o `porCidade`), e o
+             * que lá está não sai. Uma revolta de outra conta sai quando o fim
+             * guardado passou — acabou para toda a gente. Se afinal ainda
+             * decorre, quem a tem publica-a outra vez e ela volta a entrar.
+             * Sem fim guardado, não sai: não há por onde saber que acabou.
+             *
+             * Um alvo marcado "fica" deixa de contar como revolta, mas
+             * continua na lista: foi para isso que foi marcado. */
             const minhasCidadesAqui = new Set(
               (ctx.getMyTowns() || []).map((t) => Number(t.id)));
+            const fixosAqui = lerFixos();
 
             const aRetirar = [];
+            let autoTirados = 0;
             for (const id of Object.keys(auto)) {
               if (!leituraOk) break;                              // não sei: nada sai
-              if (minhasCidadesAqui.size && !minhasCidadesAqui.has(Number(id))) continue;
               if (porCidade[id]) continue;                        // ainda em revolta
-              if (AGORA < Number((auto[id] || {}).ultima || 0) + graca) continue;
-              aRetirar.push(Number(id));
+              const fimGuardado = Number((auto[id] || {}).ultima || 0);
+              const minha = !minhasCidadesAqui.size || minhasCidadesAqui.has(Number(id));
+              if (!minha && !fimGuardado) continue;
+              if (AGORA < fimGuardado + graca) continue;
+              if (!fixosAqui[Number(id)]) aRetirar.push(Number(id));
               delete auto[id];
+              autoTirados++;
             }
             for (const r of revoltas) {
               auto[r.id] = { primeira: r.primeira, ultima: r.ultima, quem: r.quem };
@@ -39921,7 +39942,7 @@ function makeApoioModule(opts) {
                 + '— volto a pô-las.');
             }
 
-            if (novos.length || aRetirar.length || corrigidos.length || emFalta.length) {
+            if (novos.length || aRetirar.length || autoTirados || corrigidos.length || emFalta.length) {
               const ficam = [].concat([...jaLa], novos.map((r) => r.id))
                 .filter((id) => aRetirar.indexOf(Number(id)) < 0);
 
@@ -40335,7 +40356,18 @@ function makeApoioModule(opts) {
   async function quadroDasRevoltas(ctx, lista) {
     try {
       const rev = (lista || {}).revoltasAuto || {};
-      const ids = Object.keys(rev).map(Number).filter(Boolean).sort((a, b) => a - b);
+      /* SÓ AS QUE AINDA ESTÃO A DECORRER.
+       *
+       * O quadro mostrava tudo o que estava no registo — e o registo guardava
+       * revoltas acabadas há dias, que apareciam como "acaba daqui a 0 min"
+       * (19/09). Sem fim guardado, fica: não se sabe se acabou. */
+      const agora0 = Math.floor(Date.now() / 1000);
+      const ids = Object.keys(rev).map(Number).filter(Boolean)
+        .filter((id) => {
+          const fim = Number((rev[id] || {}).ultima) || 0;
+          return !fim || fim > agora0;
+        })
+        .sort((a, b) => a - b);
 
       /* A assinatura é o que decide se há coisa nova: as cidades em revolta e
        * a fase de cada uma. */
@@ -40385,12 +40417,16 @@ function makeApoioModule(opts) {
 
       /* Quem publicou cada revolta — é quem tem a cidade. */
       const contaDe = {};
+      const publicadaAgora = new Set();
       try {
         if (typeof fbLerM === 'function' && fbUrlM && fbUrlM()) {
           const pub = (await fbLerM(`revoltasMultis/${mWorld}`)) || {};
           for (const c of Object.keys(pub)) {
+            const fresca = !!(pub[c] && pub[c].quando
+              && (agoraS - Number(pub[c].quando)) <= 6 * 3600);
             for (const id of Object.keys((pub[c] || {}).revoltas || {})) {
               contaDe[id] = c;
+              if (fresca) publicadaAgora.add(String(id));
               const n2 = ((pub[c].revoltas[id] || {}).nome || '').trim();
               if (n2 && rev[id] && !rev[id].nome) rev[id].nome = n2;
               if (n2 && rev[id] && /^\d+$/.test(String(rev[id].nome || ''))) rev[id].nome = n2;
@@ -40399,7 +40435,30 @@ function makeApoioModule(opts) {
         }
       } catch (e) { seErroDeCodigo(e, 'Apoio'); }
 
-      const campos = ids.slice(0, 20).map((id) => {
+      /* SÓ CIDADES DE CONTAS QUE AINDA ESTÃO NA FROTA.
+       *
+       * Uma conta que saiu da frota deixa de publicar, mas as revoltas dela
+       * ficavam no quadro (19/09). Entra uma revolta se a cidade for desta
+       * conta, se for de uma conta com a frota em dia, ou se alguém a estiver
+       * a publicar agora. Sem frota lida, não se julga — mostra-se tudo. */
+      const minhasAqui = new Set((() => {
+        try { return (ctx.getMyTowns ? ctx.getMyTowns() : []) || []; } catch (e) { return []; }
+      })().map((t) => String(t.id)));
+      const frotaLida = Object.keys(donoDe).length > 0;
+      const visiveis = !frotaLida ? ids : ids.filter((id) => minhasAqui.has(String(id))
+        || !!donoDe[id] || publicadaAgora.has(String(id)));
+
+      if (!visiveis.length) {
+        if (antes && ctx.avisarDiscord) {
+          await ctx.avisarDiscord('ataque', {
+            titulo: '✅ Sem revoltas',
+            descricao: 'Acabaram as revoltas no grupo.',
+          });
+        }
+        return true;
+      }
+
+      const campos = visiveis.slice(0, 20).map((id) => {
         const r = rev[id] || {};
         const nome = r.nome || String(id);
         const dono = contaDe[id] || donoDe[id] || '';
@@ -40417,8 +40476,8 @@ function makeApoioModule(opts) {
 
       if (ctx.avisarDiscord) {
         await ctx.avisarDiscord('ataque', {
-          titulo: `🚨 Revoltas activas — ${ids.length}`,
-          descricao: ids.length > 20 ? `(mostro as primeiras 20 de ${ids.length})` : '',
+          titulo: `🚨 Revoltas activas — ${visiveis.length}`,
+          descricao: visiveis.length > 20 ? `(mostro as primeiras 20 de ${visiveis.length})` : '',
           campos,
         });
       }
