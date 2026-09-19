@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.19.0200
+// @version      2026.09.19.0300
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -3366,7 +3366,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.19.0200';
+  const MAESTRO_VERSAO = '2026.09.19.0300';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -4827,12 +4827,28 @@
    * deixar passar os ataques com colonizador — os que abrem a revolta —, e
    * apontava a ligação aberta aos cercos (19/09).
    *
+   * O QUE O JOGO DIZ. Não há um campo "tipo de mundo", mas o jogo descreve a
+   * conquista de maneira diferente em cada um — e isso vem logo no arranque,
+   * no GameData, antes de qualquer módulo correr (medido no pt126 e no pt125,
+   * 19/09):
+   *   - Helena, na revolta: "…para causar uma revolta, o tempo até a cidade
+   *     se revoltar é reduzido";
+   *   - Helena, no cerco: "…acompanha um exército conquistador, o tempo de
+   *     conquista necessário é reduzido";
+   *   - a pesquisa Conquista, na revolta: "…ao instigar uma revolta."; no
+   *     cerco não fala em revolta nenhuma.
+   * As duas respostas são pela positiva: revolta se falar em revolta; cerco
+   * só se a Helena falar em conquista e não em revolta. Um texto noutra
+   * língua que as palavras não apanhem fica por saber — nunca vira cerco.
+   *
    * O tipo de um mundo nunca muda. Por isso, por esta ordem:
    *   1. o que se disse à mão para este mundo — na consola,
    *      __maestroDefinirTipoDoMundo('revolta') ou ('cerco'); ('') desfaz;
-   *   2. os mundos que já se conhecem, na tabela aqui em baixo;
-   *   3. o que se aprendeu por ver revoltas a decorrer — guardado para sempre;
-   *   4. nada disso: fica por saber, e passam os módulos todos. Mais vale um
+   *   2. o que o jogo diz, como acima — e guarda-se;
+   *   3. o que já se tinha guardado, do jogo ou de ver revoltas a decorrer;
+   *   4. revoltas a decorrer agora — guarda-se para sempre;
+   *   5. a tabela dos mundos conhecidos, de reserva;
+   *   6. nada disso: fica por saber, e passam os módulos todos. Mais vale um
    *      módulo a mais do que o apoio parado num mundo de revolta. */
   const TIPOS_CONHECIDOS = { pt125: 'cerco', pt126: 'revolta', pt127: 'cerco' };
   const TIPO_KEY = 'maestro_tipoDoMundo_v1';
@@ -4851,13 +4867,35 @@
   }
   const tipoValido = (t) => t === 'revolta' || t === 'cerco';
 
+  /* As palavras, nas línguas do jogo que se conhecem. */
+  const PALAVRAS_REVOLTA = /revolt|revuelta|révolte|rivolt|aufstand|opstand|isyan|lázad|vzpour/i;
+  const PALAVRAS_CONQUISTA = /conquist|conquer|conquête|erober|verover|podb[oó]j|fetih|hódít|dobyt/i;
+
+  function lerTipoNoJogo() {
+    try {
+      const gd = uw.GameData || {};
+      const helena = (gd.heroes || {}).helen || {};
+      const pesquisa = (gd.researches || {}).take_over || {};
+      const textoHelena = `${helena.description || ''} ${helena.short_description || ''}`;
+      const textoPesquisa = String(pesquisa.description || '');
+      if (PALAVRAS_REVOLTA.test(textoHelena) || PALAVRAS_REVOLTA.test(textoPesquisa)) return 'revolta';
+      if (textoHelena.trim() && PALAVRAS_CONQUISTA.test(textoHelena)) return 'cerco';
+    } catch (e) {}
+    return '';
+  }
+
   function tipoDoMundo() {
     if (tipoSabido) return tipoSabido;
 
     const g = tiposGuardados()[WORLD] || null;
     if (g && g.fonte === 'mão' && tipoValido(g.tipo)) return (tipoSabido = g.tipo);
-    if (tipoValido(TIPOS_CONHECIDOS[WORLD])) return (tipoSabido = TIPOS_CONHECIDOS[WORLD]);
-    if (g && g.tipo === 'revolta') return (tipoSabido = 'revolta');
+
+    const doJogo = lerTipoNoJogo();
+    if (doJogo) {
+      if (!g || g.tipo !== doJogo || g.fonte !== 'jogo') guardarTipo(doJogo, 'jogo');
+      return (tipoSabido = doJogo);
+    }
+    if (g && tipoValido(g.tipo)) return (tipoSabido = g.tipo);
 
     /* REVOLTAS A DECORRER SÃO PROVA; NÃO AS VER NÃO PROVA NADA.
      *
@@ -4879,6 +4917,10 @@
         return (tipoSabido = 'revolta');
       }
     } catch (e) {}
+
+    /* De reserva: os mundos que se conhecem, para quando nada acima respondeu
+     * — o jogo ainda sem o GameData carregado, por exemplo. */
+    if (tipoValido(TIPOS_CONHECIDOS[WORLD])) return (tipoSabido = TIPOS_CONHECIDOS[WORLD]);
     return '';
   }
 
