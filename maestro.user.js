@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.19.0100
+// @version      2026.09.19.0200
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -3366,7 +3366,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.19.0100';
+  const MAESTRO_VERSAO = '2026.09.19.0200';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -4810,32 +4810,86 @@
     log('core', `Perfil "${p.nome}" aplicado. Cada perfil tem as suas definições.`);
   }
 
-  /* O TIPO DO MUNDO: REVOLTA OU CERCO.
-   *
-   * O jogo só carrega a colecção `MovementsRevoltDefender` nos mundos de
-   * revolta — confirmado no pt126 (tem) e no pt125, de cerco (não tem).
+  /* ============ O TIPO DO MUNDO: REVOLTA OU CERCO =====================
    *
    * Serve para dois módulos que se excluem: o apoio distribuído só faz sentido
-   * onde há revoltas para aguentar, e o partir cercos só onde há cercos. Ter
-   * os dois na barra em todo o lado confundia (18/09). */
-  /* Uma vez sabido, não se volta a perguntar: os modelos podem ser
-   * recarregados e ficar por instantes sem a colecção das revoltas, e isso
-   * faria um mundo de revolta parecer de cerco. */
+   * onde há revoltas para aguentar, e o partir cercos só onde há cercos. E
+   * decide mais duas coisas: se o reforço deixa os ataques com colonizador
+   * para o partir cercos, e para onde aponta a ligação aberta.
+   *
+   * DETECTAR PELO JOGO NÃO CHEGA. Com o pt126 sem revoltas a decorrer, o pt126
+   * e o pt125 mostram exactamente o mesmo: as colecções das revoltas e dos
+   * cercos existem nos dois, vazias, e modelos não há em nenhum (medido no
+   * jogo, 19/09). A 18/09 acertou-se só porque havia revoltas nessa altura.
+   *
+   * E concluir "cerco" por não ver revoltas era o pior engano possível: num
+   * mundo de revolta tirava o apoio da barra E parava-o, punha o reforço a
+   * deixar passar os ataques com colonizador — os que abrem a revolta —, e
+   * apontava a ligação aberta aos cercos (19/09).
+   *
+   * O tipo de um mundo nunca muda. Por isso, por esta ordem:
+   *   1. o que se disse à mão para este mundo — na consola,
+   *      __maestroDefinirTipoDoMundo('revolta') ou ('cerco'); ('') desfaz;
+   *   2. os mundos que já se conhecem, na tabela aqui em baixo;
+   *   3. o que se aprendeu por ver revoltas a decorrer — guardado para sempre;
+   *   4. nada disso: fica por saber, e passam os módulos todos. Mais vale um
+   *      módulo a mais do que o apoio parado num mundo de revolta. */
+  const TIPOS_CONHECIDOS = { pt125: 'cerco', pt126: 'revolta', pt127: 'cerco' };
+  const TIPO_KEY = 'maestro_tipoDoMundo_v1';
   let tipoSabido = '';
+
+  function tiposGuardados() {
+    try { return JSON.parse(localStorage.getItem(TIPO_KEY) || '{}') || {}; } catch (e) { return {}; }
+  }
+  function guardarTipo(tipo, fonte) {
+    try {
+      const d = tiposGuardados();
+      if (tipo) d[WORLD] = { tipo, fonte };
+      else delete d[WORLD];
+      localStorage.setItem(TIPO_KEY, JSON.stringify(d));
+    } catch (e) { seErroDeCodigo(e, 'núcleo'); }
+  }
+  const tipoValido = (t) => t === 'revolta' || t === 'cerco';
 
   function tipoDoMundo() {
     if (tipoSabido) return tipoSabido;
+
+    const g = tiposGuardados()[WORLD] || null;
+    if (g && g.fonte === 'mão' && tipoValido(g.tipo)) return (tipoSabido = g.tipo);
+    if (tipoValido(TIPOS_CONHECIDOS[WORLD])) return (tipoSabido = TIPOS_CONHECIDOS[WORLD]);
+    if (g && g.tipo === 'revolta') return (tipoSabido = 'revolta');
+
+    /* REVOLTAS A DECORRER SÃO PROVA; NÃO AS VER NÃO PROVA NADA.
+     *
+     * Só há sinal quando há movimentos de revolta — contra nós ou nossos. Aí
+     * sabe-se de vez, e guarda-se: a próxima vez que o mundo estiver parado,
+     * já não se volta a ficar sem saber. */
     try {
-      const m = uw.MM.getModels();
-      /* SEM MODELOS NÃO SE SABE — e não saber não é "cerco".
-       *
-       * No arranque, ou se o jogo ainda não carregou, devolver "cerco" fazia
-       * o apoio distribuído desaparecer da barra num mundo de revolta
-       * (apanhado em teste, 18/09). Sem resposta, deixa-se passar tudo. */
-      if (!m || typeof m !== 'object' || !Object.keys(m).length) return '';
-      tipoSabido = m.MovementsRevoltDefender ? 'revolta' : 'cerco';
-      return tipoSabido;
-    } catch (e) { return ''; }
+      const m = (uw.MM && uw.MM.getModels && uw.MM.getModels()) || {};
+      const c = (uw.MM && uw.MM.getCollections && uw.MM.getCollections()) || {};
+      const temMovimentos = (nome) => {
+        try {
+          if (m[nome] && Object.keys(m[nome]).length) return true;
+          const col = (c[nome] || [])[0];
+          return !!(col && col.models && col.models.length);
+        } catch (e) { return false; }
+      };
+      if (temMovimentos('MovementsRevoltDefender') || temMovimentos('MovementsRevoltAttacker')) {
+        guardarTipo('revolta', 'visto');
+        return (tipoSabido = 'revolta');
+      }
+    } catch (e) {}
+    return '';
+  }
+
+  /* À mão, para um mundo que não esteja na tabela. Fica guardado nesta conta
+   * e neste mundo; recarregar a página refaz a barra. */
+  function definirTipoDoMundo(tipo) {
+    const t = String(tipo == null ? '' : tipo).trim().toLowerCase();
+    if (t && !tipoValido(t)) return 'usa "revolta", "cerco", ou "" para voltar ao automático';
+    guardarTipo(t, 'mão');
+    tipoSabido = '';
+    return `${WORLD}: ${tipoDoMundo() || 'por saber'} — recarrega a página para a barra se refazer`;
   }
 
   function modAplicaAoMundo(mod) {
@@ -4851,7 +4905,10 @@
     return true;
   }
 
-  try { uw.__maestroTipoDoMundo = tipoDoMundo; } catch (e) {}
+  try {
+    uw.__maestroTipoDoMundo = tipoDoMundo;
+    uw.__maestroDefinirTipoDoMundo = definirTipoDoMundo;
+  } catch (e) {}
 
   /* ------------------------------ loop principal ------------------------- */
   let maestroTimer = null;
