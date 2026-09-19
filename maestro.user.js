@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Grepolis Maestro (multi-módulo)
 // @namespace    grepo-maestro
-// @version      2026.09.19.0400
+// @version      2026.09.19.0600
 // @description  Núcleo que corre vários módulos (apoio, trocas, ...) em sequência, cada um com o seu intervalo, sem colisões. Painel unificado.
 // @match        https://*.grepolis.com/game/*
 // @run-at       document-idle
@@ -1887,13 +1887,41 @@
     return ataquesRelevantes().filter((a) => a.__chegaAMim);
   }
 
+  /* ============ O TIPO DE CADA ATAQUE QUE CHEGA =========================
+   *
+   * Os ataques recebidos não trazem a hora de partida, e a esquiva adivinha
+   * pela velocidade se trazem colonizador. Quando a aba abre com os ataques
+   * já a caminho, nem isso: não há viagem para medir, e num mundo de cerco a
+   * tropa fica em casa "para matar o colonizador" — foi assim que a Cidade de
+   * Shad0wRA 28 perdeu mil e tal unidades para um ataque normal (pt125,
+   * 19/09).
+   *
+   * Nos NOSSOS ataques de conquista o jogo põe `attack_takeover`. Se também o
+   * puser nos ataques inimigos, deixa de ser preciso adivinhar. Não se sabe:
+   * fica anotado o tipo de cada ataque que chega, e o próximo colonizador
+   * inimigo responde.
+   *
+   * Ver: __maestroCaixaNegra(0, 'core') */
+  function anotarTipoDoAtaque(a, como) {
+    try {
+      const alvo = a.town_name_destination || a.target_town_id || '?';
+      const chega = Number(a.arrival_at)
+        ? new Date(Number(a.arrival_at) * 1000).toLocaleTimeString() : '?';
+      guardarNaCaixa('core', `ataque a chegar (${como}): tipo "${a.type || '?'}" → ${alvo}, `
+        + `chega ${chega}, cmd ${a.command_id || a.id || '?'}`);
+    } catch (e) {}
+  }
+
   function ligarVigiaDosAtaques() {
     if (vigiaLigado) return;
     vigiaLigado = true;
 
     /* A primeira passagem só regista o que já lá está: o que interessa é o
      * que APARECE a partir de agora. */
-    for (const a of ataquesAChegar()) ataquesVistos.add(String(a.id));
+    for (const a of ataquesAChegar()) {
+      ataquesVistos.add(String(a.id));
+      anotarTipoDoAtaque(a, 'já vinha a caminho ao abrir');
+    }
 
     setInterval(() => {
       /* A TROPA CHEGOU A CASA.
@@ -1948,6 +1976,7 @@
             if (!uw.__maestroVistoEm) uw.__maestroVistoEm = {};
             uw.__maestroVistoEm[String(a.id)] = Date.now();
           } catch (e) {}
+          if (a.__chegaAMim) anotarTipoDoAtaque(a, 'visto a partir');
         }
 
         /* Cada tipo acorda quem precisa. */
@@ -3366,7 +3395,7 @@
    * -------------------------------------------------------------------- */
   /* Marca da versão instalada — para saber, de dentro do jogo, se o ficheiro
    * é o mais recente. Ler com: unsafeWindow.__maestroVersao */
-  const MAESTRO_VERSAO = '2026.09.19.0400';
+  const MAESTRO_VERSAO = '2026.09.19.0600';
   try { uw.__maestroVersao = MAESTRO_VERSAO; } catch (e) { seErroDeCodigo(e, 'núcleo'); }
 
   /* ============ VERSÃO NOVA: RECARREGAR A PÁGINA ========================
@@ -3428,6 +3457,17 @@
       log('core', 'Refresh de hora a hora — a recarregar.');
       setTimeout(() => { try { uw.location.reload(); } catch (e) { seErroDeCodigo(e, 'núcleo'); } }, 2000);
     } catch (e) { seErroDeCodigo(e, 'núcleo'); }
+  }
+
+  /* ABRIR A PÁGINA É UM REFRESH.
+   *
+   * A hora do último refresh só se marcava quando era o próprio refresh a
+   * recarregar. Uma aba aberta à mão, ou recarregada por uma versão nova,
+   * herdava a hora antiga — e o refresh de hora a hora recarregava outra vez
+   * minutos depois: arranque às 14:01:09, "refresh de hora a hora" às
+   * 14:05:13, com ataques a chegar (pt125, 19/09). */
+  function marcarArranqueComoRefresh() {
+    try { localStorage.setItem(ULTIMO_REFRESH_KEY, String(Date.now())); } catch (e) {}
   }
 
   function haPlanoIminente() {
@@ -27946,12 +27986,50 @@ function makeEsquivaModule(opts) {
   // inteiro com "Não é possível mover Milícia" e a esquiva falha.
   const NAO_MOVEM = ['militia'];
 
-  function montarCarga(townId, precisaBarcos) {
+  /* ============ NA DÚVIDA, SAI SÓ A TROPA OFENSIVA =====================
+   *
+   * Quando não se sabe se um ataque traz colonizador — tipicamente a aba
+   * abriu com os ataques já a caminho e não há viagem para medir —, a regra
+   * era ficar tudo em casa "para o matar". Não era colonizador: a Cidade de
+   * Shad0wRA 28 perdeu 1057 unidades para um ataque normal (pt125, 19/09).
+   *
+   * Decidido com o Rafa: na dúvida, fica a DEFESA, que é o que mata um
+   * colonizador; sai a tropa OFENSIVA, que numa defesa só morre.
+   *
+   * As unidades base, por lista: ficam espadachins, arqueiros, hoplitas,
+   * birremes e trirremes; saem fundibulários, cavaleiros, carros,
+   * catapultas, navios de ataque e brulotes. Os transportes e o colonizador
+   * saem sempre: não defendem, e são eles que levam a tropa.
+   *
+   * As míticas, pelos números do jogo: ofensiva se o ataque for maior do
+   * que a melhor das defesas dela. (Para as base não serve: o carro tem 56 de
+   * ataque e 76 de defesa contra impacto, e é tropa de ataque.) */
+  const FICAM = ['sword', 'archer', 'hoplite', 'bireme', 'trireme'];
+  const SAEM = ['slinger', 'rider', 'chariot', 'catapult', 'attack_ship', 'demolition_ship',
+    'small_transporter', 'big_transporter', 'colonize_ship'];
+
+  function unidadeOfensiva(id) {
+    if (FICAM.indexOf(id) >= 0) return false;
+    if (SAEM.indexOf(id) >= 0) return true;
+    try {
+      const u = ((mUw.GameData || {}).units || {})[id];
+      if (u) {
+        const ataque = Number(u.attack) || 0;
+        const defesas = [u.def_hack, u.def_pierce, u.def_distance, u.defense]
+          .map(Number).filter(Number.isFinite);
+        if (defesas.length) return ataque > Math.max(...defesas);
+      }
+    } catch (e) {}
+    return false;      // sem números: na dúvida, defende
+  }
+
+  function montarCarga(townId, precisaBarcos, soOfensivas) {
     const u = tropasDaCidade(townId);
     const carga = {};
     let popTerrestre = 0;
     for (const k of Object.keys(u)) {
       if (NAO_MOVEM.indexOf(k) >= 0) continue;   // milícia fica sempre
+      if (soOfensivas && !unidadeOfensiva(k)) continue;   // a defesa fica
       const n = Number(u[k]) || 0;
       if (n <= 0) continue;
       carga[k] = n;
@@ -27987,13 +28065,14 @@ function makeEsquivaModule(opts) {
    * transporte não é suficiente", e a esquiva falhava por inteiro.
    *
    * Com dois envios, cada tropa vai pelo seu caminho. */
-  function separarCarga(townId) {
+  function separarCarga(townId, soOfensivas) {
     const u = tropasDaCidade(townId);
     const terra = {}, mar = {};
     let temTerra = false, temMar = false;
 
     for (const k of Object.keys(u)) {
       if (NAO_MOVEM.indexOf(k) >= 0) continue;
+      if (soOfensivas && !unidadeOfensiva(k)) continue;   // a defesa fica
       const n = Number(u[k]) || 0;
       if (n <= 0) continue;
 
@@ -28181,17 +28260,20 @@ function makeEsquivaModule(opts) {
      * o que lá está e manda-se isso — tudo o que puder sair. */
     const comandos = [];
     if (!esc.precisaBarcos) {
-      const sep = separarCarga(plano.townId);
+      const sep = separarCarga(plano.townId, !!plano.soOfensivas);
       if (sep.terra) comandos.push({ carga: sep.terra, via: 'terra' });
       if (sep.mar) comandos.push({ carga: sep.mar, via: 'mar' });
     }
     if (!comandos.length) {
       anotar(0, plano.townId, 'nada para enviar', 'a cidade não tinha tropa');
-      const carga = montarCarga(plano.townId, esc.precisaBarcos);
+      const carga = montarCarga(plano.townId, esc.precisaBarcos, !!plano.soOfensivas);
       if (carga) comandos.push({ carga, via: 'tudo' });
     }
     if (!comandos.length) {
-      anotar(0, plano.townId, 'nada para enviar', 'a cidade não tinha tropa'); log(`Esquiva ${nome}: sem tropas para mandar.`); return; }
+      anotar(0, plano.townId, 'nada para enviar', 'a cidade não tinha tropa');
+      if (plano.soOfensivas) log(`🛡️ ${nome}: só há tropa defensiva — fica toda em casa para o colonizador.`);
+      else log(`Esquiva ${nome}: sem tropas para mandar.`);
+      return; }
 
     const enviados = [];
     let todosMeus = [];
@@ -28977,27 +29059,58 @@ function makeEsquivaModule(opts) {
        * sem conta: nove alarmes seguidos em duas cidades, e a tropa toda em
        * casa a cada um deles (visto em jogo, 17/09).
        *
-       * Como se sabe que o mundo é de revolta: o jogo só carrega a colecção
-       * `MovementsRevoltDefender` nesses mundos — confirmado no pt126 (tem) e
-       * no pt125, que é de cerco (não tem).
+       * O tipo do mundo vem do núcleo, logo abaixo. (Aqui supunha-se que só
+       * os mundos de revolta carregavam `MovementsRevoltDefender` — falso: os
+       * dois carregam a colecção, e os modelos só existem com revoltas a
+       * decorrer. Medido no pt126 e no pt125, 19/09.)
        *
        * Nos mundos de cerco nada disto se aplica: lá o colonizador vem com o
-       * ataque a qualquer momento, e a regra antiga mantém-se. */
-      const mundoDeRevolta = (() => {
-        try { return !!(mUw.MM.getModels() || {}).MovementsRevoltDefender; }
-        catch (e) { return false; }
+       * ataque a qualquer momento. */
+      /* O TIPO DO MUNDO VEM DO NÚCLEO (19/09).
+       *
+       * Aqui perguntava-se outra vez ao jogo pelos modelos das revoltas — o
+       * mesmo sinal que se provou falso: com o pt126 sem revoltas a decorrer
+       * não há modelos nenhuns, e o mundo de revolta passava por cerco. Todos
+       * os ataques da mesma ilha voltavam a ficar "podem trazer colonizador".
+       *
+       * O núcleo lê o tipo ao próprio jogo (a Helena e a pesquisa Conquista)
+       * e guarda-o. Usa-se esse. */
+      const tipoMundo = (() => {
+        try {
+          const f = (typeof unsafeWindow !== 'undefined' ? unsafeWindow : window).__maestroTipoDoMundo;
+          return f ? String(f() || '') : '';
+        } catch (e) { return ''; }
       })();
+      const mundoDeRevolta = tipoMundo === 'revolta';
 
       const janelaDoColonizador = (tid) => {
         /* Devolve `null` se não souber, `false` se o colonizador não pode
          * entrar agora, `true` se pode. */
         try {
-          const defs = (mUw.MM.getModels() || {}).MovementsRevoltDefender;
-          if (!defs) return null;
+          /* Os modelos só existem com revoltas a decorrer; a colecção existe
+           * sempre, vazia quando não há nenhuma (medido no jogo, 19/09). Se
+           * uma das duas se lê e não tem esta cidade, a cidade não está em
+           * revolta — e aí o colonizador não pode entrar. Só sem nenhuma das
+           * duas é que não se sabe. */
+          const lista = [];
+          let lido = false;
+          const mods = (mUw.MM.getModels() || {}).MovementsRevoltDefender;
+          if (mods) {
+            lido = true;
+            for (const k of Object.keys(mods)) lista.push(mods[k]);
+          }
+          try {
+            const col = ((mUw.MM.getCollections() || {}).MovementsRevoltDefender || [])[0];
+            if (col && Array.isArray(col.models)) {
+              lido = true;
+              for (const m of col.models) lista.push(m);
+            }
+          } catch (e) {}
+          if (!lido) return null;
           let emRevolta = false;
           let podeEntrar = false;
-          for (const k of Object.keys(defs)) {
-            const a = (defs[k] || {}).attributes || {};
+          for (const m of lista) {
+            const a = (m || {}).attributes || {};
             if (Number(a.target_town_id) !== Number(tid)) continue;
             const fim = Number(a.finished_at) || 0;
             if (!fim || fim <= agoraJogo()) continue;          // já acabou
@@ -29019,8 +29132,24 @@ function makeEsquivaModule(opts) {
             + 'num mundo de revolta o colonizador só entra na R2, e não é agora. Esquivo normalmente.');
         }
       }
-      const tempos = calcularTempos(impactos, temNC, c);
+      let tempos = calcularTempos(impactos, temNC, c);
       const nome = (cidades.find((x) => x.id === Number(townId)) || {}).name || townId;
+
+      /* NA DÚVIDA, SAI SÓ A OFENSIVA (19/09) — ver `unidadeOfensiva`.
+       *
+       * Quando o colonizador é possível e a tropa não consegue estar de volta
+       * antes dele, a defesa fica em casa e a ofensiva faz uma esquiva
+       * normal: sai antes do primeiro impacto e volta depois do último. */
+      let soOfensivas = false;
+      if (!tempos && temNC) {
+        const semNC = calcularTempos(impactos, false, c);
+        if (semNC) {
+          tempos = semNC;
+          soOfensivas = true;
+          log(`🛡️ ${nome}: PODE trazer colonizador — a defesa fica em casa para o matar, `
+            + 'e sai só a tropa ofensiva.');
+        }
+      }
 
       if (!tempos) {
         anotar(impactos[0] && impactos[0].cmd, townId, 'NÃO esquivo',
@@ -29066,7 +29195,7 @@ function makeEsquivaModule(opts) {
             townId: Number(townId), daMain,
             S: t, C: t + Math.max(5, Math.floor(faltaImpacto / 2)),
             casa: impacto + (Number(c.depoisDoImpacto) || 15),
-            tipo: tempos.tipo, impacto,
+            tipo: tempos.tipo, impacto, soOfensivas,
           };
           planos[chave] = plano2;
           gravarPlanos(planos);
@@ -29096,6 +29225,7 @@ function makeEsquivaModule(opts) {
         /* A hora do impacto: serve para não mandar a tropa para a rua depois
          * de o ataque já ter batido, e para medir o atraso da preparação. */
         impacto: Number(impactos[0].arrival) || 0,
+        soOfensivas,
       };
       /* De onde veio a informação — para se saber se o aviso da main está a
        * funcionar ou se foi o jogo que acabou por trazer o ataque. */
@@ -29110,7 +29240,7 @@ function makeEsquivaModule(opts) {
           + (u.semStartedAt ? ' · ATENÇÃO: sem started_at, viagem estimada' : '')
           + ` → ${u.ehNC ? 'COM colonizador' : 'sem colonizador'}`);
       }
-      log(`${daMain ? '🌾' : '📋'} ${nome}: esquiva ${tempos.tipo} agendada — saída daqui a ${Math.round(faltam / 60)} min`
+      log(`${daMain ? '🌾' : '📋'} ${nome}: esquiva ${tempos.tipo}${soOfensivas ? ' (só a tropa ofensiva)' : ''} agendada — saída daqui a ${Math.round(faltam / 60)} min`
         + (tempos.apanham
           ? ` ⚠ ${tempos.apanham} ataque(s) batem depois do regresso e apanham a tropa`
             + ' (o colonizador manda: é preciso estar em casa quando ele bate)'
@@ -48974,6 +49104,7 @@ function makeExpansaoModule(opts) {
       await new Promise((r) => setTimeout(r, 1500));
     }
 
+    marcarArranqueComoRefresh();
     buildPanel();
     atualizarPainelEstado();
     avisarSeForaDaLista();
